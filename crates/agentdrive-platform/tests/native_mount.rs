@@ -444,15 +444,7 @@ async fn native_mount_supports_file_io_durable_snapshots_and_read_only_history()
             .any(|node| node.path.as_str() == "/continued.txt")
     );
     for mount in local.mounts().await.unwrap() {
-        let record = success(
-            engine
-                .services
-                .mounts
-                .unmount(context(), mount.id, mount.generation)
-                .await
-                .unwrap(),
-        );
-        assert_eq!(record.phase, OperationPhase::Complete, "{record:?}");
+        unmount_when_idle(&engine, &mount).await;
     }
 }
 
