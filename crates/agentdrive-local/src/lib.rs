@@ -2,6 +2,7 @@
 
 mod batch;
 mod history;
+mod merge_history;
 mod objects;
 mod queries;
 mod sqlite;

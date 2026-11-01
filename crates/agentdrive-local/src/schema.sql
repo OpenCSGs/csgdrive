@@ -35,6 +35,18 @@ CREATE TABLE IF NOT EXISTS replicated_operations (
     data BLOB NOT NULL
 );
 CREATE INDEX IF NOT EXISTS replicated_operations_workspace ON replicated_operations(workspace);
+CREATE INDEX IF NOT EXISTS operations_merge_history ON operations(workspace)
+    WHERE json_extract(CAST(data AS TEXT), '$.merge_history') IS NOT NULL;
+CREATE INDEX IF NOT EXISTS operations_merge_actions ON operations(workspace)
+    WHERE json_extract(CAST(data AS TEXT),'$.name') IN ('merge_prepare','merge_resolve','merge_apply')
+       OR (json_extract(CAST(data AS TEXT),'$.name')='mount_release' AND json_extract(CAST(data AS TEXT),'$.merge_history') IS NOT NULL);
+CREATE INDEX IF NOT EXISTS replicated_operations_merge_actions ON replicated_operations(workspace)
+    WHERE json_extract(CAST(data AS TEXT),'$.name') IN ('merge_prepare','merge_resolve','merge_apply')
+       OR (json_extract(CAST(data AS TEXT),'$.name')='mount_release' AND json_extract(CAST(data AS TEXT),'$.merge_history') IS NOT NULL);
+CREATE TABLE IF NOT EXISTS merge_history_publications (
+    operation TEXT PRIMARY KEY,
+    sequence INTEGER NOT NULL
+);
 CREATE INDEX IF NOT EXISTS operations_branch_results ON operations(workspace)
     WHERE json_extract(CAST(data AS TEXT), '$.result.kind')='branch';
 CREATE INDEX IF NOT EXISTS replicated_operations_branch_results ON replicated_operations(workspace)

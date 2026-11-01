@@ -512,6 +512,34 @@ impl LocalStateStore for LocalBackend {
         )
         .await
     }
+    async fn pending_merge_history(&self, workspace: WorkspaceId) -> Result<Vec<OperationRecord>> {
+        self.many(
+            "SELECT o.data FROM operations o LEFT JOIN merge_history_publications p ON p.operation=o.id \
+             WHERE o.workspace=?1 AND json_extract(CAST(o.data AS TEXT),'$.merge_history') IS NOT NULL \
+             AND json_array_length(CAST(o.data AS TEXT),'$.merge_history.events') > coalesce(p.sequence,0) \
+             ORDER BY json_extract(CAST(o.data AS TEXT),'$.created_ns'),o.id LIMIT 100",
+            vec![workspace.to_string()],
+        ).await
+    }
+    async fn merge_history_page(
+        &self,
+        query: MergeHistoryScan,
+    ) -> Result<(Vec<MergeHistoryEntry>, usize)> {
+        self.read_merge_history_page(query).await
+    }
+    async fn merge_history_entry(
+        &self,
+        workspace: WorkspaceId,
+        record: &str,
+    ) -> Result<Option<MergeHistoryEntry>> {
+        self.read_merge_history_entry(workspace, record).await
+    }
+    async fn merge_history_events(
+        &self,
+        query: MergeEventsScan,
+    ) -> Result<(Vec<MergeHistoryAction>, usize)> {
+        self.read_merge_history_events(query).await
+    }
     async fn mount(&self, id: MountId) -> Result<Option<MountBinding>> {
         self.one("SELECT data FROM mounts WHERE id=?1", vec![id.to_string()])
             .await
@@ -644,14 +672,7 @@ impl LocalStateStore for LocalBackend {
             }
             for operation in &commit.operations { put_operation(&transaction, operation)?; }
             for operation in &commit.replicated_operations {
-                let existing: Option<OperationRecord> = read_one(&transaction,
-                    "SELECT data FROM operations WHERE id=?1 UNION ALL SELECT data FROM replicated_operations WHERE id=?1 LIMIT 1",
-                    &[operation.id.to_string()])?;
-                check_operation_identity(existing.as_ref(), operation)?;
-                if existing.is_none() {
-                    transaction.execute("INSERT INTO replicated_operations(id,workspace,data) VALUES(?1,?2,?3)",
-                        params![operation.id.to_string(), operation.workspace.map(|id| id.to_string()), encode(operation)?]).map_err(sql_error)?;
-                }
+                put_replicated_operation(&transaction, operation)?;
             }
             for mount in &commit.mounts {
                 let active = mount.state != MountState::Released;
@@ -666,6 +687,10 @@ impl LocalStateStore for LocalBackend {
                     params![job.operation.to_string(), job.reference.workspace.to_string(), job.reference.branch.to_string(), db_integer(job.reference.source_generation)?, encode(job)?]).map_err(sql_error)?;
             }
             for id in &commit.completed_jobs { transaction.execute("DELETE FROM sync_jobs WHERE id=?1", [id.to_string()]).map_err(sql_error)?; }
+            for version in &commit.published_merge_history {
+                transaction.execute("INSERT INTO merge_history_publications(operation,sequence) VALUES(?1,?2) ON CONFLICT(operation) DO UPDATE SET sequence=max(sequence,excluded.sequence)",
+                    params![version.operation.to_string(), db_integer(version.sequence)?]).map_err(sql_error)?;
+            }
             for observation in &commit.remote_refs {
                 let reference = &observation.reference;
                 put_history(&transaction, reference)?;
@@ -704,6 +729,63 @@ fn put_history(transaction: &Transaction<'_>, reference: &BranchRef) -> Result<(
         "INSERT INTO branch_history(branch,source_generation,root) VALUES(?1,?2,?3) ON CONFLICT(branch) DO UPDATE SET source_generation=excluded.source_generation,root=excluded.root WHERE excluded.source_generation>branch_history.source_generation",
         params![reference.branch.to_string(), db_integer(reference.source_generation)?, encode(&reference.record_index)?],
     ).map_err(sql_error)?;
+    Ok(())
+}
+
+fn put_replicated_operation(transaction: &Transaction<'_>, record: &OperationRecord) -> Result<()> {
+    let local: Option<OperationRecord> = read_one(
+        transaction,
+        "SELECT data FROM operations WHERE id=?1",
+        &[record.id.to_string()],
+    )?;
+    if let Some(local) = local {
+        check_operation_identity(Some(&local), record)?;
+        return Ok(());
+    }
+    let existing: Option<OperationRecord> = read_one(
+        transaction,
+        "SELECT data FROM replicated_operations WHERE id=?1",
+        &[record.id.to_string()],
+    )?;
+    check_operation_identity(existing.as_ref(), record)?;
+    if let Some(existing) = existing {
+        if existing.workspace != record.workspace
+            || existing.branch != record.branch
+            || existing.created_ns != record.created_ns
+        {
+            return Err(Error::integrity("replicated operation context changed"));
+        }
+        let Some(next) = &record.merge_history else {
+            return Ok(());
+        };
+        if let Some(previous) = &existing.merge_history {
+            if previous.location != next.location
+                || previous.source != next.source
+                || previous.source_branch != next.source_branch
+                || previous.target != next.target
+                || previous.candidate_before != next.candidate_before
+                || previous.resolutions != next.resolutions
+                || previous.merge.zip(next.merge).is_some_and(|(a, b)| a != b)
+                || previous.base.zip(next.base).is_some_and(|(a, b)| a != b)
+            {
+                return Err(Error::integrity("merge history identity changed"));
+            }
+            let shared = previous.events.len().min(next.events.len());
+            if previous.events[..shared] != next.events[..shared] {
+                return Err(Error::integrity("merge history changed an existing event"));
+            }
+            if previous.events.len() >= next.events.len() {
+                return Ok(());
+            }
+            if (previous.merge.is_some() && next.merge.is_none())
+                || (previous.base.is_some() && next.base.is_none())
+            {
+                return Err(Error::integrity("merge history lost its candidate context"));
+            }
+        }
+    }
+    transaction.execute("INSERT INTO replicated_operations(id,workspace,data) VALUES(?1,?2,?3) ON CONFLICT(id) DO UPDATE SET data=excluded.data",
+        params![record.id.to_string(), record.workspace.map(|id| id.to_string()), encode(record)?]).map_err(sql_error)?;
     Ok(())
 }
 

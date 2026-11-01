@@ -149,6 +149,11 @@ impl OwnershipService {
             })?;
             let remote = decode_branch_ref(branch.workspace, branch.id, &current.bytes)?;
             if self.replica.contains_operation(&remote, &result).await? {
+                let published_merge_history = if remote.record_index == job.reference.record_index {
+                    job.merge_history.clone()
+                } else {
+                    Vec::new()
+                };
                 next.state = BranchState::Stopped;
                 self.runtime
                     .state
@@ -156,6 +161,7 @@ impl OwnershipService {
                         guards: vec![request.guard],
                         branches: vec![next],
                         operations: vec![result.clone()],
+                        published_merge_history,
                         remote_refs: vec![ObservedBranchRef::new(
                             remote,
                             current.version,
@@ -206,6 +212,7 @@ impl OwnershipService {
                             guards: vec![request.guard],
                             branches: vec![next],
                             operations: vec![result.clone()],
+                            published_merge_history: job.merge_history.clone(),
                             remote_refs: vec![ObservedBranchRef::new(
                                 job.reference.clone(),
                                 version,

@@ -8,6 +8,7 @@
   <link rel="stylesheet" href="/dashboard.css">
   <link rel="stylesheet" href="/archive.css">
   <link rel="stylesheet" href="/management.css">
+  <link rel="stylesheet" href="/merges.css">
   <script src="/dashboard.js" type="module"></script>
 </head>
 <body>
@@ -45,11 +46,16 @@
           <div class="stat"><div class="stat-label">被挂载的分支 <span>⑂</span></div><strong id="mounted-branch-count">—</strong><small>按就绪挂载的分支去重</small></div>
           <div class="stat"><div class="stat-label">远程同步 <span>↗</span></div><strong id="sync-status" class="stat-name">—</strong><small id="sync-detail">等待同步状态</small></div>
         </section>
+        <div class="history-tabs" role="tablist" aria-label="工作区历史视图">
+          <button id="versions-tab" type="button" role="tab" aria-controls="panels" aria-selected="true">分支与版本</button>
+          <button id="merges-tab" type="button" role="tab" aria-controls="merges-panel" aria-selected="false" tabindex="-1">合并记录</button>
+        </div>
         <div id="empty" class="empty-state" hidden><span>⑂</span><h2>还没有工作区</h2><p>使用 CLI 创建工作区后，分支与版本会显示在这里。</p></div>
-        <div id="panels" class="panels">
+        <div id="panels" class="panels" role="tabpanel" aria-labelledby="versions-tab">
           <section class="tree-panel panel" aria-labelledby="tree-title"><div class="panel-heading"><div><h2 id="tree-title">分支树</h2><p>连接点标明创建分支时的来源版本</p></div></div><div class="graph-legend"><span><i class="legend-commit"></i> 来源版本</span><span>⑂ 工作分支</span><span>点击分支查看历史 · 双击本机分支预览文件</span></div><div id="branch-tree" class="branch-tree" aria-label="分支来源关系"></div><div class="tree-footer">本机默认：本机未指定分支时的选择。已挂载：本机正在使用该分支的就绪目录数量。其他节点分支显示远端已保存的版本。</div></section>
           <section class="history-panel panel" aria-labelledby="history-title"><div class="history-heading"><div><div class="selected-branch-label">所选分支</div><h2 id="history-title">—</h2><div id="branch-meta" class="branch-meta"></div></div><span id="branch-state" class="pill">—</span></div><div class="history-toolbar"><h3>版本历史 <span id="history-count" class="count-badge">0</span></h3><span class="history-hint">双击版本查看详情</span></div><div id="revision-list" class="revision-list" aria-label="版本列表"></div></section>
         </div>
+        <section id="merges-panel" class="panel" role="tabpanel" aria-labelledby="merges-tab" hidden></section>
         <footer class="page-footer"><span>AgentDrive <span class="footer-separator">/</span> 持久化 Agent 工作区</span><span>每 15 秒自动刷新</span></footer>
       </div>
       <div id="settings-page" class="content settings-content" hidden>

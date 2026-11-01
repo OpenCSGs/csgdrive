@@ -41,6 +41,7 @@ pub struct LocalCommit {
     pub merges: Vec<MergeCandidate>,
     pub sync_jobs: Vec<SyncJob>,
     pub completed_jobs: Vec<OperationId>,
+    pub published_merge_history: Vec<MergeHistoryVersion>,
     pub remote_refs: Vec<ObservedBranchRef>,
     pub pin_updates: Vec<PinUpdate>,
 }
@@ -184,6 +185,20 @@ pub trait LocalStateStore: Send + Sync {
         request_id: &str,
     ) -> Result<Option<OperationRecord>>;
     async fn operations(&self, workspace: WorkspaceId) -> Result<Vec<OperationRecord>>;
+    async fn pending_merge_history(&self, workspace: WorkspaceId) -> Result<Vec<OperationRecord>>;
+    async fn merge_history_page(
+        &self,
+        query: crate::MergeHistoryScan,
+    ) -> Result<(Vec<crate::MergeHistoryEntry>, usize)>;
+    async fn merge_history_entry(
+        &self,
+        workspace: WorkspaceId,
+        record: &str,
+    ) -> Result<Option<crate::MergeHistoryEntry>>;
+    async fn merge_history_events(
+        &self,
+        query: crate::MergeEventsScan,
+    ) -> Result<(Vec<crate::MergeHistoryAction>, usize)>;
     async fn reserve_operation(&self, record: OperationRecord) -> Result<ReservedOperation>;
     async fn mount(&self, id: MountId) -> Result<Option<MountBinding>>;
     async fn mounts(&self) -> Result<Vec<MountBinding>>;

@@ -13,12 +13,25 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 use std::{path::PathBuf, sync::Arc};
 
+#[cfg(test)]
+#[path = "merge_history_tests.rs"]
+mod merge_history_tests;
+
 pub(crate) fn api(services: Services) -> Router {
     Router::new()
         .merge(crate::collaboration::api())
         .route("/api/workspaces", get(workspaces))
         .route("/api/workspaces/{workspace}", get(workspace))
         .route("/api/workspaces/{workspace}/archive", get(archive))
+        .route("/api/workspaces/{workspace}/merges", get(merge_history))
+        .route(
+            "/api/workspaces/{workspace}/merges/{record}",
+            get(merge_detail),
+        )
+        .route(
+            "/api/workspaces/{workspace}/merges/{record}/events",
+            get(merge_events),
+        )
         .route(
             "/api/workspaces/{workspace}/branches/{branch}/history",
             get(branch_history),
@@ -114,6 +127,10 @@ pub(crate) fn assets() -> Router {
         .route("/management.css", get(|| async { ([(header::CONTENT_TYPE, "text/css; charset=utf-8")], include_str!("../dashboard/management.css")) }))
         .route("/dashboard.js", get(|| async { ([(header::CONTENT_TYPE, "text/javascript; charset=utf-8")], include_str!("../dashboard/dashboard.js")) }))
         .route("/history.js", get(|| async { ([(header::CONTENT_TYPE, "text/javascript; charset=utf-8")], include_str!("../dashboard/history.js")) }))
+        .route("/merges.js", get(|| async { ([(header::CONTENT_TYPE, "text/javascript; charset=utf-8")], include_str!("../dashboard/merges.js")) }))
+        .route("/merge-detail.js", get(|| async { ([(header::CONTENT_TYPE, "text/javascript; charset=utf-8")], include_str!("../dashboard/merge-detail.js")) }))
+        .route("/merge-presentation.js", get(|| async { ([(header::CONTENT_TYPE, "text/javascript; charset=utf-8")], include_str!("../dashboard/merge-presentation.js")) }))
+        .route("/merges.css", get(|| async { ([(header::CONTENT_TYPE, "text/css; charset=utf-8")], include_str!("../dashboard/merges.css")) }))
         .route("/sync-status.js", get(|| async { ([(header::CONTENT_TYPE, "text/javascript; charset=utf-8")], include_str!("../dashboard/sync-status.js")) }))
         .route("/workspace.js", get(|| async { ([(header::CONTENT_TYPE, "text/javascript; charset=utf-8")], include_str!("../dashboard/workspace.js")) }))
         .route("/relationships.js", get(|| async { ([(header::CONTENT_TYPE, "text/javascript; charset=utf-8")], include_str!("../dashboard/relationships.js")) }))
@@ -158,6 +175,47 @@ async fn workspaces(
     Extension(actor): Extension<Principal>,
 ) -> std::result::Result<Json<Value>, ApiError> {
     Ok(Json(json!(services.workspace.list(&actor).await?)))
+}
+
+async fn merge_history(
+    State(services): State<Services>,
+    Extension(actor): Extension<Principal>,
+    Path(workspace): Path<WorkspaceId>,
+    Query(filter): Query<MergeHistoryFilter>,
+) -> std::result::Result<Json<MergeHistoryPage>, ApiError> {
+    Ok(Json(
+        services
+            .merge_history
+            .list(&actor, workspace, filter)
+            .await?,
+    ))
+}
+
+async fn merge_detail(
+    State(services): State<Services>,
+    Extension(actor): Extension<Principal>,
+    Path((workspace, record)): Path<(WorkspaceId, String)>,
+) -> std::result::Result<Json<MergeHistoryDetail>, ApiError> {
+    Ok(Json(
+        services
+            .merge_history
+            .detail(&actor, workspace, &record)
+            .await?,
+    ))
+}
+
+async fn merge_events(
+    State(services): State<Services>,
+    Extension(actor): Extension<Principal>,
+    Path((workspace, record)): Path<(WorkspaceId, String)>,
+    Query(query): Query<MergeEventsQuery>,
+) -> std::result::Result<Json<MergeHistoryEvents>, ApiError> {
+    Ok(Json(
+        services
+            .merge_history
+            .events(&actor, workspace, &record, query)
+            .await?,
+    ))
 }
 
 async fn workspace(

@@ -66,6 +66,7 @@ async fn corrupt_download_is_never_published() {
 
 fn operation(request: &str) -> OperationRecord {
     OperationRecord {
+        merge_history: None,
         id: OperationId::new(),
         request_id: request.into(),
         principal: "owner".to_owned().try_into().unwrap(),
@@ -83,6 +84,161 @@ fn operation(request: &str) -> OperationRecord {
         created_ns: 1,
         sync_progress: None,
     }
+}
+
+fn merge_operation() -> OperationRecord {
+    let mut record = operation("merge");
+    let branch = BranchId::new();
+    record.workspace = Some(WorkspaceId::new());
+    record.branch = Some(branch);
+    record.name = "merge_prepare".into();
+    record.merge_history = Some(MergeOperationHistory {
+        merge: None,
+        source: RevisionId::new(),
+        source_branch: Some(BranchId::new()),
+        target: BranchGuard {
+            branch,
+            authority_epoch: 1,
+            generation: 1,
+            expected_head: RevisionId::new(),
+            mutation_seq: Some(0),
+        },
+        base: None,
+        location: LocationId::new(),
+        candidate_before: None,
+        resolutions: vec![],
+        events: vec![],
+    });
+    record.record_merge_event(1);
+    record
+}
+
+#[tokio::test]
+async fn replicated_merge_events_extend_monotonically_and_preserve_local_receipts() {
+    let directory = tempfile::tempdir().unwrap();
+    let backend = LocalBackend::open(directory.path()).unwrap();
+    let first = merge_operation();
+    let mut completed = first.clone();
+    completed.phase = OperationPhase::Complete;
+    completed.local_saved = true;
+    completed.merge_history.as_mut().unwrap().merge = Some(MergeId::new());
+    completed.merge_history.as_mut().unwrap().base = Some(RevisionId::new());
+    completed.record_merge_event(2);
+    for record in [
+        first.clone(),
+        completed.clone(),
+        first.clone(),
+        completed.clone(),
+    ] {
+        backend
+            .commit(LocalCommit {
+                replicated_operations: vec![record],
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+    }
+    assert_eq!(
+        backend.operation(first.id).await.unwrap(),
+        Some(completed.clone())
+    );
+    let mut conflicting = completed.clone();
+    conflicting.merge_history.as_mut().unwrap().events[0].phase = OperationPhase::Saving;
+    assert_eq!(
+        backend
+            .commit(LocalCommit {
+                replicated_operations: vec![conflicting],
+                ..Default::default()
+            })
+            .await
+            .unwrap_err()
+            .code,
+        ErrorCode::Integrity
+    );
+    let local = merge_operation();
+    backend.reserve_operation(local.clone()).await.unwrap();
+    let mut imported = local.clone();
+    imported.phase = OperationPhase::Failed;
+    imported.error = Some(Error::invalid("remote failure"));
+    imported.record_merge_event(3);
+    backend
+        .commit(LocalCommit {
+            replicated_operations: vec![imported],
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    assert_eq!(
+        backend.operation(local.id).await.unwrap(),
+        Some(local.clone())
+    );
+    assert_eq!(
+        backend
+            .pending_merge_history(local.workspace.unwrap())
+            .await
+            .unwrap(),
+        vec![local]
+    );
+    drop(backend);
+    let backend = LocalBackend::open(directory.path()).unwrap();
+    assert_eq!(backend.operation(first.id).await.unwrap(), Some(completed));
+}
+
+#[tokio::test]
+async fn publication_watermarks_retain_events_added_after_a_job_snapshot() {
+    let directory = tempfile::tempdir().unwrap();
+    let backend = LocalBackend::open(directory.path()).unwrap();
+    let mut record = merge_operation();
+    let workspace = record.workspace.unwrap();
+    backend.reserve_operation(record.clone()).await.unwrap();
+    record.phase = OperationPhase::Failed;
+    record.error = Some(Error::invalid("invalid source"));
+    record.record_merge_event(2);
+    record.record_merge_event(3);
+    assert_eq!(record.merge_history.as_ref().unwrap().events.len(), 2);
+    backend
+        .commit(LocalCommit {
+            operations: vec![record.clone()],
+            published_merge_history: vec![MergeHistoryVersion {
+                operation: record.id,
+                sequence: 1,
+            }],
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    assert_eq!(
+        backend.pending_merge_history(workspace).await.unwrap(),
+        vec![record.clone()]
+    );
+    backend
+        .commit(LocalCommit {
+            published_merge_history: vec![MergeHistoryVersion {
+                operation: record.id,
+                sequence: 2,
+            }],
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    backend
+        .commit(LocalCommit {
+            published_merge_history: vec![MergeHistoryVersion {
+                operation: record.id,
+                sequence: 1,
+            }],
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    assert!(
+        backend
+            .pending_merge_history(workspace)
+            .await
+            .unwrap()
+            .is_empty()
+    );
+    assert_eq!(backend.operation(record.id).await.unwrap(), Some(record));
 }
 
 #[tokio::test]

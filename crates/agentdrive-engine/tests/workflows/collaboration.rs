@@ -903,6 +903,91 @@ async fn global_disable_finishes_an_interrupted_release_and_allows_credential_re
 }
 
 #[tokio::test]
+async fn merge_history_publication_preserves_a_pending_authority_transition() {
+    let remote = Arc::new(MemoryRemote::default());
+    let first = new(Some(remote.clone())).await;
+    let workspace = first.workspace().await;
+    let (binding, _) = first.branch_mount(workspace.id, "shared-work", None).await;
+    first.sync(workspace.id, SyncDirection::Push).await;
+    configure(&first, &binding, Some(1)).await;
+    first.clock.advance(1_001);
+
+    let (waiting, resume) = remote.pause_next_branch_cas();
+    let engine = first.engine.clone();
+    let task = tokio::spawn(async move { engine.collaborate_due().await });
+    waiting.await.unwrap();
+    let before = first.local.branch(binding.branch).await.unwrap().unwrap();
+    let prepared = success(
+        first
+            .engine
+            .services
+            .merge
+            .prepare(
+                context(),
+                PrepareMerge {
+                    workspace: workspace.id,
+                    source: before.formal_head,
+                    target: BranchGuard::from(&before),
+                    base: None,
+                },
+            )
+            .await
+            .unwrap(),
+    );
+    remote.lose_next_branch_cas_response();
+    remote.set_available(false);
+    resume.send(()).unwrap();
+    assert_eq!(
+        task.await.unwrap().unwrap_err().code,
+        ErrorCode::Unavailable
+    );
+    let pending = first
+        .local
+        .collaboration(binding.branch)
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(pending.transition.is_some());
+
+    remote.set_available(true);
+    first.engine.sync_pending().await.unwrap();
+    assert_eq!(
+        first.local.branch(binding.branch).await.unwrap().unwrap(),
+        before
+    );
+    assert_eq!(
+        first.local.collaboration(binding.branch).await.unwrap(),
+        Some(pending)
+    );
+    first.engine.collaborate_due().await.unwrap();
+    let after = first.local.branch(binding.branch).await.unwrap().unwrap();
+    assert_eq!(after.state, BranchState::Available);
+    assert_eq!(after.working_root, before.working_root);
+    assert_eq!(after.source_generation, before.source_generation + 1);
+    assert!(
+        first
+            .local
+            .sync_jobs(workspace.id)
+            .await
+            .unwrap()
+            .is_empty()
+    );
+
+    let receiver = Harness::new(Some(remote)).await;
+    receiver.sync(workspace.id, SyncDirection::Pull).await;
+    assert_eq!(
+        receiver
+            .local
+            .operation(prepared.id)
+            .await
+            .unwrap()
+            .unwrap()
+            .merge_history,
+        prepared.merge_history
+    );
+}
+
+#[tokio::test]
 async fn authority_publication_blocks_external_mutations_until_the_cas_completes() {
     let remote = Arc::new(MemoryRemote::default());
     let first = new(Some(remote.clone())).await;
@@ -917,8 +1002,7 @@ async fn authority_publication_blocks_external_mutations_until_the_cas_completes
     let source_revision = first.commit(source.branch).await;
     first.sync(workspace.id, SyncDirection::Push).await;
     configure(&first, &binding, Some(1)).await;
-    let before = first.local.branch(binding.branch).await.unwrap().unwrap();
-    let guard = BranchGuard::from(&before);
+    let guard = BranchGuard::from(&first.local.branch(binding.branch).await.unwrap().unwrap());
     let merged = success(
         first
             .engine
@@ -944,6 +1028,7 @@ async fn authority_publication_blocks_external_mutations_until_the_cas_completes
     let engine = first.engine.clone();
     let task = tokio::spawn(async move { engine.collaborate_due().await });
     waiting.await.unwrap();
+    let before = first.local.branch(binding.branch).await.unwrap().unwrap();
     let requests = [
         first
             .engine

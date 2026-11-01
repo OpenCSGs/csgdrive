@@ -299,6 +299,7 @@ impl RevisionService {
             candidate.applied_revision = Some(revision_id);
             merges.push(candidate);
         }
+        operation.record_merge_event(self.runtime.clock.now_ns());
         let job = self
             .publisher
             .build_job(&branch, revision.as_ref(), &operation)

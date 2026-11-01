@@ -1128,17 +1128,33 @@ impl MountApi for MountService {
             .operations
             .get(&context.principal, request.operation)
             .await?;
-        let operation = match self
-            .operations
-            .start(
-                context,
-                "mount_release",
-                &request,
-                target.workspace,
-                target.branch,
-            )
-            .await?
-        {
+        let start = if let Some(mut history) = target.merge_history.clone() {
+            history.events.clear();
+            history.resolutions.clear();
+            history.candidate_before = None;
+            self.operations
+                .start_merge(
+                    context,
+                    "mount_release",
+                    &request,
+                    target
+                        .workspace
+                        .ok_or_else(|| Error::integrity("merge workspace is missing"))?,
+                    history,
+                )
+                .await?
+        } else {
+            self.operations
+                .start(
+                    context,
+                    "mount_release",
+                    &request,
+                    target.workspace,
+                    target.branch,
+                )
+                .await?
+        };
+        let operation = match start {
             OperationStart::Existing(record)
                 if matches!(
                     record.phase,
@@ -1307,6 +1323,7 @@ impl RevisionTransition for MountService {
                 OperationPhase::Saving
             };
             record.mount_ready = Some(false);
+            record.record_merge_event(self.runtime.clock.now_ns());
             self.runtime
                 .state
                 .commit(LocalCommit {

@@ -354,6 +354,8 @@ pub enum CommandResult {
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct OperationRecord {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub merge_history: Option<crate::MergeOperationHistory>,
     pub id: OperationId,
     pub request_id: String,
     pub principal: Principal,
@@ -518,6 +520,8 @@ impl ObservedBranchRef {
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct SyncJob {
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub merge_history: Vec<crate::MergeHistoryVersion>,
     pub operation: OperationId,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub expected_authority: Option<crate::AuthorityGuard>,

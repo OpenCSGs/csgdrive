@@ -148,6 +148,7 @@ impl Engine {
             cache,
             ownership,
             merge,
+            merge_history: crate::merge_history::MergeHistoryService::new(runtime.clone()),
             mounts,
             operations,
             files,
@@ -205,7 +206,13 @@ impl Engine {
         }
         let mut first_error = None;
         for workspace in self.runtime.state.workspaces().await? {
-            if !self.runtime.state.sync_jobs(workspace.id).await?.is_empty()
+            if (!self.runtime.state.sync_jobs(workspace.id).await?.is_empty()
+                || !self
+                    .runtime
+                    .state
+                    .pending_merge_history(workspace.id)
+                    .await?
+                    .is_empty())
                 && let Err(error) = self.publisher.drain(workspace.id, None).await
             {
                 if error.code == ErrorCode::StaleAuthority

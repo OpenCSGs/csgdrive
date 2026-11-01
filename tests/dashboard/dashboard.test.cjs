@@ -247,7 +247,7 @@ test('double click opens combined details, uses the parent and selects the first
   assert.equal(await page.locator('#revision-dialog').evaluate(el => el.open), false);
   assert.equal(differenceReads(requests).length, 0);
   await openRevision(page);
-  assert.deepEqual(await page.locator('.revision-section-title').allTextContents(), ['版本信息','修改内容']);
+  assert.deepEqual(await page.locator('#revision-dialog .revision-section-title').allTextContents(), ['版本信息','修改内容']);
   assert.equal(await page.locator('.diff-path').textContent(), '/first.txt');
   assert(differenceReads(requests).every(url => url.searchParams.get('before') === 'parent-commit'));
   await page.keyboard.press('Escape');
