@@ -4,6 +4,8 @@ use super::*;
 #[path = "metadata.rs"]
 mod metadata;
 use agentdrive_test_support::{ManualClock, MemoryRemote};
+#[cfg(unix)]
+use std::os::unix::fs::MetadataExt;
 #[cfg(windows)]
 use std::os::windows::fs::OpenOptionsExt;
 use std::time::Duration;
@@ -336,15 +338,7 @@ async fn native_automatic_collaboration_follows_driver_handle_tracking() {
         .close_and_release(directory, b"directory handle work")
         .await;
     assert!(second_epoch > first_epoch);
-    success(
-        harness
-            .engine
-            .services
-            .mounts
-            .unmount(context(), harness.binding.id, harness.binding.generation)
-            .await
-            .unwrap(),
-    );
+    unmount_when_idle(&harness.engine, &harness.binding).await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -374,6 +368,8 @@ async fn native_follower_can_reopen_after_rejected_concurrent_append() {
         .await
         .unwrap();
     }
+    #[cfg(unix)]
+    let original_device = std::fs::metadata(&first.binding.path).unwrap().dev();
     let path = second.binding.path.join("work.txt");
     let file = tokio::task::spawn_blocking(move || {
         let mut file = std::fs::OpenOptions::new()
@@ -405,6 +401,18 @@ async fn native_follower_can_reopen_after_rejected_concurrent_append() {
     first.engine.collaborate_due().await.unwrap();
     let current = first.local.mount(first.binding.id).await.unwrap().unwrap();
     assert!(current.generation > first.binding.generation);
+    assert_eq!(current.id, first.binding.id);
+    assert_eq!(current.path, first.binding.path);
+    assert_eq!(current.access, first.binding.access);
+    #[cfg(unix)]
+    {
+        let current_device = std::fs::metadata(&current.path).unwrap().dev();
+        if first.driver.requires_remount_for_rebind() {
+            assert_ne!(current_device, original_device);
+        } else {
+            assert_eq!(current_device, original_device);
+        }
+    }
     let path = current.path.clone();
     tokio::task::spawn_blocking(move || {
         assert_eq!(
@@ -426,14 +434,6 @@ async fn native_follower_can_reopen_after_rejected_concurrent_append() {
             .await
             .unwrap()
             .unwrap();
-        success(
-            harness
-                .engine
-                .services
-                .mounts
-                .unmount(context(), binding.id, binding.generation)
-                .await
-                .unwrap(),
-        );
+        unmount_when_idle(&harness.engine, &binding).await;
     }
 }

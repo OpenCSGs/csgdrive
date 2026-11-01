@@ -219,18 +219,23 @@ impl MountService {
         let result = async {
             let next_state = self.driver.status(next).await?;
             let old_state = self.driver.status(old).await?;
-            if next_state == NativeMountState::Mounted || old_state == NativeMountState::Mounted {
-                self.driver.rebind(old, next).await?;
-            } else if next_state == NativeMountState::Absent
-                && old_state == NativeMountState::Absent
-            {
-                self.install_new(next).await?;
-            } else {
-                return Err(Error::new(
-                    ErrorCode::MountBusy,
-                    "native mount identity cannot be confirmed while resuming collaboration",
-                )
-                .retryable());
+            match (next_state, old_state) {
+                (NativeMountState::Mounted, _) => (),
+                (_, NativeMountState::Mounted) if self.driver.requires_remount_for_rebind() => {
+                    self.driver.unmount(old).await?;
+                    self.install_new(next).await?;
+                }
+                (_, NativeMountState::Mounted) => self.driver.rebind(old, next).await?,
+                (NativeMountState::Absent, NativeMountState::Absent) => {
+                    self.install_new(next).await?;
+                }
+                _ => {
+                    return Err(Error::new(
+                        ErrorCode::MountBusy,
+                        "native mount identity cannot be confirmed while resuming collaboration",
+                    )
+                    .retryable());
+                }
             }
             operation.pending = None;
             operation.local_saved = true;

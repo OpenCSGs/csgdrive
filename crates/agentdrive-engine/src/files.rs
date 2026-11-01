@@ -86,6 +86,9 @@ impl FileService {
         write: bool,
         query: FileQuery,
     ) -> Result<FileView> {
+        // Native mount startup needs root attributes while the binding transition is protected.
+        let root_metadata =
+            !write && matches!(&query, FileQuery::Inode(inode) if *inode == InodeId::ROOT);
         let view = self
             .runtime
             .state
@@ -138,11 +141,12 @@ impl FileService {
                 "branch stopped after a storage failure",
             ));
         }
-        if self
-            .runtime
-            .collaboration_blocked
-            .lock()
-            .contains(&branch.id)
+        if !root_metadata
+            && self
+                .runtime
+                .collaboration_blocked
+                .lock()
+                .contains(&branch.id)
         {
             return Err(Error::new(
                 ErrorCode::BranchBusy,
@@ -387,7 +391,12 @@ impl FileSystem for FileService {
     }
 
     async fn getattr(&self, context: &FsContext, inode: InodeId) -> Result<Inode> {
-        let (mount, _) = self.binding(context, false).await?;
+        let query = if inode == InodeId::ROOT {
+            FileQuery::Inode(inode)
+        } else {
+            FileQuery::Binding
+        };
+        let mount = self.view(context, false, query).await?.mount;
         let _gate = self.runtime.lock_branch(mount.branch).await;
         let view = self.view(context, false, FileQuery::Inode(inode)).await?;
         let node = if view.mount.revision.is_some() {
@@ -985,7 +994,8 @@ impl FileSystem for FileService {
     }
 
     async fn statfs(&self, context: &FsContext) -> Result<VolumeStats> {
-        self.binding(context, false).await?;
+        self.view(context, false, FileQuery::Inode(InodeId::ROOT))
+            .await?;
         self.objects.volume_stats().await
     }
 }

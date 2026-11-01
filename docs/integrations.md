@@ -94,6 +94,8 @@ Upgrade every participating location to a version that supports automatic collab
 
 Automatic collaboration is available with Linux FUSE, macFUSE, FUSE-T, and WinFsp. The daemon follows the handle information supplied by each driver when deciding when to release ownership. FUSE can miss `O_PATH` references; FUSE-T's NFS backend can omit application-held directory references. The dashboard keeps this tracking scope visible beside the configuration and status.
 
+When receiving a new version on FUSE-T, AgentDrive automatically remounts the same directory. File access during the transition may need to be retried. If an application keeps the directory occupied, the daemon waits for it to be released and continues automatically.
+
 The **Automatic collaboration** switch in **Settings** applies to the entire AgentDrive daemon and defaults to enabled (`collaboration.enabled: true`). It requires configured remote storage. Create a writable mount in **Mounts** by selecting a branch and directory. The branch may belong to another location. The mounted directory follows published content while idle; its first modification requests write ownership automatically. While this location owns the branch, the daemon saves local changes and publishes them. Agent tools continue using ordinary filesystem operations.
 
 The **Automatic collaboration** panel in Mounts configures idle release and completion-event release for the selected mount's branch. Both triggers wait until the driver reports no open handles for that branch's local mounts. The panel shows the global setting with a link to Settings, active branch, writer, handle count and tracking scope, registered executions, local saving, remote confirmation, and any recovery branch awaiting a mount switch. An unavailable handle count is displayed as unknown. Unsaved form changes survive status refreshes.
@@ -184,6 +186,8 @@ Remote confirmation requires a known remote reference with matching owner, autho
 ## macOS FUSE-T
 
 Install FUSE-T 1.2.9 and pkg-config, then build with `make -j "$(sysctl -n hw.ncpu)" build FEATURES=macos-fuse-t`. AgentDrive uses the local NFS backend and disables its attribute cache. FUSE-T runs without a kernel extension. Its [license](https://github.com/macos-fuse-t/fuse-t) requires a commercial license for commercial use or distribution with commercial software.
+
+The NFS backend does not support cache invalidation notifications. Automatic collaboration receives new versions by recreating the native mount at the same path. A busy directory keeps the operation pending for automatic retry; the daemon uses normal unmounting. File access during the transition may need to be retried.
 
 macOS can create AppleDouble `._` metadata files on this filesystem; AgentDrive stores them as ordinary workspace files. `branch_switch` attempts normal unmount and remount in one call. A running Agent, terminal, or MCP stdio proxy can keep the directory occupied. On `MOUNT_BUSY`, stop those processes or restart the Agent and retry the same `branch_switch` request from outside the mount. Configure the MCP proxy's working directory outside the mount when the client supports it.
 

@@ -39,6 +39,65 @@ fn success(record: OperationRecord) -> OperationRecord {
     record
 }
 
+async fn unmount_when_idle(engine: &Engine, binding: &MountBinding) {
+    let request = context();
+    let mut record = engine
+        .services
+        .mounts
+        .unmount(request.clone(), binding.id, binding.generation)
+        .await
+        .unwrap();
+    let operation = record.id;
+    let release_context = context();
+    let completed = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        loop {
+            if record
+                .error
+                .as_ref()
+                .is_some_and(|error| error.code == ErrorCode::MountBusy && error.retryable)
+            {
+                assert!(record.pending.is_some(), "{record:?}");
+                // Resume the original pending action after native close callbacks complete.
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+                let released = engine
+                    .services
+                    .mounts
+                    .release(
+                        release_context.clone(),
+                        ReleaseMount {
+                            operation,
+                            expected_binding_generation: binding.generation,
+                        },
+                    )
+                    .await
+                    .unwrap();
+                if !released
+                    .error
+                    .as_ref()
+                    .is_some_and(|error| error.code == ErrorCode::MountBusy && error.retryable)
+                {
+                    success(released);
+                }
+                record = engine
+                    .services
+                    .operations
+                    .get(&request.principal, operation)
+                    .await
+                    .unwrap();
+                continue;
+            }
+            assert_eq!(success(record.clone()).phase, OperationPhase::Complete);
+            assert_eq!(record.id, operation);
+            return;
+        }
+    })
+    .await;
+    assert!(
+        completed.is_ok(),
+        "native mount did not become idle within five seconds: {record:?}"
+    );
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 #[ignore = "requires an installed native filesystem driver and mount permission"]
 async fn native_mount_supports_file_io_durable_snapshots_and_read_only_history() {
@@ -265,14 +324,7 @@ async fn native_mount_supports_file_io_durable_snapshots_and_read_only_history()
     })
     .await
     .unwrap();
-    success(
-        engine
-            .services
-            .mounts
-            .unmount(context(), recovery_binding.id, recovery_binding.generation)
-            .await
-            .unwrap(),
-    );
+    unmount_when_idle(&engine, &recovery_binding).await;
     let mut next = binding.clone();
     next.branch = recovery.id;
     next.generation += 1;
@@ -483,14 +535,7 @@ async fn native_directory_adoption_preserves_files_at_original_path() {
             .unwrap(),
     );
     assert_eq!(replay.id, record.id);
-    success(
-        engine
-            .services
-            .mounts
-            .unmount(context(), binding.id, binding.generation)
-            .await
-            .unwrap(),
-    );
+    unmount_when_idle(&engine, &binding).await;
 }
 
 #[cfg(unix)]
@@ -666,14 +711,7 @@ async fn native_branch_switch_completes_and_reports_file_and_cwd_occupancy() {
     .unwrap();
     for mount in local.mounts().await.unwrap() {
         if mount.state == MountState::Ready {
-            success(
-                engine
-                    .services
-                    .mounts
-                    .unmount(context(), mount.id, mount.generation)
-                    .await
-                    .unwrap(),
-            );
+            unmount_when_idle(&engine, &mount).await;
         }
     }
 }

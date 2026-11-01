@@ -1391,6 +1391,295 @@ async fn recovery_restarts_once_and_moves_completion_to_the_recovery_grant() {
     assert_eq!(original, replacement);
 }
 
+#[tokio::test]
+async fn remount_failure_resumes_the_same_binding_after_restart_or_native_completion() {
+    for restart in [false, true] {
+        let remote = Arc::new(MemoryRemote::default());
+        let first = new(Some(remote.clone())).await;
+        let workspace = first.workspace().await;
+        let (source, fs) = first.branch_mount(workspace.id, "shared-work", None).await;
+        first.write_new(&fs, "base.txt", b"base").await;
+        first.commit(source.branch).await;
+        first.sync(workspace.id, SyncDirection::Push).await;
+        configure(&first, &source, None).await;
+        event(&first, source.id, "base", ExecutionPhase::Started).await;
+        event(&first, source.id, "base", ExecutionPhase::Completed).await;
+        first.engine.collaborate_due().await.unwrap();
+
+        let second = new(Some(remote.clone())).await;
+        let (binding, _) = automatic_mount(&second, workspace.id, source.branch).await;
+        first.write_new(&fs, "latest.txt", b"latest").await;
+        first.commit(source.branch).await;
+        first.sync(workspace.id, SyncDirection::Push).await;
+        event(&first, source.id, "update", ExecutionPhase::Started).await;
+        event(&first, source.id, "update", ExecutionPhase::Completed).await;
+        first.engine.collaborate_due().await.unwrap();
+        second
+            .driver
+            .remount_on_rebind
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+        second
+            .driver
+            .fail_mount
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+        second.clock.advance(6_000);
+        assert_eq!(
+            second.engine.collaborate_due().await.unwrap_err().code,
+            ErrorCode::Unavailable
+        );
+        let failed = second.local.mount(binding.id).await.unwrap().unwrap();
+        assert_eq!(failed.id, binding.id);
+        assert_eq!(failed.path, binding.path);
+        assert_eq!(failed.generation, binding.generation + 1);
+        assert_eq!(failed.state, MountState::RecoveryRequired);
+        let unavailable = current_context(&second, binding.id).await;
+        assert_eq!(
+            second
+                .engine
+                .services
+                .files
+                .getattr(&unavailable, InodeId::ROOT)
+                .await
+                .unwrap_err()
+                .code,
+            ErrorCode::StaleBinding
+        );
+        assert_eq!(
+            second.driver.status(&failed).await.unwrap(),
+            NativeMountState::Absent
+        );
+        let pending: Vec<_> = second
+            .local
+            .operations(workspace.id)
+            .await
+            .unwrap()
+            .into_iter()
+            .filter(|operation| operation.name == "collaboration_rebind")
+            .collect();
+        assert_eq!(pending.len(), 1);
+        assert!(pending[0].pending.is_some());
+        let mut expected = failed.clone();
+        expected.state = MountState::Ready;
+
+        let second = if restart {
+            let Harness {
+                directory,
+                local,
+                engine,
+                clock,
+                driver,
+            } = second;
+            drop((local, engine, clock, driver));
+            let (local, engine, clock, driver) =
+                open_collaborating(directory.path(), Some(remote.clone())).await;
+            Harness {
+                directory,
+                local,
+                engine,
+                clock,
+                driver,
+            }
+        } else {
+            // Simulate native installation completing before the final operation commit.
+            second
+                .driver
+                .mount(
+                    MountSpec {
+                        binding: expected.clone(),
+                    },
+                    second.engine.services.files.clone(),
+                )
+                .await
+                .unwrap();
+            *second.driver.unmount_error.lock() = Some(Error::new(
+                ErrorCode::Unavailable,
+                "the completed native mount must not be unmounted again",
+            ));
+            second
+        };
+        second
+            .driver
+            .remount_on_rebind
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+        if restart {
+            check_remount_startup_queries(&second, &binding).await;
+        } else {
+            second.engine.collaborate_due().await.unwrap();
+        }
+        assert_eq!(
+            second.local.mount(binding.id).await.unwrap(),
+            Some(expected.clone())
+        );
+        assert_eq!(
+            second.driver.status(&expected).await.unwrap(),
+            NativeMountState::Mounted
+        );
+        if !restart {
+            assert!(second.driver.unmount_error.lock().is_some());
+        }
+        let operations: Vec<_> = second
+            .local
+            .operations(workspace.id)
+            .await
+            .unwrap()
+            .into_iter()
+            .filter(|operation| operation.name == "collaboration_rebind")
+            .collect();
+        assert_eq!(operations.len(), 1);
+        assert_eq!(operations[0].id, pending[0].id);
+        assert!(operations[0].pending.is_none());
+        assert_eq!(operations[0].phase, OperationPhase::Complete);
+        let current = current_context(&second, binding.id).await;
+        let inode = second
+            .engine
+            .services
+            .files
+            .lookup(&current, InodeId::ROOT, "latest.txt")
+            .await
+            .unwrap();
+        let handle = second
+            .engine
+            .services
+            .files
+            .open(
+                &current,
+                inode.id,
+                OpenMode {
+                    read: true,
+                    write: false,
+                    append: false,
+                },
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            second
+                .engine
+                .services
+                .files
+                .read(&current, handle.id, 0, 1024)
+                .await
+                .unwrap(),
+            Bytes::from_static(b"latest")
+        );
+        second
+            .engine
+            .services
+            .files
+            .release(&current, handle.id)
+            .await
+            .unwrap();
+    }
+}
+
+async fn check_remount_startup_queries(harness: &Harness, previous: &MountBinding) {
+    let (waiting, resume) = harness.driver.pause_next_mount();
+    let engine = harness.engine.clone();
+    let mounting = tokio::spawn(async move { engine.collaborate_due().await });
+    tokio::time::timeout(std::time::Duration::from_secs(5), waiting)
+        .await
+        .unwrap()
+        .unwrap();
+    let current = current_context(harness, previous.id).await;
+    let files = &harness.engine.services.files;
+    assert_eq!(
+        files.getattr(&current, InodeId::ROOT).await.unwrap().id,
+        InodeId::ROOT
+    );
+    files.statfs(&current).await.unwrap();
+    let mut old = current.clone();
+    old.generation = previous.generation;
+    assert_eq!(
+        files.getattr(&old, InodeId::ROOT).await.unwrap_err().code,
+        ErrorCode::StaleBinding
+    );
+    assert_eq!(
+        files.statfs(&old).await.unwrap_err().code,
+        ErrorCode::StaleBinding
+    );
+    let mut stranger = current.clone();
+    stranger.identity.uid += 1;
+    assert_eq!(
+        files
+            .getattr(&stranger, InodeId::ROOT)
+            .await
+            .unwrap_err()
+            .code,
+        ErrorCode::PermissionDenied
+    );
+    assert_eq!(
+        files.statfs(&stranger).await.unwrap_err().code,
+        ErrorCode::PermissionDenied
+    );
+    let inode = harness
+        .local
+        .node_at(previous.branch, &path("/latest.txt"))
+        .await
+        .unwrap()
+        .unwrap()
+        .inode
+        .id;
+    let blocked = [
+        files.getattr(&current, inode).await.map(|_| ()),
+        files
+            .lookup(&current, InodeId::ROOT, "latest.txt")
+            .await
+            .map(|_| ()),
+        files.readdir(&current, InodeId::ROOT).await.map(|_| ()),
+        files
+            .open(
+                &current,
+                inode,
+                OpenMode {
+                    read: true,
+                    write: false,
+                    append: false,
+                },
+            )
+            .await
+            .map(|_| ()),
+        files
+            .open(
+                &current,
+                inode,
+                OpenMode {
+                    read: false,
+                    write: true,
+                    append: false,
+                },
+            )
+            .await
+            .map(|_| ()),
+        files.fsync(&current).await.map(|_| ()),
+        files
+            .create(
+                &current,
+                InodeId::ROOT,
+                "during-mount.txt",
+                FileKind::File,
+                0o644,
+            )
+            .await
+            .map(|_| ()),
+        files
+            .setattr(
+                &current,
+                InodeId::ROOT,
+                AttributeUpdate {
+                    mode: Some(0o700),
+                    ..Default::default()
+                },
+            )
+            .await
+            .map(|_| ()),
+    ];
+    for result in blocked {
+        assert_eq!(result.unwrap_err().code, ErrorCode::BranchBusy);
+    }
+    resume.send(()).unwrap();
+    mounting.await.unwrap().unwrap();
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn event_racing_publication_failure_preserves_recovery_across_restart() {
     let remote = Arc::new(MemoryRemote::default());

@@ -58,6 +58,11 @@ impl MountDriver for NativeMountDriver {
         ))
     }
 
+    fn requires_remount_for_rebind(&self) -> bool {
+        // FUSE-T's NFS backend does not support inode or directory-entry invalidation.
+        cfg!(all(target_os = "macos", feature = "macos-fuse-t"))
+    }
+
     fn handle_tracking_scope(&self) -> agentdrive_ports::HandleTrackingScope {
         if cfg!(any(
             target_os = "linux",
@@ -258,6 +263,15 @@ impl MountDriver for NativeMountDriver {
 #[cfg(test)]
 mod collaboration_tests {
     use super::*;
+
+    #[test]
+    fn only_fuse_t_requires_a_new_session_for_rebind() {
+        let driver = NativeMountDriver::new(Vec::new()).unwrap();
+        assert_eq!(
+            driver.requires_remount_for_rebind(),
+            cfg!(all(target_os = "macos", feature = "macos-fuse-t"))
+        );
+    }
 
     #[test]
     #[cfg(any(

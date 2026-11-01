@@ -1109,6 +1109,7 @@ test('collaboration distinguishes unknown handle counts from a closed mount', as
 
 test('collaboration supports protocol handle tracking with a persistent scope explanation', async t => {
   const data = collaborativeFixture(); data.status.capabilities.handle_tracking_scope = 'protocol';
+  data.status.capabilities.platform_mount = 'macos-fuse-t';
   data.configure = async (route, input) => {
     data.collaboration[0].settings.enabled = input.enabled;
     return route.fulfill({json:data.collaboration[0]});
@@ -1116,12 +1117,14 @@ test('collaboration supports protocol handle tracking with a persistent scope ex
   const {page,configurations} = await open(t,data,'/mounts');
   await page.getByText('文件系统协议报告的句柄',{exact:true}).waitFor();
   assert.match(await page.getByRole('region',{name:'自动协作'}).textContent(),/FUSE-T.*根据协议可见的句柄判断交还时机/);
+  assert.match(await page.getByRole('region',{name:'自动协作'}).textContent(),/接收新版本时自动重新挂载相同目录，切换期间访问可能需要重试/);
   assert.equal(await page.locator('#collaboration-idle').isDisabled(),false);
   await page.locator('#collaboration-idle').fill('90');
   await page.locator('#collaboration-form').getByRole('button',{name:'保存协作设置'}).click();
   await page.getByText('协作设置已保存。',{exact:true}).waitFor();
   assert.equal(configurations[0].enabled,true);
   assert.match(await page.getByRole('region',{name:'自动协作'}).textContent(),/FUSE-T.*根据协议可见的句柄判断交还时机/);
+  assert.match(await page.getByRole('region',{name:'自动协作'}).textContent(),/接收新版本时自动重新挂载相同目录，切换期间访问可能需要重试/);
 });
 
 test('unsupported drivers retain the global settings link and disable branch configuration', async t => {

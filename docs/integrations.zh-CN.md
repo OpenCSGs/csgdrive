@@ -94,6 +94,8 @@ agentdrive integrate --protocol codex-app-server --workspace "$WORKSPACE" \
 
 Linux FUSE、macFUSE、FUSE-T 和 WinFsp 都可以使用自动协作。daemon 根据各驱动提供的句柄信息判断交还时机。FUSE 无法完整获取 `O_PATH` 引用；FUSE-T 的 NFS backend 无法完整统计应用保留的目录引用。Dashboard 在配置和状态旁持续展示这一统计范围。
 
+FUSE-T 接收新版本时自动重新挂载相同目录，切换期间访问可能需要重试。目录仍被程序占用时，后台等待占用解除后自动继续。
+
 设置页面的“自动协作”开关统一管理整个 AgentDrive，默认开启（`collaboration.enabled: true`），需要配置远程存储。在挂载点管理页面选择分支和本机目录，创建读写挂载即可使用，也可以选择其他 location 的分支。目录空闲时跟随已发布内容，首次修改时自动申请写权限；持有权限期间执行本地自动保存与远端发布。Agent 继续使用普通文件操作。
 
 挂载点管理中的“自动协作”面板可以调整所选挂载对应分支的空闲释放和事件释放。两种触发方式都等待驱动报告该分支本机挂载没有打开的句柄。面板展示全局状态和设置链接、当前分支、写权限持有者、句柄数量及统计范围、登记任务、本地保存、远端确认和等待切换的恢复分支。无法读取句柄数量时显示未知。自动刷新保留尚未提交的配置输入。
@@ -184,6 +186,8 @@ Dashboard 默认进入 `/archive`，导航位于“分支与版本”上方。�
 ## macOS FUSE-T
 
 安装 FUSE-T 1.2.9 和 pkg-config，使用 `make -j "$(sysctl -n hw.ncpu)" build FEATURES=macos-fuse-t` 编译。AgentDrive 使用本机 NFS 后端并关闭属性缓存，无需内核扩展。FUSE-T 的[许可条款](https://github.com/macos-fuse-t/fuse-t)要求商业使用或随商业软件分发时取得商业许可。
+
+NFS 后端不支持缓存失效通知。自动协作接收新版本时，会在相同路径重新创建原生挂载。目录仍被程序占用时，操作保留并自动重试，daemon 使用正常卸载。切换期间访问可能需要重试。
 
 macOS 可能生成 AppleDouble `._` 元数据文件，AgentDrive 会将这些文件作为普通文件保存。`branch_switch` 在一次调用中尝试正常卸载和重新挂载。运行中的 Agent、终端或 MCP stdio 代理可能占用目录。遇到 `MOUNT_BUSY`，退出相关进程或重启 Agent，通过目录之外的进程使用相同 request ID 重试 `branch_switch`。客户端允许时，将 MCP 代理的工作目录设置在挂载目录之外。
 

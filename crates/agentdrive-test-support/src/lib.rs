@@ -216,6 +216,7 @@ pub struct MemoryMountDriver {
     pub unmount_error: Mutex<Option<Error>>,
     pub busy: AtomicBool,
     pub automatic_collaboration_disabled: AtomicBool,
+    pub remount_on_rebind: AtomicBool,
     mount_pause: Mutex<
         Option<(
             tokio::sync::oneshot::Sender<()>,
@@ -238,6 +239,10 @@ impl MemoryMountDriver {
 }
 #[async_trait]
 impl MountDriver for MemoryMountDriver {
+    fn requires_remount_for_rebind(&self) -> bool {
+        self.remount_on_rebind.load(Ordering::SeqCst)
+    }
+
     fn supports_automatic_collaboration(&self) -> bool {
         !self.automatic_collaboration_disabled.load(Ordering::SeqCst)
     }
