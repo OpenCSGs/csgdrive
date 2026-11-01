@@ -14,7 +14,7 @@ const VISITOR: &str = "collaboration-visitor-token-with-at-least-32-bytes";
 const WORKER: &str = "collaboration-worker-token-with-at-least-32-bytes";
 
 struct Server {
-    _directory: tempfile::TempDir,
+    directory: tempfile::TempDir,
     task: tokio::task::JoinHandle<()>,
     http: reqwest::Client,
     base: String,
@@ -127,7 +127,7 @@ impl Server {
             axum::serve(listener, app).await.unwrap();
         });
         Self {
-            _directory: directory,
+            directory,
             task,
             http: reqwest::Client::new(),
             base: format!("http://{address}"),
@@ -149,7 +149,8 @@ impl Server {
             .bearer_auth(OWNER)
             .json(&json!({
                 "event":"attach","request_id":format!("attach-{automatic}"),"workspace":self.workspace,
-                "branch":self.branch,"automatic":automatic,"mount_path":"/project/shared",
+                "branch":self.branch,"automatic":automatic,
+                "mount_path":self.directory.path().join("config").join("mounts").join("shared"),
             }))
             .send()
             .await
@@ -380,7 +381,8 @@ async fn unsupported_drivers_reject_automatic_mounts_and_configuration() {
         .store(true, Ordering::SeqCst);
     let response = server.http.post(format!("{}/api/lifecycle", server.base)).bearer_auth(OWNER)
         .json(&json!({"event":"attach","request_id":"unsupported-automatic","workspace":server.workspace,
-            "branch":server.branch,"automatic":true,"mount_path":"/project/unsupported"}))
+            "branch":server.branch,"automatic":true,
+            "mount_path":server.directory.path().join("config").join("mounts").join("unsupported")}))
         .send().await.unwrap();
     assert!(response.status().is_client_error());
     assert_eq!(
