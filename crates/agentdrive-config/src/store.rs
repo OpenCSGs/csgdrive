@@ -1,4 +1,4 @@
-use crate::{CacheConfig, Config, RemoteConfig, StartupConfig};
+use crate::{CacheConfig, CollaborationConfig, Config, RemoteConfig, StartupConfig};
 use agentdrive_model::{Error, ErrorCode, Principal, Result};
 use arc_swap::ArcSwap;
 use parking_lot::Mutex;
@@ -20,6 +20,8 @@ pub struct RuntimeConfig {
     pub remote: Option<RemoteConfig>,
     pub cache: CacheConfig,
     pub allowed_origins: Vec<String>,
+    #[serde(default)]
+    pub collaboration: CollaborationConfig,
 }
 
 impl RuntimeConfig {

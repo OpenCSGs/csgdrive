@@ -237,6 +237,8 @@ fn ownership(
             },
             if reference.deleted {
                 BranchState::Deleted
+            } else if reference.write_available {
+                BranchState::Available
             } else if reference.write_stopped {
                 BranchState::Stopped
             } else {

@@ -39,6 +39,7 @@ fn reference(branch: &Branch) -> BranchRef {
         record_index: object_ref(ObjectKind::RecordIndex, b"history"),
         deleted: false,
         write_stopped: false,
+        write_available: false,
         metadata: Some(branch.into()),
     }
 }

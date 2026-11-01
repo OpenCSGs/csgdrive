@@ -35,6 +35,7 @@ pub struct Engine {
     pub runtime: Arc<Runtime>,
     pub(crate) revisions: Arc<RevisionService>,
     pub(crate) publisher: Arc<ReplicaService>,
+    pub(crate) collaboration: Arc<CollaborationService>,
 }
 
 impl Engine {
@@ -86,7 +87,6 @@ impl Engine {
             adapters.working,
             revisions.clone(),
         );
-        let mount_capability = adapters.mounts.capability().to_owned();
         let mounts = MountService::new(
             runtime.clone(),
             revisions.clone(),
@@ -118,9 +118,9 @@ impl Engine {
             revisions.clone(),
             operations.clone(),
             adapters.directories,
-            mount_capability,
             mounts.clone(),
             adapters.mounts,
+            config.live.clone(),
         );
         let ownership = OwnershipService::new(
             runtime.clone(),
@@ -128,7 +128,20 @@ impl Engine {
             publisher.clone(),
             operations.clone(),
         );
+        let collaboration = CollaborationService::new(
+            runtime.clone(),
+            revisions.clone(),
+            publisher.clone(),
+            operations.clone(),
+            mounts.clone(),
+            config.live.clone(),
+        );
+        let write_access: Arc<dyn WriteAccess> = collaboration.clone();
+        files.set_write_access(Arc::downgrade(&write_access));
+        mounts.set_write_access(Arc::downgrade(&write_access));
+        collaboration.initialize().await?;
         let services = Services {
+            collaboration: collaboration.clone(),
             workspace,
             revisions: versions,
             replica: publisher.clone(),
@@ -145,7 +158,12 @@ impl Engine {
             runtime,
             revisions,
             publisher,
+            collaboration,
         }))
+    }
+
+    pub async fn collaborate_due(&self) -> Result<()> {
+        self.collaboration.tick().await
     }
 
     /// Run independently of uploads so network delays cannot delay local autosaves.
@@ -190,6 +208,11 @@ impl Engine {
             if !self.runtime.state.sync_jobs(workspace.id).await?.is_empty()
                 && let Err(error) = self.publisher.drain(workspace.id, None).await
             {
+                if error.code == ErrorCode::StaleAuthority
+                    && let Err(recovery) = self.collaboration.publication_failed(workspace.id).await
+                {
+                    tracing::warn!(workspace = %workspace.id, %recovery, "collaboration recovery will be retried");
+                }
                 first_error.get_or_insert(error);
             }
         }

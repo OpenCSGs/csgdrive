@@ -14,6 +14,9 @@ use std::{
     sync::Arc,
 };
 
+#[path = "native_mount/collaboration.rs"]
+mod collaboration;
+
 fn user_entries(path: &std::path::Path) -> usize {
     std::fs::read_dir(path)
         .unwrap()
@@ -91,6 +94,7 @@ async fn native_mount_supports_file_io_durable_snapshots_and_read_only_history()
             .prepare(
                 context(),
                 PrepareMount {
+                    automatic: false,
                     workspace: workspace.id,
                     branch: None,
                     revision: None,
@@ -108,6 +112,7 @@ async fn native_mount_supports_file_io_durable_snapshots_and_read_only_history()
         CommandResult::Mount { binding } => binding,
         _ => panic!("wrong result"),
     };
+    assert!(driver.supports_automatic_collaboration());
     let operation_path = path.clone();
     let expected = tokio::task::spawn_blocking(move || {
         let path = operation_path;
@@ -184,6 +189,7 @@ async fn native_mount_supports_file_io_durable_snapshots_and_read_only_history()
             .prepare(
                 context(),
                 PrepareMount {
+                    automatic: false,
                     workspace: workspace.id,
                     branch: Some(binding.branch),
                     revision: Some(revision),
@@ -206,6 +212,185 @@ async fn native_mount_supports_file_io_durable_snapshots_and_read_only_history()
     })
     .await
     .unwrap();
+    let fork = success(
+        engine
+            .services
+            .revisions
+            .fork(
+                context(),
+                ForkBranch {
+                    workspace: workspace.id,
+                    source: Some(revision),
+                    source_branch: None,
+                    name: "recovery-native".into(),
+                },
+            )
+            .await
+            .unwrap(),
+    );
+    let recovery = local.branch(fork.branch.unwrap()).await.unwrap().unwrap();
+    let recovery_path = mounts.join("recovery");
+    let recovery_mount = success(
+        engine
+            .services
+            .mounts
+            .prepare(
+                context(),
+                PrepareMount {
+                    automatic: false,
+                    workspace: workspace.id,
+                    branch: Some(recovery.id),
+                    revision: None,
+                    path: recovery_path.clone(),
+                    access: AccessMode::ReadWrite,
+                    durability: Durability::Local,
+                },
+            )
+            .await
+            .unwrap(),
+    );
+    let Some(CommandResult::Mount {
+        binding: recovery_binding,
+    }) = recovery_mount.result
+    else {
+        panic!("missing recovery mount");
+    };
+    tokio::task::spawn_blocking(move || {
+        std::fs::write(
+            recovery_path.join("directory/Renamed"),
+            b"recovery branch contents",
+        )
+        .unwrap();
+        std::fs::write(recovery_path.join("recovery-only.txt"), b"new branch").unwrap();
+    })
+    .await
+    .unwrap();
+    success(
+        engine
+            .services
+            .mounts
+            .unmount(context(), recovery_binding.id, recovery_binding.generation)
+            .await
+            .unwrap(),
+    );
+    let mut next = binding.clone();
+    next.branch = recovery.id;
+    next.generation += 1;
+    next.branch_generation = Some(recovery.generation);
+    let directory_path = path.clone();
+    let directory = tokio::task::spawn_blocking(move || {
+        let mut entries = std::fs::read_dir(directory_path).unwrap();
+        entries.next().unwrap().unwrap();
+        entries
+    })
+    .await
+    .unwrap();
+    let directory_handles = driver.open_handles(&binding).await.unwrap();
+    eprintln!(
+        "open directory: {directory_handles} handles, scope {:?}",
+        driver.handle_tracking_scope()
+    );
+    if driver.handle_tracking_scope() == HandleTrackingScope::Native {
+        assert!(directory_handles > 0);
+    }
+    if directory_handles > 0 {
+        assert_eq!(
+            driver.rebind(&binding, &next).await.unwrap_err().code,
+            ErrorCode::MountBusy
+        );
+    }
+    tokio::task::spawn_blocking(move || drop(directory))
+        .await
+        .unwrap();
+    let file_path = path.join("directory/Renamed");
+    let file = tokio::task::spawn_blocking(move || {
+        let mut file = std::fs::File::open(file_path).unwrap();
+        file.read_exact(&mut [0]).unwrap();
+        file
+    })
+    .await
+    .unwrap();
+    let file_handles = driver.open_handles(&binding).await.unwrap();
+    eprintln!(
+        "open file: {file_handles} handles, scope {:?}",
+        driver.handle_tracking_scope()
+    );
+    if driver.handle_tracking_scope() == HandleTrackingScope::Native {
+        assert!(file_handles > 0);
+    }
+    if file_handles > 0 {
+        assert_eq!(
+            driver.rebind(&binding, &next).await.unwrap_err().code,
+            ErrorCode::MountBusy
+        );
+    }
+    tokio::task::spawn_blocking(move || drop(file))
+        .await
+        .unwrap();
+    for _ in 0..100 {
+        if driver.open_handles(&binding).await.unwrap() == 0 {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+    assert_eq!(driver.open_handles(&binding).await.unwrap(), 0);
+    local
+        .commit(LocalCommit {
+            mounts: vec![next.clone()],
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    driver.rebind(&binding, &next).await.unwrap();
+    driver.rebind(&binding, &next).await.unwrap();
+    assert_eq!(
+        driver.status(&next).await.unwrap(),
+        NativeMountState::Mounted
+    );
+    assert_eq!(
+        engine
+            .services
+            .files
+            .getattr(
+                &FsContext {
+                    mount: binding.id,
+                    generation: binding.generation,
+                    identity: local_identity(),
+                },
+                InodeId::ROOT,
+            )
+            .await
+            .unwrap_err()
+            .code,
+        ErrorCode::StaleBinding
+    );
+    tokio::task::spawn_blocking(move || {
+        let bytes = std::fs::read(path.join("directory/Renamed")).unwrap();
+        assert_eq!(bytes, b"recovery branch contents");
+        assert_eq!(
+            std::fs::read(path.join("recovery-only.txt")).unwrap(),
+            b"new branch"
+        );
+        std::fs::write(path.join("continued.txt"), b"after rebind").unwrap();
+    })
+    .await
+    .unwrap();
+    assert!(
+        local
+            .nodes(binding.branch)
+            .await
+            .unwrap()
+            .iter()
+            .all(|node| node.path.as_str() != "/continued.txt")
+    );
+    assert!(
+        local
+            .nodes(recovery.id)
+            .await
+            .unwrap()
+            .iter()
+            .any(|node| node.path.as_str() == "/continued.txt")
+    );
     for mount in local.mounts().await.unwrap() {
         let record = success(
             engine

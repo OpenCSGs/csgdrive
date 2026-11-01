@@ -104,7 +104,7 @@ async function render(updateTree = true) {
   const origin = snapshot.origins.find(value => value.branch === branch.id);
   const parent = snapshot.branches.find(value => value.id === origin?.source_branch);
   $('branch-meta').append(element('span','',origin?.workspace_root ? '工作区初始分支' : origin ? `来源 ${parent?.name || short(origin.source_branch)} · ${short(branch.base_revision)}` : '来源信息尚未同步'));
-  $('branch-meta').append(element('span','',branch.owner === status.location ? '本机分支' : `所属节点 ${short(branch.owner)}`));
+  $('branch-meta').append(element('span','',branch.state === 'available' ? '写权限可领取' : branch.owner === status.location ? '本机分支' : `所属节点 ${short(branch.owner)}`));
   if (branch.state === 'stopped') $('branch-meta').append(element('span', 'pill paused', '已停止写入'));
   const saveStatus = branchSaveStatus(branch, revisions);
   $('branch-state').textContent = saveStatus.text;

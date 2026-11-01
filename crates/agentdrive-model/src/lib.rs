@@ -1,5 +1,6 @@
 //! Portable identities, file semantics and durable format types.
 
+mod collaboration;
 mod entities;
 mod error;
 mod id;
@@ -7,6 +8,7 @@ mod object;
 mod operations;
 mod path;
 
+pub use collaboration::*;
 pub use entities::*;
 pub use error::*;
 pub use id::*;

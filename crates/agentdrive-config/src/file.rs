@@ -1,4 +1,4 @@
-use crate::{CacheConfig, RemoteConfig, RuntimeConfig};
+use crate::{CacheConfig, CollaborationConfig, RemoteConfig, RuntimeConfig};
 use agentdrive_model::*;
 use serde::{Deserialize, Serialize};
 use std::{
@@ -19,6 +19,8 @@ pub struct Config {
     pub allowed_origins: Vec<String>,
     #[serde(default, skip_serializing_if = "is_default_cache")]
     pub cache: CacheConfig,
+    #[serde(default)]
+    pub collaboration: CollaborationConfig,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -66,6 +68,7 @@ impl Config {
             remote: self.remote.clone(),
             cache: self.cache.clone(),
             allowed_origins: self.allowed_origins.clone(),
+            collaboration: self.collaboration.clone(),
         }
     }
     pub(crate) fn with_runtime(startup: StartupConfig, runtime: RuntimeConfig) -> Self {
@@ -74,6 +77,7 @@ impl Config {
             startup,
             cache: runtime.cache,
             allowed_origins: runtime.allowed_origins,
+            collaboration: runtime.collaboration,
         }
     }
     fn validate(&self) -> Result<()> {
@@ -189,6 +193,7 @@ pub fn initialize(directory: &Path, listen: SocketAddr) -> Result<PathBuf> {
         },
         allowed_origins: vec![],
         cache: CacheConfig::default(),
+        collaboration: CollaborationConfig::default(),
     };
     create_file(&config_path, &serde_json::to_vec_pretty(&config)?)?;
     Ok(config_path)

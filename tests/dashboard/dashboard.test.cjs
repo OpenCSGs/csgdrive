@@ -46,7 +46,7 @@ function fixture() {
   return {
     branches,
     status:{workspace:{id:'workspace', name:'Review workspace'}, location:'local', selected_branch:'feature',
-      branches, mounts:[], capabilities:{remote_configured:false}, pending_jobs:0},
+      branches, mounts:[], capabilities:{remote_configured:false,handle_tracking_scope:'native',automatic_collaboration:true,collaboration_enabled:true}, pending_jobs:0},
     revisions,
     origins:[main, child, empty].map(branch => ({branch:branch.id, source_branch:branch.source_branch,
       revision:branch.base_revision, revision_available:true, workspace_root:branch.id === 'main'})),
@@ -69,7 +69,7 @@ function relationshipFixture(data) {
 }
 async function open(t, data = fixture(), target = '/dashboard') {
   const page = await browser.newPage({viewport:{width:1440, height:1000}});
-  const errors = [], requests = [], commands = [];
+  const errors = [], requests = [], commands = [], configurations = [];
   page.on('pageerror', error => errors.push(error.message));
   t.after(async () => { await page.close(); assert.deepEqual(errors, []); });
   await page.addInitScript(() => sessionStorage.setItem('agentdrive-token', 'test-token'));
@@ -81,6 +81,12 @@ async function open(t, data = fixture(), target = '/dashboard') {
       commands.push({tool, input});
       if (data.command) return data.command(route, tool, input);
       return route.fulfill({status:403, json:{error:{message:'Command is unavailable'}}});
+    } else if (url.pathname === '/api/collaboration') {
+      const input = route.request().postDataJSON(); configurations.push(input);
+      if (data.configure) return data.configure(route, input);
+      return route.fulfill({status:403,json:{error:{message:'Configuration is unavailable'}}});
+    } else if (url.pathname === '/api/workspaces/workspace/collaboration') {
+      return route.fulfill({json:data.collaboration || []});
     } else if (url.pathname === '/api/workspaces') {
       await route.fulfill({json:[{id:'workspace', name:'Review workspace'}]});
     } else if (url.pathname === '/api/workspaces/workspace/archive') {
@@ -119,7 +125,7 @@ async function open(t, data = fixture(), target = '/dashboard') {
   await page.goto(endpoint+target);
   await page.locator(target.startsWith('/archive') ? '.archive-branch[data-branch="feature"]' : target.startsWith('/mounts') ? '#mount-create-form' : target.startsWith('/branches') ? '#branch-create-form' : '#branch-feature').waitFor();
   await page.waitForFunction(() => !document.querySelector('#refresh').disabled);
-  return {page, data, requests, commands, branch:data.status.branches[1]};
+  return {page, data, requests, commands, configurations, branch:data.status.branches[1]};
 }
 async function refresh(page) {
   const response = page.waitForResponse(url => url.url().endsWith('/api/workspaces/workspace'));
@@ -133,7 +139,7 @@ async function openRevision(page, id = 'child-autosave') {
 }
 function differenceReads(requests) { return requests.filter(url => /\/(changes|diff)$/.test(url.pathname)); }
 
-test('settings configure OpenCSG credentials, preserve blank tokens and isolate storage forms', async t => {
+test('settings persist global collaboration and remote credentials and load external changes', async t => {
   const page = await browser.newPage({viewport:{width:1440,height:1100}});
   const errors = [], updates = [];
   page.on('pageerror', error => errors.push(error.message));
@@ -155,6 +161,7 @@ test('settings configure OpenCSG credentials, preserve blank tokens and isolate 
   });
   await page.goto(endpoint+'/settings');
   await page.locator('#settings-form').waitFor();
+  assert.equal(await page.locator('#settings-collaboration-enabled').isChecked(),true);
   await page.locator('#storage-mode').selectOption('opencsg');
   assert.equal(await page.locator('#s3-fields').isVisible(), false);
   assert.equal(await page.locator('#s3-bucket').isDisabled(), true);
@@ -171,10 +178,14 @@ test('settings configure OpenCSG credentials, preserve blank tokens and isolate 
   assert.equal(updates[0].runtime.remote.backend, 'opencsg');
   assert.equal(updates[0].runtime.remote.token, 'new-private-token');
   assert.equal(updates[0].runtime.remote.endpoint, 'https://opencsg-stg.com');
+  assert.deepEqual(updates[0].runtime.collaboration,{enabled:true});
   assert.equal(await page.locator('#opencsg-token').inputValue(), '');
+  await page.locator('#settings-collaboration-enabled').uncheck();
   await page.locator('#cache-max').fill('3'); await save();
   assert.equal(updates[1].runtime.remote.token, '');
   assert.equal(updates[1].runtime.cache.max_bytes, 3221225472);
+  assert.deepEqual(updates[1].runtime.collaboration,{enabled:false});
+  assert.equal(await page.locator('#settings-collaboration-enabled').isChecked(),false);
   await page.locator('#opencsg-endpoint').fill('https://another.example.com');
   assert.equal(await page.locator('#opencsg-token').evaluate(input => input.required), true);
   await page.locator('#opencsg-token').fill('replacement-token'); await save();
@@ -185,8 +196,13 @@ test('settings configure OpenCSG credentials, preserve blank tokens and isolate 
   await page.locator('#storage-mode').selectOption('s3');
   await page.locator('#s3-bucket').fill('bucket'); await save();
   assert.equal(updates[4].runtime.remote.backend, 's3');
+  assert.deepEqual(updates[4].runtime.collaboration,{enabled:false});
   assert.equal('token' in updates[4].runtime.remote, false);
   assert.equal(await page.locator('#opencsg-token').isDisabled(), true);
+  settings.runtime.collaboration.enabled = true; settings.revision = 'external-file-edit';
+  await page.locator('#settings-reload').click();
+  await page.waitForFunction(() => document.querySelector('#settings-collaboration-enabled').checked);
+  assert.match(await page.locator('#settings-version').textContent(),/external-fil/);
 });
 
 test('history contains only revisions authored on the selected branch, including an empty child', async t => {
@@ -968,4 +984,171 @@ test('history and archive use daemon synchronization state even when no jobs are
   assert.equal(await page.locator('#sync-status').textContent(),'等待远端确认');
   data.status.synchronization.state='confirmed'; await refresh(page);
   assert.equal(await page.locator('#sync-status').textContent(),'已同步');
+});
+
+function collaborativeFixture() {
+  const data = fixture();
+  data.status.capabilities.remote_configured = true;
+  data.status.capabilities.handle_tracking_scope = 'native';
+  data.status.mounts = [{id:'shared-mount',workspace:'workspace',branch:'feature',path:'/workspace/shared',
+    access:'read_write',state:'ready',generation:7,principal:'owner'}];
+  data.collaboration = [{workspace:'workspace',branch:'feature',mounts:['shared-mount'],
+    settings:{enabled:true,idle_timeout_secs:60,release_on_event:true},phase:'writing',writer:'local',authority_epoch:5,
+    open_handles:2,active_executions:1,local_saved:true,remote_confirmed:false,recovery_branch:null,error:null}];
+  return data;
+}
+
+test('automatic mount creation selects another location branch without acquiring ownership in the browser', async t => {
+  const data = fixture(); data.status.capabilities.remote_configured = true;
+  const remote = {...data.branches[0],id:'remote-shared',name:'shared',owner:'other-location',local:false,local_available:false,state:'available'};
+  data.branches.push(remote);
+  data.command = async (route, tool, input) => route.fulfill({json:completedOperation(tool,input,{kind:'mount',binding:{id:'new-mount',...input.request,generation:1,state:'ready'}},true)});
+  const {page,commands} = await open(t,data,'/mounts');
+  assert.equal(await page.locator('#mounts-branch option[value="remote-shared"]').count(),1);
+  assert.equal(await page.locator('#mounts-automatic').count(),0);
+  await page.locator('#mounts-branch').selectOption('remote-shared');
+  await page.locator('#mounts-path').fill('/workspace/another-location');
+  await page.locator('#mount-create-form').getByRole('button',{name:'创建挂载点'}).click();
+  await page.waitForFunction(() => document.querySelector('.command-status').textContent === '操作已完成');
+  assert.equal(commands.length,1);
+  assert.equal(commands[0].tool,'mount_prepare');
+  assert.equal(commands[0].input.request.automatic,undefined);
+  assert.equal(commands[0].input.request.branch,'remote-shared');
+  assert.equal(commands[0].input.request.access,'read_write');
+});
+
+test('automatic mount creation requires configured remote storage', async t => {
+  const {page} = await open(t,fixture(),'/mounts');
+  assert.equal(await page.locator('#collaboration-global-state').textContent(),'全局已开启');
+  assert.match(await page.getByRole('region',{name:'自动协作'}).textContent(),/配置远程存储后/);
+  assert.equal(await page.getByRole('link',{name:'前往设置管理全局开关'}).getAttribute('href'),'/settings');
+});
+
+test('collaboration settings preserve edits during refresh and submit the observed binding generation', async t => {
+  const data = collaborativeFixture();
+  data.configure = async (route, input) => {
+    data.collaboration[0].settings = {enabled:input.enabled,idle_timeout_secs:input.idle_timeout_secs,release_on_event:input.release_on_event};
+    return route.fulfill({json:data.collaboration[0]});
+  };
+  const {page,configurations} = await open(t,data,'/mounts');
+  await page.getByText('持有写权限',{exact:true}).waitFor();
+  await page.locator('#collaboration-idle').fill('180');
+  await page.locator('#collaboration-events').uncheck();
+  data.collaboration[0].open_handles = 3;
+  await refresh(page);
+  assert.equal(await page.locator('#collaboration-idle').inputValue(),'180');
+  assert.equal(await page.locator('#collaboration-events').isChecked(),false);
+  assert.match(await page.locator('.collaboration-state').textContent(),/未关闭句柄3/);
+  await page.locator('#collaboration-form').getByRole('button',{name:'保存协作设置'}).click();
+  await page.getByText('协作设置已保存。',{exact:true}).waitFor();
+  assert.deepEqual(configurations,[{mount:'shared-mount',expected_binding_generation:7,enabled:true,idle_timeout_secs:180,release_on_event:false}]);
+});
+
+test('collaboration shows pending handles and recovery branch without reporting the mount switch as complete', async t => {
+  const data = collaborativeFixture();
+  data.collaboration[0].phase = 'switching'; data.collaboration[0].recovery_branch = 'recovery-branch';
+  data.collaboration[0].remote_confirmed = true;
+  const {page} = await open(t,data,'/mounts');
+  await page.getByText('等待切换恢复分支',{exact:true}).waitFor();
+  const panel = page.getByRole('region',{name:'自动协作'});
+  assert.match(await panel.textContent(),/当前分支feature/);
+  assert.match(await panel.textContent(),/未关闭句柄2/);
+  assert.match(await panel.textContent(),/原分支写权限已失效/);
+  assert.equal(await panel.getByRole('link',{name:'recovery-branch'}).getAttribute('href'),'/dashboard?workspace=workspace&branch=recovery-branch');
+  data.collaboration[0].phase = 'waiting_for_handles';
+  await refresh(page);
+  await page.getByText('等待句柄关闭',{exact:true}).waitFor();
+});
+
+test('available branches display unoccupied write authority in the relationship list', async t => {
+  const data = collaborativeFixture();
+  data.branches[1].state = 'available';
+  data.collaboration[0].phase = 'following'; data.collaboration[0].writer = null;
+  const {page} = await open(t,data,'/mounts');
+  await page.getByText('跟随远端更新',{exact:true}).waitFor();
+  const row = page.locator('#relationship-list tr[data-branch="feature"]');
+  assert.match(await row.textContent(),/写权限可领取/);
+  assert.match(await row.textContent(),/最近持有权限的 location/);
+});
+
+test('collaboration does not present unknown transition authority as available', async t => {
+  const data = collaborativeFixture(); data.branches[1].state = 'available';
+  data.collaboration[0].phase = 'saving'; data.collaboration[0].writer = null;
+  const {page} = await open(t,data,'/mounts');
+  await page.getByText('等待权限确认',{exact:true}).waitFor();
+  assert.equal(await page.getByRole('region',{name:'自动协作'}).getByText('可接续',{exact:true}).count(),0);
+});
+
+test('collaboration does not replace an in-flight configuration with background refresh results', async t => {
+  const data = collaborativeFixture(); let finish;
+  data.configure = async (route, input) => {
+    await new Promise(resolve => { finish = resolve; });
+    data.collaboration[0].settings.idle_timeout_secs = input.idle_timeout_secs;
+    return route.fulfill({json:data.collaboration[0]});
+  };
+  const {page} = await open(t,data,'/mounts');
+  await page.getByText('持有写权限',{exact:true}).waitFor();
+  await page.locator('#collaboration-idle').fill('120');
+  await page.locator('#collaboration-form').getByRole('button',{name:'保存协作设置'}).click();
+  await page.getByText('正在保存设置…',{exact:true}).waitFor();
+  await refresh(page);
+  assert.equal(await page.locator('#collaboration-idle').inputValue(),'120');
+  finish();
+  await page.getByText('协作设置已保存。',{exact:true}).waitFor();
+  assert.equal(await page.locator('#collaboration-idle').isDisabled(),false);
+});
+
+test('collaboration distinguishes unknown handle counts from a closed mount', async t => {
+  const data = collaborativeFixture();
+  data.collaboration[0].open_handles = null;
+  data.collaboration[0].error = {message:'Native mount is unavailable'};
+  const {page} = await open(t,data,'/mounts');
+  await page.getByText('Native mount is unavailable',{exact:true}).waitFor();
+  assert.match(await page.locator('.collaboration-state').textContent(),/未关闭句柄未知/);
+});
+
+test('collaboration supports protocol handle tracking with a persistent scope explanation', async t => {
+  const data = collaborativeFixture(); data.status.capabilities.handle_tracking_scope = 'protocol';
+  data.configure = async (route, input) => {
+    data.collaboration[0].settings.enabled = input.enabled;
+    return route.fulfill({json:data.collaboration[0]});
+  };
+  const {page,configurations} = await open(t,data,'/mounts');
+  await page.getByText('文件系统协议报告的句柄',{exact:true}).waitFor();
+  assert.match(await page.getByRole('region',{name:'自动协作'}).textContent(),/FUSE-T.*根据协议可见的句柄判断交还时机/);
+  assert.equal(await page.locator('#collaboration-idle').isDisabled(),false);
+  await page.locator('#collaboration-idle').fill('90');
+  await page.locator('#collaboration-form').getByRole('button',{name:'保存协作设置'}).click();
+  await page.getByText('协作设置已保存。',{exact:true}).waitFor();
+  assert.equal(configurations[0].enabled,true);
+  assert.match(await page.getByRole('region',{name:'自动协作'}).textContent(),/FUSE-T.*根据协议可见的句柄判断交还时机/);
+});
+
+test('unsupported drivers retain the global settings link and disable branch configuration', async t => {
+  const data = collaborativeFixture(); data.status.capabilities.automatic_collaboration = false;
+  const {page} = await open(t,data,'/mounts');
+  await page.getByText('持有写权限',{exact:true}).waitFor();
+  assert.equal(await page.locator('#collaboration-idle').isDisabled(),true);
+  assert.equal(await page.locator('#collaboration-form').getByRole('button',{name:'保存协作设置'}).isDisabled(),true);
+  assert.equal(await page.getByRole('link',{name:'前往设置管理全局开关'}).getAttribute('href'),'/settings');
+});
+
+test('global collaboration disabled keeps branch timing editable without enabling the coordinator', async t => {
+  const data = collaborativeFixture(); data.status.capabilities.collaboration_enabled = false;
+  data.collaboration[0].settings.enabled = false; data.collaboration[0].phase = 'disabled';
+  const remote = {...data.branches[0],id:'remote-shared',name:'shared',owner:'other-location',local:false,local_available:false,state:'available'};
+  data.branches.push(remote);
+  data.configure = async (route,input) => {
+    data.collaboration[0].settings.idle_timeout_secs = input.idle_timeout_secs;
+    return route.fulfill({json:data.collaboration[0]});
+  };
+  const {page,configurations} = await open(t,data,'/mounts');
+  await page.getByText('自动协作未启用',{exact:true}).waitFor();
+  assert.equal(await page.locator('#collaboration-global-state').textContent(),'全局已关闭');
+  assert.equal(await page.locator('#collaboration-enabled').count(),0);
+  assert.equal(await page.locator('#mounts-branch option[value="remote-shared"]').count(),0);
+  await page.locator('#collaboration-idle').fill('120');
+  await page.locator('#collaboration-form').getByRole('button',{name:'保存协作设置'}).click();
+  await page.getByText('协作设置已保存。',{exact:true}).waitFor();
+  assert.equal(configurations[0].enabled,false);
 });

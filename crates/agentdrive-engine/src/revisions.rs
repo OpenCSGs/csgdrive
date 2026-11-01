@@ -69,6 +69,7 @@ impl RevisionService {
 
     pub(crate) async fn autosave(&self, id: BranchId, actor: Principal) -> Result<()> {
         let _gate = self.runtime.lock_branch(id).await;
+        self.runtime.check_mutation(id)?;
         let _protection = self.runtime.objects.read().await;
         let branch = self.runtime.branch(id).await?;
         let guard = BranchGuard::from(&branch);
@@ -334,6 +335,42 @@ impl RevisionService {
         Ok(operation)
     }
 
+    /// Preserve accepted bytes after authority loss, without publishing the stopped branch.
+    /// The caller holds the branch and object barriers and prevents new file mutations.
+    pub(crate) async fn capture_recovery_locked(&self, branch: &Branch) -> Result<Branch> {
+        if branch.saved_seq == branch.mutation_seq {
+            return Ok(branch.clone());
+        }
+        let captured = self.snapshots.capture(branch).await?;
+        let mut saved = branch.clone();
+        saved.working_root = captured.root;
+        saved.saved_seq = captured.captured_seq;
+        saved.dirty = saved.working_root
+            != self
+                .trees
+                .revision(saved.workspace, saved.formal_head)
+                .await?
+                .root;
+        self.runtime
+            .state
+            .commit(LocalCommit {
+                guards: vec![BranchGuard::from(branch)],
+                branches: vec![saved.clone()],
+                checkpointed_branches: vec![branch.id],
+                node_changes: captured
+                    .nodes
+                    .into_iter()
+                    .map(|node| NodeChange::Put {
+                        branch: branch.id,
+                        node,
+                    })
+                    .collect(),
+                ..Default::default()
+            })
+            .await?;
+        Ok(saved)
+    }
+
     pub(crate) async fn preserve_working_locked(
         &self,
         branch: &Branch,
@@ -486,6 +523,7 @@ impl RevisionWriter for RevisionService {
         let durability = request.durability;
         let operation = {
             let _gate = self.runtime.lock_branch(request.guard.branch).await;
+            self.runtime.check_mutation(request.guard.branch)?;
             let _protection = self.runtime.objects.read().await;
             self.save_locked(context, request).await?
         };
@@ -503,6 +541,7 @@ impl DurabilityService for RevisionService {
     ) -> Result<DurabilityReceipt> {
         let (record, sequence) = {
             let _gate = self.runtime.lock_branch(branch).await;
+            self.runtime.check_mutation(branch)?;
             let _protection = self.runtime.objects.read().await;
             let mut branch = self.runtime.branch(branch).await?;
             branch.check_write(self.runtime.location, branch.authority_epoch)?;
@@ -737,6 +776,7 @@ impl RevisionApi for VersionService {
                     )
                     .await?;
                 let _gate = runtime.lock_branch(id).await;
+                runtime.check_mutation(id)?;
                 let _protection = runtime.objects.read().await;
                 let branch = runtime.branch(id).await?;
                 let branch = self

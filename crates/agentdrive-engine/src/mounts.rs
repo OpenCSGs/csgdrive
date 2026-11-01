@@ -2,7 +2,9 @@ use crate::{FileService, OperationService, RevisionService, Runtime, runtime::ch
 use agentdrive_model::*;
 use agentdrive_ports::*;
 use async_trait::async_trait;
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock, Weak};
+
+mod collaboration;
 
 pub struct MountService {
     runtime: Arc<Runtime>,
@@ -11,6 +13,7 @@ pub struct MountService {
     files: Arc<FileService>,
     driver: Arc<dyn MountDriver>,
     identity: LocalIdentity,
+    write_access: OnceLock<Weak<dyn WriteAccess>>,
 }
 
 impl std::fmt::Debug for MountService {
@@ -37,7 +40,36 @@ impl MountService {
             files,
             driver,
             identity,
+            write_access: OnceLock::new(),
         })
+    }
+
+    pub(crate) fn set_write_access(&self, access: Weak<dyn WriteAccess>) {
+        let _ = self.write_access.set(access);
+    }
+
+    async fn check_mount_access(&self, branch: &Branch) -> Result<()> {
+        if self
+            .write_access
+            .get()
+            .and_then(Weak::upgrade)
+            .is_some_and(|access| access.automatic_enabled())
+            && self
+                .runtime
+                .state
+                .collaboration(branch.id)
+                .await?
+                .is_some_and(|record| record.settings.enabled)
+        {
+            if branch.protected || branch.state == BranchState::Deleted {
+                return Err(Error::new(
+                    ErrorCode::ReadOnly,
+                    "branch cannot accept collaborative changes",
+                ));
+            }
+            return Ok(());
+        }
+        branch.check_write(self.runtime.location, branch.authority_epoch)
     }
 
     pub(crate) async fn plan(
@@ -74,6 +106,7 @@ impl MountService {
             ));
         }
         let new = MountBinding {
+            branch_generation: Some(generation),
             id: MountId::new(),
             workspace: request.workspace,
             branch,
@@ -215,6 +248,7 @@ impl MountService {
 
     async fn pause_old(&self, old: &MountBinding) -> Result<()> {
         let _gate = self.runtime.lock_branch(old.branch).await;
+        self.runtime.check_mutation(old.branch)?;
         let mut current = self
             .runtime
             .state
@@ -363,10 +397,9 @@ impl MountService {
                     }
                     let branch = self.runtime.branch(selection.branch).await?;
                     branch.check_write(self.runtime.location, branch.authority_epoch)?;
-                    if new
-                        .as_ref()
-                        .is_some_and(|new| new.generation != branch.generation)
-                    {
+                    if new.as_ref().is_some_and(|new| {
+                        new.branch_generation.unwrap_or(new.generation) != branch.generation
+                    }) {
                         return Err(Error::new(
                             ErrorCode::TargetMoved,
                             "target branch generation changed",
@@ -396,9 +429,14 @@ impl MountService {
                     Ok(operation.clone())
                 }
                 PendingAction::MountChange { old, new } => {
+                    if let (Some(old), Some(new)) = (&old, &new)
+                        && old.id == new.id
+                    {
+                        return self.execute_rebind(operation.clone(), old, new).await;
+                    }
                     if let Some(new) = &new {
                         let branch = self.runtime.branch(new.branch).await?;
-                        if branch.generation != new.generation
+                        if branch.generation != new.branch_generation.unwrap_or(new.generation)
                             || self
                                 .runtime
                                 .state
@@ -415,7 +453,7 @@ impl MountService {
                             ));
                         }
                         if new.access == AccessMode::ReadWrite {
-                            branch.check_write(self.runtime.location, branch.authority_epoch)?;
+                            self.check_mount_access(&branch).await?;
                         }
                         if self.runtime.state.mounts().await?.iter().any(|mount| {
                             mount.state != MountState::Released
@@ -472,7 +510,8 @@ impl MountService {
                     if let Some(old) = mount {
                         let branch = self.runtime.branch(target.branch).await?;
                         let mut new = old;
-                        new.generation = branch.generation;
+                        new.generation = crate::runtime::increment(new.generation)?;
+                        new.branch_generation = Some(branch.generation);
                         new.state = MountState::Preparing;
                         self.install_new(&new).await?;
                     }
@@ -527,7 +566,7 @@ impl MountService {
                     }) = &current.pending
                 {
                     let branch = self.runtime.branch(old.branch).await?;
-                    if branch.generation == old.generation
+                    if branch.generation == old.branch_generation.unwrap_or(old.generation)
                         && branch.state == BranchState::Writable
                         && let Err(restore_error) = self.install_new(old).await
                     {
@@ -570,6 +609,7 @@ impl MountService {
         merge: Option<MergeId>,
     ) -> Result<OperationRecord> {
         let _gate = self.runtime.lock_branch(target.branch).await;
+        self.runtime.check_mutation(target.branch)?;
         let _protection = self.runtime.objects.read().await;
         let branch = self.runtime.branch(target.branch).await?;
         check_guard(&branch, &target)?;
@@ -711,6 +751,7 @@ impl MountApi for MountService {
                     .plan(
                         &operation.operation.principal,
                         &PrepareMount {
+                            automatic: false,
                             workspace: request.workspace,
                             branch: Some(request.branch),
                             revision: None,
@@ -727,6 +768,7 @@ impl MountApi for MountService {
             };
             {
                 let _gate = self.runtime.lock_branch(previous).await;
+                self.runtime.check_mutation(previous)?;
                 let _protection = self.runtime.objects.read().await;
                 let previous_branch = self.runtime.branch(previous).await?;
                 self.revisions
@@ -770,12 +812,38 @@ impl MountApi for MountService {
         context: RequestContext,
         mut request: PrepareMount,
     ) -> Result<OperationRecord> {
-        let _lifecycle = self.runtime.lifecycle.lock().await;
         request.path = self.driver.normalize_path(&request.path).await?;
         self.revisions
             .publisher
             .load_workspace(&context.principal, request.workspace)
             .await?;
+        let write_access = self.write_access.get().and_then(Weak::upgrade);
+        let automatic = request.automatic
+            || (request.access == AccessMode::ReadWrite
+                && request.revision.is_none()
+                && write_access
+                    .as_ref()
+                    .is_some_and(|access| access.automatic_enabled()));
+        let automatic_branch = if automatic {
+            if request.access != AccessMode::ReadWrite || request.revision.is_some() {
+                return Err(Error::invalid(
+                    "automatic collaboration requires a writable working branch",
+                ));
+            }
+            let branch = self.automatic_mount_branch(&request).await?;
+            let access = write_access.ok_or_else(|| {
+                Error::new(
+                    ErrorCode::Unavailable,
+                    "automatic collaboration is not configured",
+                )
+            })?;
+            access
+                .prepare_mount(&context.principal, request.workspace, branch)
+                .await?;
+            Some(branch)
+        } else {
+            None
+        };
         let permission = if request.access == AccessMode::ReadWrite {
             Permission::Write
         } else {
@@ -792,6 +860,7 @@ impl MountApi for MountService {
         if request.revision.is_some() && request.access == AccessMode::ReadWrite {
             return Err(Error::invalid("revision mounts must be read-only"));
         }
+        let _lifecycle = self.runtime.lifecycle.lock().await;
         let operation = match self
             .operations
             .start(
@@ -845,7 +914,7 @@ impl MountApi for MountService {
                     "mount path belongs to another workspace",
                 ));
             }
-            let branch = match request.branch {
+            let branch = match automatic_branch.or(request.branch) {
                 Some(id) => self.runtime.branch(id).await?,
                 None if request.access == AccessMode::ReadWrite => {
                     self.location_branch(&operation.operation.principal, request.workspace)
@@ -875,7 +944,7 @@ impl MountApi for MountService {
                 )
                 .await?;
             if request.access == AccessMode::ReadWrite {
-                branch.check_write(self.runtime.location, branch.authority_epoch)?;
+                self.check_mount_access(&branch).await?;
             }
             if let Some(revision) = request.revision {
                 self.revisions
@@ -884,6 +953,21 @@ impl MountApi for MountService {
                     .await?;
             }
             request.branch = Some(branch.id);
+            let selections = if automatic_branch.is_some()
+                && self
+                    .runtime
+                    .state
+                    .selected_branch(request.workspace)
+                    .await?
+                    .is_none()
+            {
+                vec![WorkspaceSelection {
+                    workspace: request.workspace,
+                    branch: branch.id,
+                }]
+            } else {
+                Vec::new()
+            };
             if let Some(old) = old {
                 if old.branch != branch.id
                     || old.revision != request.revision
@@ -901,7 +985,7 @@ impl MountApi for MountService {
                         "mount belongs to another principal",
                     ));
                 }
-                if old.generation != branch.generation {
+                if old.branch_generation.unwrap_or(old.generation) != branch.generation {
                     return Err(Error::new(
                         ErrorCode::StaleBinding,
                         "mount generation changed",
@@ -918,6 +1002,7 @@ impl MountApi for MountService {
                     .state
                     .commit(LocalCommit {
                         operations: vec![record.clone()],
+                        selections,
                         ..Default::default()
                     })
                     .await?;
@@ -938,6 +1023,7 @@ impl MountApi for MountService {
                 .state
                 .commit(LocalCommit {
                     operations: vec![record.clone()],
+                    selections,
                     ..Default::default()
                 })
                 .await?;
@@ -998,9 +1084,10 @@ impl MountApi for MountService {
             }
             let record = {
                 let _gate = self.runtime.lock_branch(mount.branch).await;
+                self.runtime.check_mutation(mount.branch)?;
                 let _protection = self.runtime.objects.read().await;
                 let branch = self.runtime.branch(mount.branch).await?;
-                if branch.generation != mount.generation {
+                if branch.generation != mount.branch_generation.unwrap_or(mount.generation) {
                     return Err(Error::new(
                         ErrorCode::StaleBinding,
                         "branch generation changed",
@@ -1185,6 +1272,7 @@ impl RevisionTransition for MountService {
         let _lifecycle = self.runtime.lifecycle.lock().await;
         let record = {
             let _gate = self.runtime.lock_branch(target.branch).await;
+            self.runtime.check_mutation(target.branch)?;
             let branch = self.runtime.branch(target.branch).await?;
             check_guard(&branch, &target)?;
             self.revisions

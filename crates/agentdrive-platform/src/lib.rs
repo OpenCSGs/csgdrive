@@ -1,5 +1,18 @@
 //! Native mounting and confined host directories.
+#[cfg(any(
+    target_os = "linux",
+    windows,
+    test,
+    all(target_os = "macos", feature = "macos-mount")
+))]
+mod binding;
 mod directories;
+#[cfg(any(
+    target_os = "linux",
+    test,
+    all(target_os = "macos", feature = "macos-mount")
+))]
+mod inodes;
 #[cfg(any(windows, test))]
 mod mount_point;
 mod native;

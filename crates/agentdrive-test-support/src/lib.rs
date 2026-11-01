@@ -17,14 +17,37 @@ use tokio::io::AsyncReadExt;
 #[derive(Debug, Default)]
 pub struct ManualClock {
     milliseconds: AtomicU64,
+    now_pause: Mutex<
+        Option<(
+            tokio::sync::oneshot::Sender<()>,
+            std::sync::mpsc::Receiver<()>,
+        )>,
+    >,
 }
 impl ManualClock {
     pub fn advance(&self, milliseconds: u64) {
         self.milliseconds.fetch_add(milliseconds, Ordering::SeqCst);
     }
+
+    pub fn pause_next_now_ns(
+        &self,
+    ) -> (
+        tokio::sync::oneshot::Receiver<()>,
+        std::sync::mpsc::Sender<()>,
+    ) {
+        let (started, waiting) = tokio::sync::oneshot::channel();
+        let (resume, paused) = std::sync::mpsc::channel();
+        *self.now_pause.lock() = Some((started, paused));
+        (waiting, resume)
+    }
 }
 impl Clock for ManualClock {
     fn now_ns(&self) -> i64 {
+        let pause = self.now_pause.lock().take();
+        if let Some((started, paused)) = pause {
+            let _ = started.send(());
+            let _ = paused.recv();
+        }
         1_700_000_000_000_000_000 + self.monotonic_ms() as i64 * 1_000_000
     }
     fn monotonic_ms(&self) -> u64 {
@@ -39,6 +62,12 @@ pub struct MemoryRemote {
     available: AtomicBool,
     lose_response: AtomicBool,
     lose_branch_response: AtomicBool,
+    branch_cas_pause: Mutex<
+        Option<(
+            tokio::sync::oneshot::Sender<()>,
+            tokio::sync::oneshot::Receiver<()>,
+        )>,
+    >,
 }
 impl Default for MemoryRemote {
     fn default() -> Self {
@@ -48,10 +77,22 @@ impl Default for MemoryRemote {
             available: AtomicBool::new(true),
             lose_response: AtomicBool::new(false),
             lose_branch_response: AtomicBool::new(false),
+            branch_cas_pause: Mutex::new(None),
         }
     }
 }
 impl MemoryRemote {
+    pub fn pause_next_branch_cas(
+        &self,
+    ) -> (
+        tokio::sync::oneshot::Receiver<()>,
+        tokio::sync::oneshot::Sender<()>,
+    ) {
+        let (started, waiting) = tokio::sync::oneshot::channel();
+        let (resume, paused) = tokio::sync::oneshot::channel();
+        *self.branch_cas_pause.lock() = Some((started, paused));
+        (waiting, resume)
+    }
     pub fn set_available(&self, available: bool) {
         self.available.store(available, Ordering::SeqCst);
     }
@@ -118,6 +159,15 @@ impl RemoteRefStore for MemoryRemote {
     }
     async fn compare_exchange(&self, update: RefUpdate) -> Result<CasOutcome> {
         self.check()?;
+        let pause = if matches!(update.key, RefKey::Branch { .. }) {
+            self.branch_cas_pause.lock().take()
+        } else {
+            None
+        };
+        if let Some((started, paused)) = pause {
+            let _ = started.send(());
+            let _ = paused.await;
+        }
         let mut refs = self.refs.lock();
         let current = refs
             .get(&update.key)
@@ -165,6 +215,7 @@ pub struct MemoryMountDriver {
     pub fail_mount: AtomicBool,
     pub unmount_error: Mutex<Option<Error>>,
     pub busy: AtomicBool,
+    pub automatic_collaboration_disabled: AtomicBool,
     mount_pause: Mutex<
         Option<(
             tokio::sync::oneshot::Sender<()>,
@@ -187,6 +238,46 @@ impl MemoryMountDriver {
 }
 #[async_trait]
 impl MountDriver for MemoryMountDriver {
+    fn supports_automatic_collaboration(&self) -> bool {
+        !self.automatic_collaboration_disabled.load(Ordering::SeqCst)
+    }
+
+    fn handle_tracking_scope(&self) -> HandleTrackingScope {
+        HandleTrackingScope::Native
+    }
+
+    async fn open_handles(&self, binding: &MountBinding) -> Result<usize> {
+        if !self.mounts.lock().contains_key(&binding.id) {
+            return Ok(0);
+        }
+        Ok(usize::from(self.busy.load(Ordering::SeqCst)))
+    }
+
+    async fn rebind(&self, previous: &MountBinding, next: &MountBinding) -> Result<()> {
+        if self.busy.load(Ordering::SeqCst) {
+            return Err(Error::new(ErrorCode::MountBusy, "injected busy mount"));
+        }
+        let mut mounts = self.mounts.lock();
+        let current = mounts
+            .get(&previous.id)
+            .ok_or_else(|| Error::new(ErrorCode::StaleBinding, "native mount is absent"))?;
+        if current == next {
+            return Ok(());
+        }
+        if current != previous
+            || previous.id != next.id
+            || previous.path != next.path
+            || next.generation <= previous.generation
+        {
+            return Err(Error::new(
+                ErrorCode::StaleBinding,
+                "native mount binding changed",
+            ));
+        }
+        mounts.insert(next.id, next.clone());
+        Ok(())
+    }
+
     async fn normalize_path(&self, path: &Path) -> Result<PathBuf> {
         if !path.is_absolute()
             || path

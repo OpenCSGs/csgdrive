@@ -15,6 +15,7 @@ use std::{path::PathBuf, sync::Arc};
 
 pub(crate) fn api(services: Services) -> Router {
     Router::new()
+        .merge(crate::collaboration::api())
         .route("/api/workspaces", get(workspaces))
         .route("/api/workspaces/{workspace}", get(workspace))
         .route("/api/workspaces/{workspace}/archive", get(archive))
@@ -108,6 +109,7 @@ pub(crate) fn assets() -> Router {
         .route("/mounts", get(|| async { Html(include_str!("../dashboard/index.html")) }))
         .route("/branches", get(|| async { Html(include_str!("../dashboard/index.html")) }))
         .route("/management.js", get(|| async { ([(header::CONTENT_TYPE, "text/javascript; charset=utf-8")], include_str!("../dashboard/management.js")) }))
+        .route("/collaboration.js", get(|| async { ([(header::CONTENT_TYPE, "text/javascript; charset=utf-8")], include_str!("../dashboard/collaboration.js")) }))
         .route("/commands.js", get(|| async { ([(header::CONTENT_TYPE, "text/javascript; charset=utf-8")], include_str!("../dashboard/commands.js")) }))
         .route("/management.css", get(|| async { ([(header::CONTENT_TYPE, "text/css; charset=utf-8")], include_str!("../dashboard/management.css")) }))
         .route("/dashboard.js", get(|| async { ([(header::CONTENT_TYPE, "text/javascript; charset=utf-8")], include_str!("../dashboard/dashboard.js")) }))
@@ -132,7 +134,7 @@ pub(crate) fn assets() -> Router {
         }))
 }
 
-struct ApiError(Error);
+pub(crate) struct ApiError(Error);
 impl From<Error> for ApiError {
     fn from(error: Error) -> Self {
         Self(error)
@@ -393,6 +395,9 @@ enum LifecycleEvent {
     Attach {
         workspace: WorkspaceId,
         mount_path: PathBuf,
+        branch: Option<BranchId>,
+        #[serde(default)]
+        automatic: bool,
     },
     Check {
         workspace: WorkspaceId,
@@ -425,6 +430,8 @@ async fn lifecycle(
         LifecycleEvent::Attach {
             workspace,
             mount_path,
+            branch,
+            automatic,
         } => {
             let record = checked(
                 services
@@ -433,11 +440,12 @@ async fn lifecycle(
                         context,
                         PrepareMount {
                             workspace,
-                            branch: None,
+                            branch,
                             revision: None,
                             path: mount_path,
                             access: AccessMode::ReadWrite,
                             durability: Durability::Local,
+                            automatic,
                         },
                     )
                     .await?,
@@ -464,7 +472,13 @@ async fn lifecycle(
                         && mount.access == AccessMode::ReadWrite
                 })
                 .ok_or_else(|| Error::new(ErrorCode::StaleBinding, "mount is not ready"))?;
-            json!({"binding": binding})
+            let collaboration = services
+                .collaboration
+                .status(&context.principal, workspace)
+                .await?
+                .into_iter()
+                .find(|status| status.mounts.contains(&binding.id));
+            json!({"binding": binding, "collaboration": collaboration})
         }
         LifecycleEvent::Save {
             mount,

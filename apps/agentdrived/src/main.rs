@@ -140,12 +140,12 @@ async fn serve(settings: Arc<ConfigStore>) -> Result<()> {
             }
         });
     }
-    for kind in ["autosave", "sync", "cache"] {
+    for kind in ["autosave", "sync", "collaboration", "cache"] {
         let engine = engine.clone();
         let cancellation = cancellation.clone();
         workers.spawn(async move {
             let period = match kind {
-                "autosave" => 1,
+                "autosave" | "collaboration" => 1,
                 "sync" => 3,
                 _ => 30,
             };
@@ -156,6 +156,7 @@ async fn serve(settings: Arc<ConfigStore>) -> Result<()> {
                 let result = match kind {
                     "autosave" => engine.autosave_due().await.map(|_| ()),
                     "sync" => engine.sync_pending().await,
+                    "collaboration" => engine.collaborate_due().await,
                     _ => engine.services.cache.collect().await.map(|_| ()),
                 };
                 if let Err(error) = result {

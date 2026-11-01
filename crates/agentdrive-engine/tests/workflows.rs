@@ -4,6 +4,8 @@ use agentdrive_config::{
 use agentdrive_engine::*;
 use agentdrive_local::LocalBackend;
 use agentdrive_model::*;
+#[path = "workflows/collaboration.rs"]
+mod collaboration;
 #[path = "workflows/history.rs"]
 mod history;
 #[path = "workflows/relationships.rs"]
@@ -120,6 +122,7 @@ impl Harness {
                 .prepare(
                     context(),
                     PrepareMount {
+                        automatic: false,
                         workspace,
                         branch: Some(branch),
                         revision: None,
@@ -235,6 +238,7 @@ async fn open(
         directory,
         remote,
         LiveConfig::new(RuntimeConfig {
+            collaboration: agentdrive_config::CollaborationConfig { enabled: false },
             cache: CacheConfig { max_bytes: 1 },
             ..Default::default()
         })
@@ -416,6 +420,7 @@ async fn lookup_preserves_normalized_names_and_revision_contents() {
             .prepare(
                 context(),
                 PrepareMount {
+                    automatic: false,
                     workspace: workspace.id,
                     branch: Some(binding.branch),
                     revision: Some(revision),
@@ -553,6 +558,7 @@ async fn restart_restores_saved_bytes_and_reuses_mount() {
             .prepare(
                 context(),
                 PrepareMount {
+                    automatic: false,
                     workspace: workspace.id,
                     branch: Some(binding.branch),
                     revision: None,
@@ -1694,7 +1700,7 @@ async fn publication_failure_does_not_block_other_branches() {
     harness.write_new(&second_fs, "file", b"second").await;
     harness.commit(second.branch).await;
     let error = harness.engine.sync_pending().await.unwrap_err();
-    assert_eq!(error.code, ErrorCode::StaleAuthority);
+    assert_eq!(error.code, ErrorCode::StaleAuthority, "{error:?}");
     let remaining = harness.local.sync_jobs(workspace.id).await.unwrap();
     assert!(
         remaining
@@ -1803,6 +1809,7 @@ async fn branch_switch_preserves_edits_and_waits_for_handles() {
             .prepare(
                 context(),
                 PrepareMount {
+                    automatic: false,
                     workspace: workspace.id,
                     branch: None,
                     revision: None,
@@ -2369,6 +2376,7 @@ async fn storage_switch_preserves_history_mounts_and_pending_publications() {
 
 fn default_mount(workspace: WorkspaceId, path: std::path::PathBuf) -> PrepareMount {
     PrepareMount {
+        automatic: false,
         workspace,
         branch: None,
         revision: None,
@@ -3460,6 +3468,7 @@ async fn incremental_checkpoints_preserve_directory_moves_deletions_and_history(
                 .prepare(
                     context(),
                     PrepareMount {
+                        automatic: false,
                         workspace: workspace.id,
                         branch: Some(binding.branch),
                         revision: Some(first),
@@ -3598,6 +3607,7 @@ async fn fork_and_remote_location_mount_include_unversioned_checkpoints() {
             .prepare(
                 context(),
                 PrepareMount {
+                    automatic: false,
                     workspace: workspace.id,
                     branch: None,
                     revision: None,
@@ -3637,6 +3647,7 @@ async fn fork_and_remote_location_mount_include_unversioned_checkpoints() {
             .prepare(
                 context(),
                 PrepareMount {
+                    automatic: false,
                     workspace: workspace.id,
                     branch: None,
                     revision: None,

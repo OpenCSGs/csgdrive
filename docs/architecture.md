@@ -34,6 +34,7 @@
 | `engine/relationships` | Relationship authorization, origin visibility, ownership observations, filtering and stable pagination |
 | `engine/mounts` | Select the local branch for a workspace, reuse mount bindings, save mounted files and coordinate mount transitions |
 | `engine/replica`, `engine/ownership` | Synchronization jobs, conditional remote publication and writer ownership transfer |
+| `engine/collaboration` | Per-branch following, automatic writer acquisition and release, execution registration and recovery coordination |
 | `engine/storage` | Hydrate retained history, copy remote references and switch storage |
 | `engine/cache` | Prefetch, pin and reclaim eligible local objects using the current cache policy |
 | `engine/merge` | Prepare candidates, edit files, resolve conflicts and apply results |
@@ -87,6 +88,18 @@ The local adapter owns the `parent` projection and `node_usage` table. New datab
 Branch mutexes still coordinate file operations and snapshots. Cache misses and first writes can download content while holding that mutex. SQLite still uses one mutex-protected connection. These synchronization semantics are unchanged by the query optimizations.
 
 A `ReplicaService` shares four upload permits across publication operations. Objects use streaming interfaces. Failure stops scheduling further objects, drains scheduled transfers for cleanup, releases permits and leaves retryable jobs; incomplete dependencies cannot be published through a BranchRef. New dependencies and objects outside the current remote reference receive full integrity verification. Common immutable subtrees retained by the current remote branch reference are reused without another transfer or integrity scan.
+
+## Automatic collaboration
+
+The daemon-wide `collaboration.enabled` setting defaults to true. With remote storage configured, writable working mounts use the existing local selection or the shared workspace root. Per-branch records retain timing, execution and recovery state. Disabling collaboration stops new automatic acquisition, following and release; stable write ownership remains available for manual work, while already frozen publication and recovery finish. `WriteAccess` runs before file mutation locks; `FileService` rechecks authorization, binding generation and the mutation barrier before accepting changes. The coordinator reuses snapshots, publication jobs, guarded commits and operation receipts. Protocol adapters translate settings and execution events; native drivers count handles and update bindings.
+
+An available remote branch carries `write_available: true` and `write_stopped: true`. Acquisition and release conditionally replace the remote reference and advance `authority_epoch`. A grant is applied locally only after its remote publication is confirmed. Unknown outcomes retry the same persisted operation. Readers compare published content before requesting authority; changed content rejects the triggering mutation and refreshes the local view when its tracked handles close. The writable owner retains its working content and uses autosave, while remote authority observations detect ownership changes. There is no timeout-based remote takeover.
+
+Idle release and registered execution completion enter the same release path. The coordinator checks the current epoch and mutation sequence, waits for tracked native and engine handles, prevents new mutations, saves accepted changes, confirms remote publication and conditionally releases authority. Metadata changes participate in the mutation sequence. Native open reservations count before the engine accepts an open. The native binding generation advances independently from the branch generation; stale FUSE inode references return `ESTALE` after content replacement.
+
+Confirmed authority loss preserves unpublished changes in one durable recovery operation. Its recovery branch is published before affected writable mounts switch at the same path. Persisted transitions resume after interruption; old publication jobs are terminated with recovery information. A fully confirmed, unchanged local copy can follow the new owner without creating another branch. Event registrations include the principal, mount, source, thread, turn and observed authority; duplicate or previous-grant completion events cannot release a later writer.
+
+All compiled native backends support automatic collaboration. Handle tracking describes observed callbacks: FUSE-T can send `releasedir` before the application closes its directory descriptor, and Unix FUSE cannot track every descriptor or directory reference, including Linux `O_PATH`. WinFsp retains native handle guards until final close. Cached FUSE inode references use generation checks. The Dashboard displays the observation scope. Disable collaboration and finish pending handoffs before changing the storage namespace; credentials for the same namespace can be refreshed during recovery. See [integrations](integrations.md) for configuration.
 
 ## Configuration lifecycle
 

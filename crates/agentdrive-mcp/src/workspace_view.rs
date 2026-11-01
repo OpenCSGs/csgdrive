@@ -79,6 +79,8 @@ impl WorkspaceBranch {
             local_available: local.is_some(),
             state: if reference.deleted {
                 BranchState::Deleted
+            } else if reference.write_available {
+                BranchState::Available
             } else if reference.write_stopped {
                 BranchState::Stopped
             } else {
@@ -243,7 +245,8 @@ mod tests {
             working_root: branch.working_root.clone(),
             record_index: object_ref(ObjectKind::RecordIndex, b"history"),
             deleted: branch.state == BranchState::Deleted,
-            write_stopped: branch.state == BranchState::Stopped,
+            write_stopped: matches!(branch.state, BranchState::Stopped | BranchState::Available),
+            write_available: branch.state == BranchState::Available,
             metadata: Some(branch.into()),
         }
     }
@@ -276,6 +279,9 @@ mod tests {
             capabilities: agentdrive_ports::Capabilities {
                 format_version: FORMAT_VERSION,
                 platform_mount: "test".into(),
+                handle_tracking_scope: agentdrive_ports::HandleTrackingScope::Native,
+                automatic_collaboration: true,
+                collaboration_enabled: true,
                 file_operations: vec![],
                 remote_configured: true,
                 automatic_text_merge: false,
@@ -414,6 +420,25 @@ mod tests {
         assert!(view.branches[0].local_available);
     }
 
+    #[test]
+    fn released_remote_authority_is_available_with_its_last_owner_retained() {
+        let local = branch();
+        let released = Branch {
+            owner: LocationId::new(),
+            authority_epoch: local.authority_epoch + 1,
+            state: BranchState::Available,
+            ..local.clone()
+        };
+        let view = WorkspaceView::new(
+            status(&local, vec![local.clone()], vec![reference(&released)]),
+            vec![],
+        );
+        assert_eq!(view.branches[0].state, BranchState::Available);
+        assert_eq!(view.branches[0].owner, released.owner);
+        assert!(!view.branches[0].local);
+        assert!(view.branches[0].local_available);
+    }
+
     fn branch() -> Branch {
         let revision = RevisionId::new();
         Branch {
@@ -445,6 +470,7 @@ mod tests {
             branch: branch.id,
             revision: None,
             generation: 1,
+            branch_generation: Some(branch.generation),
             path: "/workspace".into(),
             principal: "owner".to_owned().try_into().unwrap(),
             identity: LocalIdentity {

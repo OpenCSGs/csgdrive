@@ -50,6 +50,30 @@ impl NativeMountDriver {
 
 #[async_trait]
 impl MountDriver for NativeMountDriver {
+    fn supports_automatic_collaboration(&self) -> bool {
+        cfg!(any(
+            target_os = "linux",
+            windows,
+            all(target_os = "macos", feature = "macos-mount")
+        ))
+    }
+
+    fn handle_tracking_scope(&self) -> agentdrive_ports::HandleTrackingScope {
+        if cfg!(any(
+            target_os = "linux",
+            windows,
+            all(
+                target_os = "macos",
+                feature = "macos-mount",
+                not(feature = "macos-fuse-t")
+            )
+        )) {
+            agentdrive_ports::HandleTrackingScope::Native
+        } else {
+            agentdrive_ports::HandleTrackingScope::Protocol
+        }
+    }
+
     async fn normalize_path(&self, path: &Path) -> Result<PathBuf> {
         if !path.is_absolute()
             || path
@@ -110,6 +134,52 @@ impl MountDriver for NativeMountDriver {
             Err(Error::new(
                 ErrorCode::Unsupported,
                 "native mounts require FUSE-T with macos-fuse-t, or macFUSE with macos-mount",
+            ))
+        }
+    }
+
+    async fn open_handles(&self, binding: &MountBinding) -> Result<usize> {
+        #[cfg(any(
+            target_os = "linux",
+            windows,
+            all(target_os = "macos", feature = "macos-mount")
+        ))]
+        {
+            self.implementation.open_handles(binding).await
+        }
+        #[cfg(not(any(
+            target_os = "linux",
+            windows,
+            all(target_os = "macos", feature = "macos-mount")
+        )))]
+        {
+            let _ = binding;
+            Err(Error::new(
+                ErrorCode::Unsupported,
+                "native mount support is not enabled",
+            ))
+        }
+    }
+
+    async fn rebind(&self, previous: &MountBinding, next: &MountBinding) -> Result<()> {
+        #[cfg(any(
+            target_os = "linux",
+            windows,
+            all(target_os = "macos", feature = "macos-mount")
+        ))]
+        {
+            self.implementation.rebind(previous, next).await
+        }
+        #[cfg(not(any(
+            target_os = "linux",
+            windows,
+            all(target_os = "macos", feature = "macos-mount")
+        )))]
+        {
+            let _ = (previous, next);
+            Err(Error::new(
+                ErrorCode::Unsupported,
+                "native mount support is not enabled",
             ))
         }
     }
@@ -182,5 +252,41 @@ impl MountDriver for NativeMountDriver {
         {
             "macos-macfuse-feature-required"
         }
+    }
+}
+
+#[cfg(test)]
+mod collaboration_tests {
+    use super::*;
+
+    #[test]
+    #[cfg(any(
+        target_os = "linux",
+        windows,
+        all(target_os = "macos", feature = "macos-mount")
+    ))]
+    fn compiled_native_drivers_support_automatic_collaboration() {
+        let driver = NativeMountDriver::new(Vec::new()).unwrap();
+        assert!(driver.supports_automatic_collaboration());
+    }
+
+    #[test]
+    #[cfg(all(target_os = "macos", not(feature = "macos-mount")))]
+    fn unavailable_native_driver_does_not_support_automatic_collaboration() {
+        let driver = NativeMountDriver::new(Vec::new()).unwrap();
+        assert!(!driver.supports_automatic_collaboration());
+    }
+
+    #[cfg(all(
+        target_os = "macos",
+        any(feature = "macos-fuse-t", not(feature = "macos-mount"))
+    ))]
+    #[test]
+    fn protocol_or_unavailable_driver_does_not_claim_native_handle_tracking() {
+        let driver = NativeMountDriver::new(Vec::new()).unwrap();
+        assert_eq!(
+            driver.handle_tracking_scope(),
+            HandleTrackingScope::Protocol
+        );
     }
 }

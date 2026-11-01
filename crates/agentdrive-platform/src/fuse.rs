@@ -1,3 +1,5 @@
+use crate::binding::{NativeBinding, NativeHandle};
+use crate::inodes::InodeNamespace;
 use agentdrive_model::*;
 use agentdrive_ports::{AttributeUpdate, FileSystem, MountSpec, NativeMountState};
 use bytes::Bytes;
@@ -20,7 +22,7 @@ use tokio::runtime::Handle;
 use {std::process::Stdio, tokio::process::Command};
 
 struct Mounted {
-    binding: MountBinding,
+    binding: Arc<NativeBinding>,
     session: BackgroundSession,
     source: String,
 }
@@ -79,8 +81,10 @@ impl Driver {
             {
                 config.n_threads = Some(1);
             }
+            let native_binding = NativeBinding::new(binding.clone());
             let filesystem = Fuse {
-                binding: binding.clone(),
+                binding: native_binding.clone(),
+                inodes: Mutex::new(InodeNamespace::new(binding.generation)),
                 files,
                 runtime,
                 next_handle: Mutex::new(1),
@@ -109,7 +113,7 @@ impl Driver {
                 Error::new(ErrorCode::Io, "mounted filesystem is absent from the mount table")
             })?;
             mounts.lock().insert(binding.id, Mounted {
-                binding,
+                binding: native_binding,
                 session,
                 source,
             });
@@ -121,8 +125,8 @@ impl Driver {
 
     pub async fn status(&self, binding: &MountBinding) -> Result<NativeMountState> {
         if let Some(current) = self.mounts.lock().get(&binding.id)
-            && current.binding.generation == binding.generation
-            && current.binding.path == binding.path
+            && current.binding.snapshot().generation == binding.generation
+            && current.binding.snapshot().path == binding.path
             && !current.session.guard.is_finished()
         {
             return Ok(NativeMountState::Mounted);
@@ -141,7 +145,45 @@ impl Driver {
         .map_err(|error| Error::new(ErrorCode::Io, error.to_string()))?
     }
 
+    pub async fn open_handles(&self, binding: &MountBinding) -> Result<usize> {
+        let mounts = self.mounts.lock();
+        let current = mounts
+            .get(&binding.id)
+            .ok_or_else(|| Error::new(ErrorCode::MountBusy, "native mount is not available"))?;
+        if current.binding.snapshot().path != binding.path || current.session.guard.is_finished() {
+            return Err(Error::new(
+                ErrorCode::MountBusy,
+                "native mount is not available",
+            ));
+        }
+        Ok(current.binding.open_handles())
+    }
+
+    pub async fn rebind(&self, previous: &MountBinding, next: &MountBinding) -> Result<()> {
+        let mounts = self.mounts.lock();
+        let current = mounts
+            .get(&previous.id)
+            .ok_or_else(|| Error::new(ErrorCode::MountBusy, "native mount is not available"))?;
+        if current.session.guard.is_finished() {
+            return Err(Error::new(
+                ErrorCode::MountBusy,
+                "native mount is not available",
+            ));
+        }
+        current.binding.rebind(previous, next)
+    }
+
     pub async fn unmount(&self, binding: &MountBinding) -> Result<()> {
+        if self
+            .mounts
+            .lock()
+            .get(&binding.id)
+            .is_some_and(|current| current.binding.open_handles() != 0)
+        {
+            return Err(
+                Error::new(ErrorCode::MountBusy, "native mount still has open handles").retryable(),
+            );
+        }
         let path = binding.path.clone();
         let source = tokio::task::spawn_blocking(move || native_source(&path))
             .await
@@ -156,8 +198,8 @@ impl Driver {
             #[cfg(all(target_os = "macos", feature = "macos-fuse-t"))]
             let owned = owned
                 || self.mounts.lock().get(&binding.id).is_some_and(|current| {
-                    current.binding.path == binding.path
-                        && current.binding.generation == binding.generation
+                    current.binding.snapshot().path == binding.path
+                        && current.binding.snapshot().generation == binding.generation
                         && !current.session.guard.is_finished()
                         && current.source == source
                 });
@@ -297,25 +339,38 @@ fn native_source(path: &Path) -> Result<Option<String>> {
         }))
 }
 
-type DirectorySnapshot = Vec<(String, Inode)>;
+struct DirectorySnapshot {
+    entries: Vec<(String, Inode)>,
+    _native: NativeHandle,
+}
+struct OpenFile {
+    handle: HandleId,
+    _native: NativeHandle,
+}
 struct Fuse {
-    binding: MountBinding,
+    binding: Arc<NativeBinding>,
+    inodes: Mutex<InodeNamespace>,
     files: Arc<dyn FileSystem>,
     runtime: Handle,
     next_handle: Mutex<u64>,
-    handles: Mutex<BTreeMap<u64, HandleId>>,
-    directories: Mutex<BTreeMap<u64, DirectorySnapshot>>,
+    handles: Mutex<BTreeMap<u64, Arc<OpenFile>>>,
+    directories: Mutex<BTreeMap<u64, Arc<DirectorySnapshot>>>,
 }
 impl Fuse {
+    fn inode(&self, context: &FsContext, inode: INodeNo) -> Result<InodeId> {
+        self.inodes.lock().decode(context.generation, inode.0)
+    }
+    fn attributes(&self, context: &FsContext, inode: Inode) -> Result<FileAttr> {
+        let native = self.inodes.lock().encode(context.generation, inode.id)?;
+        let mut attributes = attr(inode);
+        attributes.ino = INodeNo(native);
+        Ok(attributes)
+    }
     fn context(&self, request: &Request) -> FsContext {
-        FsContext {
-            mount: self.binding.id,
-            generation: self.binding.generation,
-            identity: LocalIdentity {
-                uid: request.uid(),
-                gid: request.gid(),
-            },
-        }
+        self.binding.context(Some(LocalIdentity {
+            uid: request.uid(),
+            gid: request.gid(),
+        }))
     }
     fn next(&self) -> Result<u64> {
         let mut counter = self.next_handle.lock();
@@ -325,23 +380,46 @@ impl Fuse {
         })?;
         Ok(id)
     }
-    fn handle(&self, handle: fuser::FileHandle) -> Result<HandleId> {
+    fn handle(&self, handle: fuser::FileHandle) -> Result<Arc<OpenFile>> {
         self.handles
             .lock()
             .get(&handle.0)
-            .copied()
+            .cloned()
             .ok_or_else(|| Error::new(ErrorCode::StaleBinding, "native file handle is closed"))
+    }
+    fn directory(&self, handle: fuser::FileHandle) -> Result<Arc<DirectorySnapshot>> {
+        self.directories
+            .lock()
+            .get(&handle.0)
+            .cloned()
+            .ok_or_else(|| Error::new(ErrorCode::StaleBinding, "native directory handle is closed"))
     }
     fn name<'a>(&self, name: &'a OsStr) -> Result<&'a str> {
         name.to_str()
             .ok_or_else(|| Error::invalid("file name must be UTF-8"))
     }
     fn open_file(&self, context: &FsContext, inode: InodeId, flags: i32) -> Result<u64> {
+        let native = self.binding.reserve(context.generation)?;
+        self.open_reserved(context, inode, flags, native)
+    }
+    fn open_reserved(
+        &self,
+        context: &FsContext,
+        inode: InodeId,
+        flags: i32,
+        native: NativeHandle,
+    ) -> Result<u64> {
+        let id = self.next()?;
         let handle = self
             .runtime
             .block_on(self.files.open(context, inode, open_mode(flags)))?;
-        let id = self.next()?;
-        self.handles.lock().insert(id, handle.id);
+        self.handles.lock().insert(
+            id,
+            Arc::new(OpenFile {
+                handle: handle.id,
+                _native: native,
+            }),
+        );
         Ok(id)
     }
     fn empty(&self, result: Result<()>, reply: ReplyEmpty) {
@@ -415,7 +493,9 @@ fn errno(error: Error) -> Errno {
         ErrorCode::CapacityExceeded => Errno::ENOSPC,
         ErrorCode::Busy | ErrorCode::MountBusy | ErrorCode::BranchBusy => Errno::EBUSY,
         ErrorCode::Unsupported => Errno::EOPNOTSUPP,
-        ErrorCode::StaleBinding | ErrorCode::StaleAuthority => Errno::ESTALE,
+        ErrorCode::StaleBinding | ErrorCode::StaleAuthority | ErrorCode::TargetMoved => {
+            Errno::ESTALE
+        }
         _ => Errno::EIO,
     }
 }
@@ -427,19 +507,19 @@ impl Filesystem for Fuse {
         Ok(())
     }
     fn lookup(&self, request: &Request, parent: INodeNo, name: &OsStr, reply: ReplyEntry) {
-        let result = self.name(name).and_then(|name| {
-            self.runtime.block_on(self.files.lookup(
-                &self.context(request),
-                InodeId(parent.0),
-                name,
-            ))
-        });
+        let context = self.context(request);
+        let result = self
+            .name(name)
+            .and_then(|name| {
+                self.runtime.block_on(self.files.lookup(
+                    &context,
+                    self.inode(&context, parent)?,
+                    name,
+                ))
+            })
+            .and_then(|inode| self.attributes(&context, inode));
         match result {
-            Ok(inode) => reply.entry(
-                &Duration::ZERO,
-                &attr(inode),
-                Generation(self.binding.generation),
-            ),
+            Ok(inode) => reply.entry(&Duration::ZERO, &inode, Generation(context.generation)),
             Err(error) => reply.error(errno(error)),
         }
     }
@@ -450,11 +530,13 @@ impl Filesystem for Fuse {
         _: Option<fuser::FileHandle>,
         reply: ReplyAttr,
     ) {
-        match self
-            .runtime
-            .block_on(self.files.getattr(&self.context(request), InodeId(inode.0)))
-        {
-            Ok(inode) => reply.attr(&Duration::ZERO, &attr(inode)),
+        let context = self.context(request);
+        let result = self
+            .inode(&context, inode)
+            .and_then(|inode| self.runtime.block_on(self.files.getattr(&context, inode)))
+            .and_then(|inode| self.attributes(&context, inode));
+        match result {
+            Ok(inode) => reply.attr(&Duration::ZERO, &inode),
             Err(error) => reply.error(errno(error)),
         }
     }
@@ -476,8 +558,8 @@ impl Filesystem for Fuse {
         flags: Option<BsdFileFlags>,
         reply: ReplyAttr,
     ) {
-        if uid.is_some_and(|uid| uid != self.binding.identity.uid)
-            || gid.is_some_and(|gid| gid != self.binding.identity.gid)
+        if uid.is_some_and(|uid| uid != self.binding.snapshot().identity.uid)
+            || gid.is_some_and(|gid| gid != self.binding.snapshot().identity.gid)
             || bkuptime.is_some()
             || flags.is_some_and(|flags| !flags.is_empty())
         {
@@ -490,17 +572,24 @@ impl Filesystem for Fuse {
                 TimeOrNow::Now => SystemTime::now(),
             })
         });
-        match self.runtime.block_on(self.files.setattr(
-            &self.context(request),
-            InodeId(inode.0),
-            AttributeUpdate {
-                mode,
-                size,
-                modified_ns,
-                created_ns: crtime.map(time_ns),
-            },
-        )) {
-            Ok(inode) => reply.attr(&Duration::ZERO, &attr(inode)),
+        let context = self.context(request);
+        let result = self
+            .inode(&context, inode)
+            .and_then(|inode| {
+                self.runtime.block_on(self.files.setattr(
+                    &context,
+                    inode,
+                    AttributeUpdate {
+                        mode,
+                        size,
+                        modified_ns,
+                        created_ns: crtime.map(time_ns),
+                    },
+                ))
+            })
+            .and_then(|inode| self.attributes(&context, inode));
+        match result {
+            Ok(inode) => reply.attr(&Duration::ZERO, &inode),
             Err(error) => reply.error(errno(error)),
         }
     }
@@ -518,21 +607,21 @@ impl Filesystem for Fuse {
             reply.error(Errno::EOPNOTSUPP);
             return;
         }
-        let result = self.name(name).and_then(|name| {
-            self.runtime.block_on(self.files.create(
-                &self.context(request),
-                InodeId(parent.0),
-                name,
-                FileKind::File,
-                mode & !umask,
-            ))
-        });
+        let context = self.context(request);
+        let result = self
+            .name(name)
+            .and_then(|name| {
+                self.runtime.block_on(self.files.create(
+                    &context,
+                    self.inode(&context, parent)?,
+                    name,
+                    FileKind::File,
+                    mode & !umask,
+                ))
+            })
+            .and_then(|inode| self.attributes(&context, inode));
         match result {
-            Ok(inode) => reply.entry(
-                &Duration::ZERO,
-                &attr(inode),
-                Generation(self.binding.generation),
-            ),
+            Ok(inode) => reply.entry(&Duration::ZERO, &inode, Generation(context.generation)),
             Err(error) => reply.error(errno(error)),
         }
     }
@@ -545,30 +634,31 @@ impl Filesystem for Fuse {
         umask: u32,
         reply: ReplyEntry,
     ) {
-        let result = self.name(name).and_then(|name| {
-            self.runtime.block_on(self.files.create(
-                &self.context(request),
-                InodeId(parent.0),
-                name,
-                FileKind::Directory,
-                mode & !umask,
-            ))
-        });
+        let context = self.context(request);
+        let result = self
+            .name(name)
+            .and_then(|name| {
+                self.runtime.block_on(self.files.create(
+                    &context,
+                    self.inode(&context, parent)?,
+                    name,
+                    FileKind::Directory,
+                    mode & !umask,
+                ))
+            })
+            .and_then(|inode| self.attributes(&context, inode));
         match result {
-            Ok(inode) => reply.entry(
-                &Duration::ZERO,
-                &attr(inode),
-                Generation(self.binding.generation),
-            ),
+            Ok(inode) => reply.entry(&Duration::ZERO, &inode, Generation(context.generation)),
             Err(error) => reply.error(errno(error)),
         }
     }
     fn unlink(&self, request: &Request, parent: INodeNo, name: &OsStr, reply: ReplyEmpty) {
+        let context = self.context(request);
         self.empty(
             self.name(name).and_then(|name| {
                 self.runtime.block_on(self.files.unlink(
-                    &self.context(request),
-                    InodeId(parent.0),
+                    &context,
+                    self.inode(&context, parent)?,
                     name,
                     false,
                 ))
@@ -577,11 +667,12 @@ impl Filesystem for Fuse {
         );
     }
     fn rmdir(&self, request: &Request, parent: INodeNo, name: &OsStr, reply: ReplyEmpty) {
+        let context = self.context(request);
         self.empty(
             self.name(name).and_then(|name| {
                 self.runtime.block_on(self.files.unlink(
-                    &self.context(request),
-                    InodeId(parent.0),
+                    &context,
+                    self.inode(&context, parent)?,
                     name,
                     true,
                 ))
@@ -604,11 +695,12 @@ impl Filesystem for Fuse {
             return;
         }
         let result = (|| {
+            let context = self.context(request);
             self.runtime.block_on(self.files.rename(
-                &self.context(request),
-                InodeId(parent.0),
+                &context,
+                self.inode(&context, parent)?,
                 self.name(name)?,
-                InodeId(new_parent.0),
+                self.inode(&context, new_parent)?,
                 self.name(new_name)?,
                 flags.bits() & 1 == 0,
             ))
@@ -616,7 +708,11 @@ impl Filesystem for Fuse {
         self.empty(result, reply);
     }
     fn open(&self, request: &Request, inode: INodeNo, flags: OpenFlags, reply: ReplyOpen) {
-        match self.open_file(&self.context(request), InodeId(inode.0), flags.0) {
+        let context = self.context(request);
+        let result = self
+            .inode(&context, inode)
+            .and_then(|inode| self.open_file(&context, inode, flags.0));
+        match result {
             Ok(id) => reply.opened(fuser::FileHandle(id), FopenFlags::FOPEN_DIRECT_IO),
             Err(error) => reply.error(errno(error)),
         }
@@ -633,10 +729,12 @@ impl Filesystem for Fuse {
     ) {
         let context = self.context(request);
         let result = (|| {
+            let native = self.binding.reserve(context.generation)?;
+            let parent = self.inode(&context, parent)?;
             let name = self.name(name)?;
             let inode = match self.runtime.block_on(self.files.create(
                 &context,
-                InodeId(parent.0),
+                parent,
                 name,
                 FileKind::File,
                 mode & !umask,
@@ -646,7 +744,7 @@ impl Filesystem for Fuse {
                     if error.code == ErrorCode::AlreadyExists && flags & libc::O_EXCL == 0 =>
                 {
                     self.runtime
-                        .block_on(self.files.lookup(&context, InodeId(parent.0), name))?
+                        .block_on(self.files.lookup(&context, parent, name))?
                 }
                 Err(error) => return Err(error),
             };
@@ -660,14 +758,16 @@ impl Filesystem for Fuse {
                     },
                 ))?;
             }
-            let handle = self.open_file(&context, inode.id, flags)?;
+            let id = inode.id;
+            let inode = self.attributes(&context, inode)?;
+            let handle = self.open_reserved(&context, id, flags, native)?;
             Ok((inode, handle))
         })();
         match result {
             Ok((inode, handle)) => reply.created(
                 &Duration::ZERO,
-                &attr(inode),
-                Generation(self.binding.generation),
+                &inode,
+                Generation(context.generation),
                 fuser::FileHandle(handle),
                 FopenFlags::FOPEN_DIRECT_IO,
             ),
@@ -686,10 +786,12 @@ impl Filesystem for Fuse {
         reply: ReplyData,
     ) {
         let result = self.handle(handle).and_then(|handle| {
-            self.runtime.block_on(
-                self.files
-                    .read(&self.context(request), handle, offset, size),
-            )
+            self.runtime.block_on(self.files.read(
+                &self.context(request),
+                handle.handle,
+                offset,
+                size,
+            ))
         });
         match result {
             Ok(bytes) => reply.data(&bytes),
@@ -710,9 +812,10 @@ impl Filesystem for Fuse {
     ) {
         let context = self.context(request);
         let result = (|| {
+            let handle = self.handle(handle)?;
             let written = self.runtime.block_on(self.files.write(
                 &context,
-                self.handle(handle)?,
+                handle.handle,
                 offset,
                 Bytes::copy_from_slice(data),
             ))?;
@@ -753,7 +856,7 @@ impl Filesystem for Fuse {
             .ok_or_else(|| Error::new(ErrorCode::StaleBinding, "native file handle is closed"))
             .and_then(|handle| {
                 self.runtime
-                    .block_on(self.files.release(&self.context(request), handle))
+                    .block_on(self.files.release(&self.context(request), handle.handle))
             });
         self.empty(result, reply);
     }
@@ -761,33 +864,39 @@ impl Filesystem for Fuse {
         &self,
         request: &Request,
         _: INodeNo,
-        _: fuser::FileHandle,
+        handle: fuser::FileHandle,
         _: bool,
         reply: ReplyEmpty,
     ) {
         self.empty(
-            self.runtime
-                .block_on(self.files.fsync(&self.context(request)))
-                .map(|_| ()),
+            self.handle(handle).and_then(|_handle| {
+                self.runtime
+                    .block_on(self.files.fsync(&self.context(request)))
+                    .map(|_| ())
+            }),
             reply,
         );
     }
     fn opendir(&self, request: &Request, inode: INodeNo, _: OpenFlags, reply: ReplyOpen) {
         let context = self.context(request);
         let result = (|| {
-            let entries = self
+            let native = self.binding.reserve(context.generation)?;
+            let inode = self.inode(&context, inode)?;
+            let entries = self.runtime.block_on(self.files.readdir(&context, inode))?;
+            let current = self.runtime.block_on(self.files.getattr(&context, inode))?;
+            let parent = self
                 .runtime
-                .block_on(self.files.readdir(&context, InodeId(inode.0)))?;
-            let current = self
-                .runtime
-                .block_on(self.files.getattr(&context, InodeId(inode.0)))?;
-            let parent =
-                self.runtime
-                    .block_on(self.files.lookup(&context, InodeId(inode.0), ".."))?;
+                .block_on(self.files.lookup(&context, inode, ".."))?;
             let mut snapshot = vec![(".".into(), current), ("..".into(), parent)];
             snapshot.extend(entries.into_iter().map(|entry| (entry.name, entry.inode)));
             let id = self.next()?;
-            self.directories.lock().insert(id, snapshot);
+            self.directories.lock().insert(
+                id,
+                Arc::new(DirectorySnapshot {
+                    entries: snapshot,
+                    _native: native,
+                }),
+            );
             Ok(id)
         })();
         match result {
@@ -803,25 +912,36 @@ impl Filesystem for Fuse {
         offset: u64,
         mut reply: ReplyDirectory,
     ) {
-        if let Err(error) = self
-            .runtime
-            .block_on(self.files.getattr(&self.context(request), InodeId(inode.0)))
-        {
+        let context = self.context(request);
+        let result = self
+            .inode(&context, inode)
+            .and_then(|inode| self.runtime.block_on(self.files.getattr(&context, inode)));
+        if let Err(error) = result {
             reply.error(errno(error));
             return;
         }
-        let directories = self.directories.lock();
-        let Some(entries) = directories.get(&handle.0) else {
-            reply.error(Errno::EBADF);
-            return;
+        let entries = match self.directory(handle) {
+            Ok(entries) => entries,
+            Err(error) => {
+                reply.error(errno(error));
+                return;
+            }
         };
         for (index, (name, inode)) in entries
+            .entries
             .iter()
             .enumerate()
             .skip(usize::try_from(offset).unwrap_or(usize::MAX))
         {
+            let native = match self.inodes.lock().encode(context.generation, inode.id) {
+                Ok(native) => native,
+                Err(error) => {
+                    reply.error(errno(error));
+                    return;
+                }
+            };
             if reply.add(
-                INodeNo(inode.id.0),
+                INodeNo(native),
                 (index + 1) as u64,
                 file_type(inode.kind),
                 name,
@@ -846,14 +966,16 @@ impl Filesystem for Fuse {
         &self,
         request: &Request,
         _: INodeNo,
-        _: fuser::FileHandle,
+        handle: fuser::FileHandle,
         _: bool,
         reply: ReplyEmpty,
     ) {
         self.empty(
-            self.runtime
-                .block_on(self.files.fsync(&self.context(request)))
-                .map(|_| ()),
+            self.directory(handle).and_then(|_handle| {
+                self.runtime
+                    .block_on(self.files.fsync(&self.context(request)))
+                    .map(|_| ())
+            }),
             reply,
         );
     }

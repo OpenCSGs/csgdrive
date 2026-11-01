@@ -51,6 +51,7 @@ async fn relationships_keep_creation_roots_and_filter_mount_identities() {
             .prepare(
                 context(),
                 PrepareMount {
+                    automatic: false,
                     branch: Some(child.id),
                     ..default_mount(workspace.id, harness.directory.path().join("child"))
                 },
@@ -200,6 +201,7 @@ async fn relationships_enforce_branch_and_ancestry_permissions_before_counts() {
             .prepare(
                 context(),
                 PrepareMount {
+                    automatic: false,
                     branch: created.branch,
                     ..default_mount(workspace.id, harness.directory.path().join("visible"))
                 },
@@ -334,6 +336,7 @@ async fn relationships_protect_unscoped_origins_and_preserve_unavailable_metadat
             .prepare(
                 context(),
                 PrepareMount {
+                    automatic: false,
                     branch: Some(branch.branch),
                     revision: Some(candidate.id),
                     access: AccessMode::ReadOnly,
@@ -502,6 +505,7 @@ async fn relationships_distinguish_mount_states_and_retained_released_bindings()
     .enumerate()
     {
         bindings.push(MountBinding {
+            branch_generation: None,
             id: MountId::new(),
             path: harness.directory.path().join(format!("state-{index}")),
             access: AccessMode::ReadOnly,
@@ -744,6 +748,7 @@ async fn relationships_read_one_transaction_during_binding_changes() {
                         ..branch.clone()
                     }],
                     mounts: vec![MountBinding {
+                        branch_generation: None,
                         generation,
                         ..mount.clone()
                     }],
