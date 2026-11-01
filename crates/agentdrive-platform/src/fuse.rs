@@ -43,6 +43,9 @@ impl Driver {
         tokio::task::spawn_blocking(move || {
             let binding = spec.binding;
             std::fs::create_dir_all(&binding.path)?;
+            #[cfg(all(target_os = "macos", feature = "macos-fuse-t"))]
+            let _mount_point = crate::fuse_mount_point::prepare(&binding.path)?;
+            #[cfg(not(all(target_os = "macos", feature = "macos-fuse-t")))]
             if std::fs::read_dir(&binding.path)?.next().is_some() {
                 return Err(Error::new(
                     ErrorCode::MountBusy,

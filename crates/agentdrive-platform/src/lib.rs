@@ -7,6 +7,8 @@
 ))]
 mod binding;
 mod directories;
+#[cfg(all(target_os = "macos", feature = "macos-fuse-t"))]
+mod fuse_mount_point;
 #[cfg(any(
     target_os = "linux",
     test,

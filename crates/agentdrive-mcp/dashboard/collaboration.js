@@ -131,7 +131,7 @@ export function createCollaborationPanel({api, element, container, changed}) {
       : supported()
       ? '句柄按驱动打开的文件与目录统计。FUSE 的 O_PATH 引用等应用引用可能不触发驱动回调；后台根据驱动可见的句柄判断交还时机。'
       : '当前构建未提供自动协作所需的挂载驱动。全局开关由设置页面管理。';
-    if (data.status.capabilities.platform_mount === 'macos-fuse-t') trackingNotice.textContent += ' 接收新版本时自动重新挂载相同目录，切换期间访问可能需要重试。';
+    if (data.status.capabilities.platform_mount === 'macos-fuse-t') trackingNotice.textContent += ' 接收新版本时自动重新挂载相同目录。未挂载期间目录拒绝普通应用写入，挂载更新期间访问可能需要重试。';
     renderStatus(); controls(); load();
   }
   function clear() {

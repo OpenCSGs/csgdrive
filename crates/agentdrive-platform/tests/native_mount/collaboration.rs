@@ -240,16 +240,28 @@ impl Harness {
         assert_eq!(reference.durable_seq, branch.mutation_seq);
         assert_eq!(branch.saved_seq, branch.mutation_seq);
         assert!(reference.autosave_head.is_some());
-        let status = self
-            .engine
-            .services
-            .collaboration
-            .status(&context().principal, self.binding.workspace)
-            .await
-            .unwrap()
-            .into_iter()
-            .find(|status| status.branch == branch.id)
-            .unwrap();
+        let status = tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                let status = self
+                    .engine
+                    .services
+                    .collaboration
+                    .status(&context().principal, self.binding.workspace)
+                    .await
+                    .unwrap()
+                    .into_iter()
+                    .find(|status| status.branch == branch.id)
+                    .unwrap();
+                if status.open_handles == Some(0) {
+                    return status;
+                }
+                // NFS may query attributes after publication; each metadata reply
+                // holds a short native reservation until the response is sent.
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("native metadata callbacks did not become idle");
         assert!(status.local_saved && status.remote_confirmed, "{status:?}");
         assert_eq!(status.open_handles, Some(0));
         let file = self
@@ -435,5 +447,89 @@ async fn native_follower_can_reopen_after_rejected_concurrent_append() {
             .unwrap()
             .unwrap();
         unmount_when_idle(&harness.engine, &binding).await;
+    }
+}
+
+#[cfg(all(target_os = "macos", feature = "macos-fuse-t"))]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "requires an installed FUSE-T driver and mount permission"]
+async fn fuse_t_mount_point_remains_protected_between_native_sessions() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let harness = Harness::open().await;
+    let path = harness.binding.path.clone();
+    let file = tokio::task::spawn_blocking(move || {
+        let mut file = std::fs::File::create(path.join("work.txt")).unwrap();
+        file.write_all(b"workspace bytes").unwrap();
+        file
+    })
+    .await
+    .unwrap();
+    harness.close_and_release(file, b"workspace bytes").await;
+    unmount_when_idle(&harness.engine, &harness.binding).await;
+    let path = &harness.binding.path;
+    assert_eq!(
+        std::fs::metadata(path).unwrap().permissions().mode() & 0o222,
+        0
+    );
+    assert_eq!(std::fs::read_dir(path).unwrap().count(), 0);
+    if !rustix::process::geteuid().is_root() {
+        assert_eq!(
+            std::fs::write(path.join("host-only.txt"), b"must fail")
+                .unwrap_err()
+                .kind(),
+            std::io::ErrorKind::PermissionDenied
+        );
+    }
+    let prepared = success(
+        harness
+            .engine
+            .services
+            .mounts
+            .prepare(
+                context(),
+                PrepareMount {
+                    automatic: false,
+                    workspace: harness.binding.workspace,
+                    branch: Some(harness.binding.branch),
+                    revision: None,
+                    path: path.clone(),
+                    access: AccessMode::ReadWrite,
+                    durability: Durability::Local,
+                },
+            )
+            .await
+            .unwrap(),
+    );
+    let Some(CommandResult::Mount { binding }) = prepared.result else {
+        panic!("missing native mount");
+    };
+    let mounted = path.clone();
+    tokio::task::spawn_blocking(move || {
+        assert_eq!(
+            std::fs::read(mounted.join("work.txt")).unwrap(),
+            b"workspace bytes"
+        );
+        std::fs::write(mounted.join("continued.txt"), b"continued").unwrap();
+        assert_eq!(
+            std::fs::read(mounted.join("continued.txt")).unwrap(),
+            b"continued"
+        );
+    })
+    .await
+    .unwrap();
+    unmount_when_idle(&harness.engine, &binding).await;
+    assert_eq!(std::fs::read_dir(path).unwrap().count(), 0);
+    assert_eq!(
+        std::fs::metadata(path).unwrap().permissions().mode() & 0o222,
+        0
+    );
+    if !rustix::process::geteuid().is_root() {
+        assert_eq!(
+            std::fs::write(path.join("host-after-unmount.txt"), b"must fail")
+                .unwrap_err()
+                .kind(),
+            std::io::ErrorKind::PermissionDenied
+        );
     }
 }
