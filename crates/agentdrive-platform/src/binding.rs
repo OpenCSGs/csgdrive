@@ -40,7 +40,7 @@ impl NativeBinding {
         self.state.lock().open_handles
     }
 
-    /// Reserve before entering the engine so rebind also observes incomplete opens.
+    /// Retain through the native reply so rebind waits for in-flight requests and opens.
     pub fn reserve(self: &Arc<Self>, generation: u64) -> Result<NativeHandle> {
         let mut state = self.state.lock();
         if state.binding.generation != generation {

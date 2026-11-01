@@ -422,7 +422,7 @@ pub fn tool_catalog() -> Vec<Tool> {
         ),
         tool::<Command<PrepareMount>>(
             "mount_prepare",
-            "挂载工作区；默认复用当前 location 的分支，首次连接远程工作区时自动创建分支。相同路径复用现有挂载。",
+            "挂载工作区；默认复用已选择的分支。自动协作开启时，新 location 使用工作区初始分支；关闭时创建本地分支。相同路径复用现有挂载。",
             false,
         ),
         tool::<Command<SaveMount>>(
