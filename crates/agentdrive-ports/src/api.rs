@@ -508,6 +508,7 @@ pub struct Services {
     pub cache: Arc<dyn CacheApi>,
     pub ownership: Arc<dyn OwnershipApi>,
     pub merge: Arc<dyn MergeApi>,
+    pub merge_history: Arc<dyn crate::MergeHistoryApi>,
     pub mounts: Arc<dyn MountApi>,
     pub operations: Arc<dyn OperationApi>,
     pub files: Arc<dyn crate::FileSystem>,

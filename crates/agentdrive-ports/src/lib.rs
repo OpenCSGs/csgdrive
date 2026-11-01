@@ -3,6 +3,7 @@
 mod api;
 mod filesystem;
 mod history;
+mod merge_history;
 mod platform;
 mod relationships;
 mod services;
@@ -12,6 +13,7 @@ mod synchronization;
 pub use api::*;
 pub use filesystem::*;
 pub use history::*;
+pub use merge_history::*;
 pub use platform::*;
 pub use relationships::*;
 pub use services::*;

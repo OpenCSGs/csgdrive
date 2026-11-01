@@ -17,13 +17,16 @@ export function createRevisionChanges({api, element, container}) {
     key = null; controller?.abort(); fileController?.abort();
     container.replaceChildren(); container.hidden = true;
   }
-  function show(workspace, revision) {
+  function show(workspace, revision, comparison = {}) {
     if (!revision) { clear(); return; }
-    const nextKey = `${workspace}/${revision.id}`;
-    if (key === nextKey) return;
+    const before = comparison.before === undefined ? revision.parents[0] || null : comparison.before;
+    const nextKey = `${workspace}/${revision.id}/${before || ''}`;
+    if (key === nextKey) {
+      if (comparison.summary) container.querySelector('.comparison-summary').textContent = comparison.summary;
+      return;
+    }
     clear(); key = nextKey; container.hidden = false;
-    const before = revision.parents[0] || null;
-    container.append(element('p', 'comparison-summary', before ? `与上一版本 ${before.slice(0, 8)} 比较` : '初始版本，显示全部内容。'));
+    container.append(element('p', 'comparison-summary', comparison.summary || (before ? `与上一版本 ${before.slice(0, 8)} 比较` : '初始版本，显示全部内容。')));
     const body = element('div', 'changes-body'); container.append(body);
     const baseUrl = `/api/workspaces/${encodeURIComponent(workspace)}/revisions/${encodeURIComponent(revision.id)}`;
 

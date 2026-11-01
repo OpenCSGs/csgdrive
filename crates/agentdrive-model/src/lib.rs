@@ -3,6 +3,7 @@
 mod entities;
 mod error;
 mod id;
+mod merge_history;
 mod object;
 mod operations;
 mod path;
@@ -10,6 +11,7 @@ mod path;
 pub use entities::*;
 pub use error::*;
 pub use id::*;
+pub use merge_history::*;
 pub use object::*;
 pub use operations::*;
 pub use path::*;

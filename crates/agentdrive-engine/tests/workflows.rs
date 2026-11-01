@@ -6,6 +6,10 @@ use agentdrive_local::LocalBackend;
 use agentdrive_model::*;
 #[path = "workflows/history.rs"]
 mod history;
+#[path = "workflows/merge_history.rs"]
+mod merge_history;
+#[path = "workflows/merge_recording.rs"]
+mod merge_recording;
 #[path = "workflows/relationships.rs"]
 mod relationships;
 use agentdrive_ports::*;

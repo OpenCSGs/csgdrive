@@ -96,6 +96,10 @@ agentdrive integrate --protocol codex-app-server --workspace "$WORKSPACE" \
 
 运行 `agentdrive dashboard --open` 打开 daemon 页面。浏览器从 URL fragment 读取令牌，随后移除 fragment，将令牌保存在 session storage 中。也可以直接打开地址并输入 daemon token。页面每 15 秒刷新，展示分支创建关系、版本历史和 commit 信息。点击分支只改变页面展示的历史。
 
+**合并记录** 页签展示通过 MCP 执行的合并，包括准备、修改候选内容、应用、失败和挂载恢复。支持按照分支、来源、目标、location、状态和时间筛选，并继续加载后续记录。每条记录保留准备时的来源版本和目标版本；详情提供动作时间线，以及候选内容或应用结果与原目标、来源、共同基础、上一个候选版本的文件比较。版本历史中的合并版本可以跳转到对应记录。
+
+本地保存、远端确认和挂载就绪分别显示。其他 location 同步后可以查看已发布的记录和候选内容，挂载提示描述记录中的操作状态。旧记录会注明历史信息不完整；文件冲突已经解决不代表文章内容或业务决定已经复核。页面使用只读接口 `GET /api/workspaces/{workspace}/merges`、`GET /api/workspaces/{workspace}/merges/{record}` 和 `GET /api/workspaces/{workspace}/merges/{record}/events`，记录和动作独立分页，并遵守现有分支读取权限。
+
 只读 JSON 接口为 `GET /api/workspaces` 和 `GET /api/workspaces/{workspace}`。后者返回 `status`、`revisions`、`summary` 和 `origins`。`summary` 包含 `branch_count`、`mount_count`、`ready_mount_count`、`mounted_branch_count`；`status.mounts` 仅保留未释放记录，并按路径排序。`origins` 为每个 branch 提供来源 branch、准确的来源 revision、版本是否可读和工作区根分支标识。`selected_branch` 是当前 location 对此工作区的默认选择。管理员通过 `/settings` 编辑运行配置，详见[配置说明](configuration.zh-CN.md)。
 
 协议参考：[ACP 会话](https://agentclientprotocol.com/protocol/v1/session-setup)、[ACP 回合](https://agentclientprotocol.com/protocol/v1/prompt-turn)、[Codex app-server](https://developers.openai.com/codex/app-server/)。
