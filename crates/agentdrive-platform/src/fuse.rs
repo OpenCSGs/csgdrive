@@ -508,6 +508,13 @@ impl Filesystem for Fuse {
     }
     fn lookup(&self, request: &Request, parent: INodeNo, name: &OsStr, reply: ReplyEntry) {
         let context = self.context(request);
+        let _reservation = match self.binding.reserve(context.generation) {
+            Ok(reservation) => reservation,
+            Err(error) => {
+                reply.error(errno(error));
+                return;
+            }
+        };
         let result = self
             .name(name)
             .and_then(|name| {
@@ -531,6 +538,13 @@ impl Filesystem for Fuse {
         reply: ReplyAttr,
     ) {
         let context = self.context(request);
+        let _reservation = match self.binding.reserve(context.generation) {
+            Ok(reservation) => reservation,
+            Err(error) => {
+                reply.error(errno(error));
+                return;
+            }
+        };
         let result = self
             .inode(&context, inode)
             .and_then(|inode| self.runtime.block_on(self.files.getattr(&context, inode)))
@@ -573,6 +587,13 @@ impl Filesystem for Fuse {
             })
         });
         let context = self.context(request);
+        let _reservation = match self.binding.reserve(context.generation) {
+            Ok(reservation) => reservation,
+            Err(error) => {
+                reply.error(errno(error));
+                return;
+            }
+        };
         let result = self
             .inode(&context, inode)
             .and_then(|inode| {
@@ -608,6 +629,13 @@ impl Filesystem for Fuse {
             return;
         }
         let context = self.context(request);
+        let _reservation = match self.binding.reserve(context.generation) {
+            Ok(reservation) => reservation,
+            Err(error) => {
+                reply.error(errno(error));
+                return;
+            }
+        };
         let result = self
             .name(name)
             .and_then(|name| {
@@ -635,6 +663,13 @@ impl Filesystem for Fuse {
         reply: ReplyEntry,
     ) {
         let context = self.context(request);
+        let _reservation = match self.binding.reserve(context.generation) {
+            Ok(reservation) => reservation,
+            Err(error) => {
+                reply.error(errno(error));
+                return;
+            }
+        };
         let result = self
             .name(name)
             .and_then(|name| {

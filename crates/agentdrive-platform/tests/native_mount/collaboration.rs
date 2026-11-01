@@ -1,4 +1,8 @@
 use super::*;
+
+#[cfg(unix)]
+#[path = "metadata.rs"]
+mod metadata;
 use agentdrive_test_support::{ManualClock, MemoryRemote};
 #[cfg(windows)]
 use std::os::windows::fs::OpenOptionsExt;
@@ -18,9 +22,12 @@ struct Harness {
 
 impl Harness {
     async fn open() -> Self {
+        Self::using(Arc::new(MemoryRemote::default()), None).await
+    }
+
+    async fn using(remote: Arc<MemoryRemote>, source: Option<(WorkspaceId, BranchId)>) -> Self {
         let root = tempfile::tempdir().unwrap();
         let local = Arc::new(LocalBackend::open(root.path().join("state")).unwrap());
-        let remote = Arc::new(MemoryRemote::default());
         let clock = Arc::new(ManualClock::default());
         let mounts = root.path().join("mounts");
         let driver = NativeMountDriver::new(vec![mounts.clone()]).unwrap();
@@ -43,44 +50,48 @@ impl Harness {
         )
         .await
         .unwrap();
-        let created = success(
-            engine
-                .services
-                .workspace
-                .create(
-                    context(),
-                    CreateWorkspace {
-                        name: "native-collaboration".into(),
-                        grants: vec![],
-                        max_file_bytes: None,
-                        max_working_bytes: None,
-                        max_inodes: None,
-                    },
-                )
-                .await
-                .unwrap(),
-        );
-        let Some(CommandResult::Workspace { workspace }) = created.result else {
-            panic!("missing workspace");
+        let (workspace, branch) = if let Some(source) = source {
+            source
+        } else {
+            let created = success(
+                engine
+                    .services
+                    .workspace
+                    .create(
+                        context(),
+                        CreateWorkspace {
+                            name: "native-collaboration".into(),
+                            grants: vec![],
+                            max_file_bytes: None,
+                            max_working_bytes: None,
+                            max_inodes: None,
+                        },
+                    )
+                    .await
+                    .unwrap(),
+            );
+            let Some(CommandResult::Workspace { workspace }) = created.result else {
+                panic!("missing workspace");
+            };
+            let fork = success(
+                engine
+                    .services
+                    .revisions
+                    .fork(
+                        context(),
+                        ForkBranch {
+                            workspace: workspace.id,
+                            source: Some(workspace.initial_revision),
+                            source_branch: None,
+                            name: "shared-work".into(),
+                        },
+                    )
+                    .await
+                    .unwrap(),
+            );
+            engine.sync_pending().await.unwrap();
+            (workspace.id, fork.branch.unwrap())
         };
-        let fork = success(
-            engine
-                .services
-                .revisions
-                .fork(
-                    context(),
-                    ForkBranch {
-                        workspace: workspace.id,
-                        source: Some(workspace.initial_revision),
-                        source_branch: None,
-                        name: "shared-work".into(),
-                    },
-                )
-                .await
-                .unwrap(),
-        );
-        let branch = fork.branch.unwrap();
-        engine.sync_pending().await.unwrap();
         let prepared = success(
             engine
                 .services
@@ -89,7 +100,7 @@ impl Harness {
                     context(),
                     PrepareMount {
                         automatic: false,
-                        workspace: workspace.id,
+                        workspace,
                         branch: Some(branch),
                         revision: None,
                         path: mounts.join("working"),
@@ -334,4 +345,95 @@ async fn native_automatic_collaboration_follows_driver_handle_tracking() {
             .await
             .unwrap(),
     );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "requires an installed native filesystem driver and mount permission"]
+async fn native_follower_can_reopen_after_rejected_concurrent_append() {
+    let first = Harness::open().await;
+    let path = first.binding.path.join("work.txt");
+    let file = tokio::task::spawn_blocking(move || {
+        let mut file = std::fs::File::create(path).unwrap();
+        file.write_all(b"first\n").unwrap();
+        file.sync_all().unwrap();
+        file
+    })
+    .await
+    .unwrap();
+    first.assert_handle_prevents_release().await;
+    first.close_and_release(file, b"first\n").await;
+    let second = Harness::using(
+        first.remote.clone(),
+        Some((first.binding.workspace, first.binding.branch)),
+    )
+    .await;
+    for path in [first.binding.path.clone(), second.binding.path.clone()] {
+        tokio::task::spawn_blocking(move || {
+            assert_eq!(std::fs::read(path.join("work.txt")).unwrap(), b"first\n");
+        })
+        .await
+        .unwrap();
+    }
+    let path = second.binding.path.join("work.txt");
+    let file = tokio::task::spawn_blocking(move || {
+        let mut file = std::fs::OpenOptions::new()
+            .append(true)
+            .create(true)
+            .open(path)
+            .unwrap();
+        file.write_all(b"second\n").unwrap();
+        file.sync_all().unwrap();
+        file
+    })
+    .await
+    .unwrap();
+    second.assert_handle_prevents_release().await;
+    second.engine.autosave_due().await.unwrap();
+    second.engine.sync_pending().await.unwrap();
+    let path = first.binding.path.join("work.txt");
+    tokio::task::spawn_blocking(move || {
+        std::fs::OpenOptions::new()
+            .append(true)
+            .create(true)
+            .open(path)
+            .expect_err("the other location still owns write authority");
+    })
+    .await
+    .unwrap();
+    second.close_and_release(file, b"first\nsecond\n").await;
+    first.wait_for_handles(0).await;
+    first.engine.collaborate_due().await.unwrap();
+    let current = first.local.mount(first.binding.id).await.unwrap().unwrap();
+    assert!(current.generation > first.binding.generation);
+    let path = current.path.clone();
+    tokio::task::spawn_blocking(move || {
+        assert_eq!(
+            std::fs::read(path.join("work.txt")).unwrap(),
+            b"first\nsecond\n"
+        );
+        assert!(
+            std::fs::read_dir(&path)
+                .unwrap()
+                .any(|entry| { entry.unwrap().file_name() == "work.txt" })
+        );
+    })
+    .await
+    .unwrap();
+    for harness in [&first, &second] {
+        let binding = harness
+            .local
+            .mount(harness.binding.id)
+            .await
+            .unwrap()
+            .unwrap();
+        success(
+            harness
+                .engine
+                .services
+                .mounts
+                .unmount(context(), binding.id, binding.generation)
+                .await
+                .unwrap(),
+        );
+    }
 }
