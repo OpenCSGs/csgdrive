@@ -1,5 +1,8 @@
 use super::*;
 
+#[path = "collaboration_commands.rs"]
+mod commands;
+
 async fn open_collaborating(
     directory: &std::path::Path,
     remote: Option<Arc<MemoryRemote>>,

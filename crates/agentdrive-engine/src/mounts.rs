@@ -48,6 +48,30 @@ impl MountService {
         let _ = self.write_access.set(access);
     }
 
+    async fn prepare_revision_write(
+        &self,
+        actor: &Principal,
+        target: BranchGuard,
+        merge: Option<MergeId>,
+    ) -> Result<BranchGuard> {
+        match self.write_access.get().and_then(Weak::upgrade) {
+            Some(access) => {
+                access
+                    .prepare_branch_write(
+                        actor,
+                        target,
+                        if merge.is_some() {
+                            Permission::Merge
+                        } else {
+                            Permission::Write
+                        },
+                    )
+                    .await
+            }
+            None => Ok(target),
+        }
+    }
+
     async fn check_mount_access(&self, branch: &Branch) -> Result<()> {
         if self
             .write_access
@@ -629,7 +653,12 @@ impl MountService {
                 self.runtime.state.merge(id).await?.ok_or_else(|| {
                     Error::new(ErrorCode::NotFound, "merge candidate does not exist")
                 })?;
-            if candidate.revision != revision.id || candidate.target != target {
+            if candidate.revision != revision.id
+                || (BranchGuard {
+                    authority_epoch: target.authority_epoch,
+                    ..candidate.target
+                }) != target
+            {
                 return Err(Error::new(
                     ErrorCode::CandidateMoved,
                     "merge candidate changed",
@@ -1067,10 +1096,7 @@ impl MountApi for MountService {
             )
             .await?
         {
-            OperationStart::Existing(record)
-                if record.phase == OperationPhase::Reserved
-                    || record.recovery() == Some(OperationRecovery::RetryRequest) =>
-            {
+            OperationStart::Existing(record) if record.can_retry_request() => {
                 OperationContext { operation: record }
             }
             OperationStart::Existing(record) => return self.operations.progress(record).await,
@@ -1153,7 +1179,7 @@ impl MountApi for MountService {
         context: RequestContext,
         request: ReleaseMount,
     ) -> Result<OperationRecord> {
-        let _lifecycle = self.runtime.lifecycle.lock().await;
+        let lifecycle = self.runtime.lifecycle.lock().await;
         let target = self
             .operations
             .get(&context.principal, request.operation)
@@ -1225,7 +1251,45 @@ impl MountApi for MountService {
                     "release acknowledged a different binding generation",
                 ));
             }
-            let resumed = self.execute(target.clone()).await?;
+            drop(lifecycle);
+            let prepared = match &target.pending {
+                Some(PendingAction::ApplyRevision {
+                    target: guard,
+                    merge,
+                    ..
+                }) if !target.local_saved => Some(
+                    self.prepare_revision_write(&target.principal, *guard, *merge)
+                        .await?,
+                ),
+                _ => None,
+            };
+            let _lifecycle = self.runtime.lifecycle.lock().await;
+            let mut current = self.operations.get(&target.principal, target.id).await?;
+            if let Some(guard) = prepared
+                && !current.local_saved
+                && let Some(PendingAction::ApplyRevision { target, .. }) = &mut current.pending
+            {
+                if (BranchGuard {
+                    authority_epoch: guard.authority_epoch,
+                    ..*target
+                }) != guard
+                {
+                    return Err(Error::new(
+                        ErrorCode::TargetMoved,
+                        "pending revision target changed",
+                    ));
+                }
+                *target = guard;
+                let pending = current.pending.clone();
+                current = self
+                    .operations
+                    .update(&[current.id], LocalCommit::default(), |record| {
+                        record.pending = pending.clone();
+                    })
+                    .await?
+                    .remove(0);
+            }
+            let resumed = self.execute(current).await?;
             if let Some(error) = resumed.error {
                 return Err(error);
             }
@@ -1315,7 +1379,20 @@ impl RevisionTransition for MountService {
         merge: Option<MergeId>,
         durability: Durability,
     ) -> Result<OperationRecord> {
+        let target = self
+            .prepare_revision_write(&context.operation.principal, target, merge)
+            .await?;
         let _lifecycle = self.runtime.lifecycle.lock().await;
+        let current = self
+            .operations
+            .get(&context.operation.principal, context.operation.id)
+            .await?;
+        if current.local_saved
+            || current.pending.is_some()
+            || current.phase == OperationPhase::Cancelled
+        {
+            return Ok(current);
+        }
         let record = {
             let _gate = self.runtime.lock_branch(target.branch).await;
             self.runtime.check_mutation(target.branch)?;
@@ -1339,7 +1416,8 @@ impl RevisionTransition for MountService {
                         && mount.access == AccessMode::ReadWrite
                         && mount.state != MountState::Released
                 });
-            let mut record = context.operation;
+            let mut record = current;
+            record.error = None;
             record.pending = Some(PendingAction::ApplyRevision {
                 target,
                 revision,

@@ -139,7 +139,11 @@ object ID 使用 SHA-256 对域分隔标记、格式版本、对象类型和内�
 
 索引创建与修改都按所需页面数量平均分配内容；变化页面不足一半容量时，与相邻页面合并或重新分配。未变化页面直接复用，只有一个子项的根页面可以减少一级。批量操作生成的非根页面至少包含 64 项，每个页面最多包含 128 项。
 
+主动命令的权限申请由 `CollaborationService` 通过 `WriteAccess` 统一提供。`VersionService` 在正式提交和 checkpoint 前申请权限，`MountService` 在版本替换和继续挂载操作前申请权限。申请期间不持有 lifecycle 锁或分支修改锁；保存时通过 BranchGuard 检查取得的权限 epoch 和预期内容。`RevisionService` 负责内容保存及持久性确认，后台自动保存和发布保留现有权限检查。失败记录通过 operation coordinator 的 compare-and-swap 更新，保护并发完成的保存结果。
+
 文件系统 `fsync` 保存工作检查点，不创建 revision。本地检查点无需创建 operation 或同步任务；没有变化时，本地 fsync 直接返回。远端 fsync 额外发布工作根对象并等待远端确认，它拥有 operation 记录，中间检查点不会逐个保留为历史版本。自动保存仍按五秒无新写入、三十秒持续写入的期限创建 revision，daemon 每秒检查。显式 `mount_save`、`revision_commit`、创建 branch 和交接 branch 会按需要保存版本。检查点不会重置自动保存期限；重启恢复最新检查点后，尚未形成版本的内容会继续安排自动保存。
+
+跟随状态下，所有已接收修改都已保存时，`fsync` 只核验持久性，不申请写权限或创建发布任务。远端持久性要求已有远端确认记录与本机内容匹配，且当前分支没有待发布任务，否则返回 `REMOTE_UNKNOWN`。
 
 `branch_history` 保存最新不可变历史索引的引用，用于增量更新；branch 尚未发布历史索引时，在首次发布任务中建立。`object_usage` 保存已确认缓存与未确认对象的字节计数，由 SQLite trigger 在对象新增、删除及远端确认时同步更新。`LocalObjectStore::volume_stats` 为文件系统 STATFS 提供宿主磁盘容量，无需扫描对象记录。缓存回收在持有对象保护锁、检查活动读取者后，可以移除 branch、同步队列、保留版本和 pin 均未引用的未确认对象。持久化继续使用 SQLite 和完整文件对象。本地保留的 branch 会保留最新历史索引的全部页面，保证远端不可用时仍能增量保存。此规则仅保留索引页面，历史文件内容仍按正常缓存策略回收。
 

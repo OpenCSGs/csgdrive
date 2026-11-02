@@ -185,10 +185,10 @@ impl MergeService {
         if branch.workspace != request.workspace {
             return Err(Error::invalid("target branch belongs to another workspace"));
         }
-        if branch.owner != self.runtime.location || branch.state != BranchState::Writable {
+        if branch.state == BranchState::Deleted {
             return Err(Error::new(
-                ErrorCode::CoordinatorRequired,
-                "merge must run on the target owner's service",
+                ErrorCode::ReadOnly,
+                "deleted branch cannot be a merge target",
             ));
         }
         if branch.dirty {
@@ -739,7 +739,10 @@ impl MergeApi for MergeService {
             )
             .await?
         {
-            OperationStart::Existing(record) => return Ok(record),
+            OperationStart::Existing(record) if record.can_retry_request() => {
+                OperationContext { operation: record }
+            }
+            OperationStart::Existing(record) => return self.operations.progress(record).await,
             OperationStart::New(context) => context,
         };
         let result = async {

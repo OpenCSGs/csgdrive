@@ -10,6 +10,11 @@ pub enum OperationRecovery {
 }
 
 impl OperationRecord {
+    pub fn can_retry_request(&self) -> bool {
+        self.phase == OperationPhase::Reserved
+            || self.recovery() == Some(OperationRecovery::RetryRequest)
+    }
+
     pub fn recovery(&self) -> Option<OperationRecovery> {
         if !matches!(
             self.phase,
@@ -21,8 +26,10 @@ impl OperationRecord {
             return None;
         }
         match &self.pending {
-            None if self.name == "mount_save"
-                && self.phase == OperationPhase::Failed
+            None if matches!(
+                self.name.as_str(),
+                "mount_save" | "revision_commit" | "revision_restore" | "merge_apply"
+            ) && self.phase == OperationPhase::Failed
                 && !self.local_saved
                 && self.result.is_none()
                 && self.error.as_ref().is_some_and(|error| {

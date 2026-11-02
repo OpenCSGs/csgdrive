@@ -6,7 +6,7 @@ use crate::{
 use agentdrive_model::*;
 use agentdrive_ports::*;
 use async_trait::async_trait;
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock, Weak};
 
 pub(crate) struct ForkSource {
     pub revision: RevisionId,
@@ -518,12 +518,20 @@ pub(crate) fn validate_label(value: &str, field: &str) -> Result<()> {
 impl RevisionWriter for RevisionService {
     async fn save(
         &self,
-        context: OperationContext,
+        mut context: OperationContext,
         request: SaveRevision,
     ) -> Result<OperationRecord> {
         let durability = request.durability;
         let operation = {
             let _gate = self.runtime.lock_branch(request.guard.branch).await;
+            context.operation = self
+                .operations
+                .get(&context.operation.principal, context.operation.id)
+                .await?;
+            if context.operation.local_saved {
+                return self.operations.progress(context.operation).await;
+            }
+            context.operation.error = None;
             self.runtime.check_mutation(request.guard.branch)?;
             let _protection = self.runtime.objects.read().await;
             self.save_locked(context, request).await?
@@ -545,10 +553,49 @@ impl DurabilityService for RevisionService {
             self.runtime.check_mutation(branch)?;
             let _protection = self.runtime.objects.read().await;
             let mut branch = self.runtime.branch(branch).await?;
-            branch.check_write(self.runtime.location, branch.authority_epoch)?;
             self.runtime
                 .authorize(&actor, branch.workspace, Some(branch.id), Permission::Write)
                 .await?;
+            if (branch.owner != self.runtime.location || branch.state != BranchState::Writable)
+                && branch.state != BranchState::Deleted
+                && branch.saved_seq == branch.mutation_seq
+            {
+                let remote_confirmed = if durability == Durability::Remote {
+                    let observed = self.runtime.state.remote_refs(branch.workspace).await?;
+                    let synchronization = BranchSynchronization::new(
+                        &branch,
+                        observed
+                            .iter()
+                            .find(|reference| reference.branch == branch.id),
+                        self.trees.content.refs().is_some(),
+                    );
+                    let pending = self
+                        .runtime
+                        .state
+                        .sync_jobs(branch.workspace)
+                        .await?
+                        .iter()
+                        .any(|job| job.reference.branch == branch.id);
+                    if !synchronization.remote_confirmed || pending {
+                        return Err(Error::new(
+                            ErrorCode::RemoteUnknown,
+                            "saved content has no matching remote acknowledgement",
+                        )
+                        .retryable());
+                    }
+                    true
+                } else {
+                    false
+                };
+                return Ok(DurabilityReceipt {
+                    branch: branch.id,
+                    mutation_seq: branch.saved_seq,
+                    local_saved: true,
+                    remote_confirmed,
+                    operation: None,
+                });
+            }
+            branch.check_write(self.runtime.location, branch.authority_epoch)?;
             let guard = BranchGuard::from(&branch);
             let mut commit = LocalCommit::default();
             if branch.saved_seq != branch.mutation_seq {
@@ -640,6 +687,7 @@ pub struct VersionService {
     revisions: Arc<RevisionService>,
     transitions: Arc<dyn RevisionTransition>,
     queries: Arc<dyn TreeQuery>,
+    write_access: OnceLock<Weak<dyn WriteAccess>>,
 }
 
 impl std::fmt::Debug for VersionService {
@@ -658,7 +706,12 @@ impl VersionService {
             revisions,
             transitions,
             queries,
+            write_access: OnceLock::new(),
         })
+    }
+
+    pub(crate) fn set_write_access(&self, access: Weak<dyn WriteAccess>) {
+        let _ = self.write_access.set(access);
     }
 }
 
@@ -691,18 +744,43 @@ impl RevisionApi for VersionService {
             )
             .await?
         {
-            OperationStart::Existing(record) => return Ok(record),
+            OperationStart::Existing(record) if record.can_retry_request() => {
+                OperationContext { operation: record }
+            }
+            OperationStart::Existing(record) => {
+                return self.revisions.operations.progress(record).await;
+            }
             OperationStart::New(context) => context,
         };
-        let save = SaveRevision {
-            message: request.message,
-            guard: request.guard,
-            kind: request.kind.into(),
-            parents: None,
-            replace_root: None,
-            durability: request.durability,
-        };
-        match self.revisions.save(operation.clone(), save).await {
+        let result = async {
+            let guard = match self.write_access.get().and_then(Weak::upgrade) {
+                Some(access) => {
+                    access
+                        .prepare_branch_write(
+                            &operation.operation.principal,
+                            request.guard,
+                            Permission::Write,
+                        )
+                        .await?
+                }
+                None => request.guard,
+            };
+            self.revisions
+                .save(
+                    operation.clone(),
+                    SaveRevision {
+                        message: request.message,
+                        guard,
+                        kind: request.kind.into(),
+                        parents: None,
+                        replace_root: None,
+                        durability: request.durability,
+                    },
+                )
+                .await
+        }
+        .await;
+        match result {
             Ok(record) => Ok(record),
             Err(error) => self.revisions.operations.fail(&operation, error).await,
         }
@@ -838,7 +916,12 @@ impl RevisionApi for VersionService {
             )
             .await?
         {
-            OperationStart::Existing(record) => return Ok(record),
+            OperationStart::Existing(record) if record.can_retry_request() => {
+                OperationContext { operation: record }
+            }
+            OperationStart::Existing(record) => {
+                return self.revisions.operations.progress(record).await;
+            }
             OperationStart::New(context) => context,
         };
         let result = self

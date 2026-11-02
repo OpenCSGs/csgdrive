@@ -278,7 +278,11 @@ impl CollaborationService {
         self.save_record(record).await
     }
 
-    pub(super) async fn acquire(&self, record: &mut CollaborationRecord) -> Result<()> {
+    pub(super) async fn acquire(
+        &self,
+        record: &mut CollaborationRecord,
+        expected: Option<BranchGuard>,
+    ) -> Result<()> {
         let local = self.runtime.branch(record.branch).await?;
         if local.protected {
             return Err(Error::new(
@@ -345,6 +349,9 @@ impl CollaborationService {
         next.mutation_seq = remote.durable_seq;
         next.saved_seq = remote.durable_seq;
         next.dirty = remote.working_root != formal.root;
+        if let Some(expected) = expected {
+            crate::runtime::check_content_guard(&next, &expected)?;
+        }
         next.owner = self.runtime.location;
         next.state = BranchState::Writable;
         if !remote.write_available {
