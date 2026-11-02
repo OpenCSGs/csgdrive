@@ -18,14 +18,14 @@ struct Arguments {
 }
 #[derive(Debug, Subcommand)]
 enum Command {
-    /// Create private configuration and credentials in a new directory.
+    /// Create private configuration in a new directory.
     Init {
         #[arg(long)]
         directory: PathBuf,
         #[arg(long, default_value = "127.0.0.1:7421")]
         listen: SocketAddr,
     },
-    /// Serve authenticated MCP clients and native filesystem mounts.
+    /// Serve local MCP clients and native filesystem mounts.
     Serve {
         #[arg(long)]
         config: PathBuf,
@@ -57,7 +57,6 @@ async fn run(arguments: Arguments) -> Result<()> {
 }
 async fn serve(settings: Arc<ConfigStore>) -> Result<()> {
     let config = settings.startup();
-    let credentials = config.credentials()?;
     let local = Arc::new(LocalBackend::open(&config.data_dir)?);
     let driver = NativeMountDriver::new(config.mount_roots.clone())?;
     let remote = settings::remote_storage(settings.live().load().values.remote.as_ref())?;
@@ -87,7 +86,6 @@ async fn serve(settings: Arc<ConfigStore>) -> Result<()> {
     let address = listener.local_addr()?;
     let app = router(
         engine.services.clone(),
-        credentials,
         GatewayConfig {
             allowed_hosts: vec![address.to_string(), format!("localhost:{}", address.port())],
             settings: settings.clone(),

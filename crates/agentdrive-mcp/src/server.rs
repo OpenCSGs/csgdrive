@@ -307,7 +307,7 @@ pub fn tool_catalog() -> Vec<Tool> {
         ),
         tool::<Empty>(
             "workspace_list",
-            "List workspaces visible to this authenticated principal.",
+            "List workspaces available to the local daemon.",
             true,
         ),
         tool::<WorkspaceQuery>(

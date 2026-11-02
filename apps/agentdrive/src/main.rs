@@ -3,10 +3,7 @@ use agentdrive_mcp::{Client, stdio_proxy};
 use agentdrive_model::{BranchId, Error, OperationId, Result, RevisionId, WorkspaceId};
 use clap::{Parser, Subcommand};
 use serde_json::{Value, json};
-use std::{
-    io::Read,
-    path::{Path, PathBuf},
-};
+use std::{io::Read, path::PathBuf};
 
 #[derive(Debug, Parser)]
 #[command(version, about = "AgentDrive MCP client")]
@@ -17,7 +14,8 @@ struct Arguments {
         default_value = "http://127.0.0.1:7421/mcp"
     )]
     endpoint: String,
-    #[arg(long, env = "AGENTDRIVE_TOKEN_FILE")]
+    // Accept existing launch configurations without reading obsolete token files.
+    #[arg(long, hide = true)]
     token_file: Option<PathBuf>,
     #[command(subcommand)]
     command: Command,
@@ -103,25 +101,12 @@ async fn main() {
     // stdin 的阻塞读取可能仍在等待输入；run 已完成持久化和连接清理。
     std::process::exit(code);
 }
-fn read_token(path: Option<&Path>) -> Result<String> {
-    match path {
-        Some(path) => Ok(std::fs::read_to_string(path)?.trim().to_owned()),
-        None => std::env::var("AGENTDRIVE_TOKEN").map_err(|_| {
-            Error::invalid("set AGENTDRIVE_TOKEN_FILE, --token-file, or AGENTDRIVE_TOKEN")
-        }),
-    }
-}
 async fn run(arguments: Arguments) -> Result<bool> {
     let command = match arguments.command {
         Command::Dashboard { open } => {
-            let mut url = integration::base_url(&arguments.endpoint)?;
+            let url = integration::base_url(&arguments.endpoint)?;
             println!("{url}");
             if open {
-                let token = read_token(arguments.token_file.as_deref())?;
-                let mut fragment = reqwest::Url::parse("http://localhost/")
-                    .map_err(|error| Error::invalid(error.to_string()))?;
-                fragment.query_pairs_mut().append_pair("token", &token);
-                url.set_fragment(fragment.query());
                 #[cfg(target_os = "linux")]
                 let mut opener = std::process::Command::new("xdg-open");
                 #[cfg(target_os = "macos")]
@@ -140,11 +125,10 @@ async fn run(arguments: Arguments) -> Result<bool> {
         }
         command => command,
     };
-    let token = read_token(arguments.token_file.as_deref())?;
     if let Command::Integrate(options) = command {
-        return integration::run(&arguments.endpoint, token, options).await;
+        return integration::run(&arguments.endpoint, options).await;
     }
-    let client = Client::connect(&arguments.endpoint, token).await?;
+    let client = Client::connect(&arguments.endpoint).await?;
     let result = async {
         match command {
             Command::Tools => println!("{}", serde_json::to_string_pretty(&client.tools().await?)?),

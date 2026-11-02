@@ -37,15 +37,14 @@ AGENTDRIVE_DIRECTORY="$HOME/.local/share/agentdrive"
 在另一个终端执行：
 
 ```sh
-export AGENTDRIVE_TOKEN_FILE="$HOME/.local/share/agentdrive/token"
 ./target/debug/agentdrive tools
 ./target/debug/agentdrive call workspace_create --request-id create-demo --json '{"name":"demo"}'
 ./target/debug/agentdrive call workspace_list
 ```
 
-`init` 会创建配置、随机 bearer token，以及状态、挂载和文件交换所需的目录。如果配置已经存在，初始化会拒绝执行，已有凭据会保留。守护进程默认监听 `127.0.0.1:7421`，MCP endpoint 为 `/mcp`。每个状态目录只能由一个守护进程使用。
+`init` 创建配置及状态、挂载与文件交换目录。配置已存在时拒绝初始化。Dashboard 和 MCP 直接连接，无需访问令牌。守护进程默认监听 `127.0.0.1:7421`，MCP endpoint 为 `/mcp`。每个状态目录由一个守护进程使用。
 
-通过 stdio 连接 MCP 客户端时，将可执行程序设置为 `agentdrive`，参数设置为 `["mcp"]`，并设置 `AGENTDRIVE_TOKEN_FILE`。可以通过 `AGENTDRIVE_ENDPOINT` 指定其他守护进程 endpoint。stdio 进程会将请求转发给正在运行的守护进程。
+通过 stdio 连接 MCP 客户端时，将可执行程序设置为 `agentdrive`，参数设置为 `["mcp"]`。可以通过 `AGENTDRIVE_ENDPOINT` 指定其他守护进程 endpoint。stdio 进程会将请求转发给正在运行的守护进程。
 
 使用 `agentdrive tools` 查看 JSON 输入 schema。通过 MCP 调用命令工具时，请求格式为 `{ "request_id": "stable-id", "request": { ... } }`；CLI 的 `--request-id` 选项会构造该请求结构。查询工具和 `operation_cancel` 直接接收参数。`--json -` 从标准输入读取 JSON。工具响应没有错误时，CLI 返回退出码 0；工具返回错误时返回 2；传输或输入发生错误时返回 1；命令行参数解析错误也使用 2。可执行示例见 [CLI 使用](cli.zh-CN.md)，完整工具参考见 [MCP 参数与能力](mcp.zh-CN.md)。
 

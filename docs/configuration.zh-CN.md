@@ -4,52 +4,46 @@
 
 ## 守护进程配置
 
-运行 `agentdrived init --directory /absolute/path/to/agentdrive`，创建 `agentdrive.json`、私有 token 文件，以及挂载和文件交换目录。修改生成的配置后，运行 `agentdrived serve --config /absolute/path/to/agentdrive/agentdrive.json`。daemon 在启动时读取配置，并每秒检查运行配置的修改。
+运行 `agentdrived init --directory /absolute/path/to/agentdrive` 创建 `agentdrive.json`、挂载目录与文件交换目录。通过 `agentdrived serve --config /absolute/path/to/agentdrive/agentdrive.json` 启动服务。配置文件每秒检查一次。Dashboard、CLI 和 MCP 直接连接本地服务，无需访问令牌。
 
-生成的文件包含 `data_dir`、`listen`、`mount_roots`、`directory_roots`、`credentials` 和 `collaboration`。其他可选设置使用下表中的默认值，按需添加即可。
+生成的配置包含 `data_dir`、`listen`、`mount_roots`、`directory_roots` 和 `collaboration`。
 
 | 字段 | 含义与默认值 |
 | --- | --- |
-| `data_dir` | 必填，本地状态的绝对路径；初始化选择 `<directory>/state`。每个状态目录只能由一个守护进程使用。 |
-| `listen` | 必填，本机回环地址和端口；初始化选择 `127.0.0.1:7421`。 |
-| `mount_roots` | 必填，允许挂载的绝对根目录数组；初始化创建 `<directory>/mounts`。 |
-| `directory_roots` | 允许导入和导出的绝对根目录；省略时为 `[]`。初始化创建并允许使用 `<directory>/exchange`。 |
-| `credentials` | 必填，格式为 `{ "principal": "owner", "token_file": "/absolute/path/token" }` 的数组，至少需要一项凭据。 |
-| `administrators` | 可以读取和修改 daemon 设置的身份列表，默认为 `["owner"]`。与工作区授权分别管理，修改后需要重启。 |
-| `allowed_origins` | HTTP Origin 允许列表，默认 `[]`。CLI 和 stdio 连接不会发送 Origin。 |
-| `collaboration` | 默认为 `{ "enabled": true }`，统一管理此 daemon 全部工作区和读写挂载的自动协作。 |
-| `cache` | 可选对象，只包含 `max_bytes`：本地不可变对象的缓存容量，以字节为单位，默认为 `2147483648`（2 GiB），必须为正整数。启用远程存储时用于缓存清理。 |
-| `remote` | 下文的 S3 或 OpenCSG 配置，通过 `backend` 选择。省略或设置为 `null` 时仅使用本地存储。已有配置没有 `backend` 时继续使用 S3。 |
+| `data_dir` | 本地状态目录的绝对路径，初始化使用 `<directory>/state`；每个目录由一个 daemon 使用。 |
+| `listen` | 本机回环监听地址，初始化使用 `127.0.0.1:7421`。 |
+| `mount_roots` | 允许挂载的绝对路径列表，初始化创建 `<directory>/mounts`。 |
+| `directory_roots` | 允许导入导出的绝对路径列表，省略时为 `[]`；初始化允许 `<directory>/exchange`。 |
+| `principal` | 工作区操作记录使用的本地身份，默认 `owner`；全部客户端共用此身份。 |
+| `allowed_origins` | 额外允许的 HTTP Origin，默认 `[]`；CLI 和 stdio 连接省略 Origin。 |
+| `collaboration` | 默认 `{ "enabled": true }`，适用于此 daemon 的全部工作区与可写挂载。 |
+| `cache` | 本地版本内容缓存容量 `max_bytes`，默认 `2147483648`（2 GiB），必须为正整数；使用远程存储时生效。 |
+| `remote` | 通过 `backend` 选择 S3 或 OpenCSG，省略或 `null` 使用本地存储。已有配置未指定 `backend` 时使用 S3。 |
 
-例如，添加 `"cache": { "max_bytes": 536870912 }` 可以将缓存容量设为 512 MiB。程序自动将清理目标设为容量的 75%，此例对应 384 MiB。
+文件系统路径必须为绝对路径。启动前创建允许的根目录。JSON 字符串不展开 `~` 或环境变量；Windows 路径可以使用转义反斜线或正斜线。未知字段会被拒绝，配置文件最大为 1 MiB。配置和状态通过 daemon 用户的文件系统权限管理。
 
-状态目录、允许的根目录和 token 路径必须使用绝对路径。启动前应创建允许的根目录。JSON 字符串不会展开 `~`、`$HOME` 或环境变量。Windows 路径使用转义后的反斜线，例如 `"C:\\Users\\alice\\agentdrive\\state"`，也可以使用正斜线。未知的顶层配置字段，以及未知的 `cache` 或 `remote` 字段会被拒绝。配置文件上限为 1 MiB。
+已有配置未指定 `principal` 时，程序保留原来第一项凭据对应的身份。迁移后忽略 `credentials` 和 `administrators`，保存设置时移除这些字段；原有令牌文件不再读取。远程存储继续使用 OpenCSG token 或 S3 凭据。
 
-token 文件必须是普通文件，最多 4096 字节，去除首尾空白后至少包含 32 个非空白字节。Unix 环境下，文件不能授予所属组和其他用户访问权限；初始化会创建权限为 `0600` 的文件。各 token 必须唯一。token 选择配置中的 `principal`，工作区所有权和授权决定该身份的访问范围。请使用守护进程用户的文件系统权限保护配置和状态。
+## 运行时更新与 Dashboard 设置
 
-## 热更新与 Dashboard 设置
-
-在 Dashboard 左侧选择“设置”，或访问 `/settings`，使用管理员 token 认证。“自动协作”开关默认开启，适用于该 daemon 的全部工作区和读写挂载。页面还可以选择本地、S3 或 OpenCSG Codes 存储，修改 S3 连接与凭据、OpenCSG 域名与仓库及 token、本地缓存容量，以及 HTTP Origin 允许列表。两种远程后端均显示缓存容量，本地模式保留已保存的容量值。连接设置保存后，在程序运行期间完成切换。保存会写入 daemon 启动时使用的同一个 `agentdrive.json`，并发布完整配置快照。
+通过左下角的“全局设置”或 `/settings` 编辑整个 daemon 的配置。没有工作区时也可以使用设置页面。表单提供自动协作、远程连接、本地缓存容量和 HTTP 访问来源配置。保存时更新启动使用的同一个 `agentdrive.json`。
 
 | 配置 | 生效时间 |
 | --- | --- |
-| `remote` | 准备历史内容与远程连接后切换，无需重启 |
-| `cache` | 下一次缓存清理；后台任务每 30 秒执行一次 |
-| `allowed_origins` | 下一次 HTTP 请求，包括已有 MCP 会话的请求 |
-| `collaboration.enabled` | 下一次文件操作或协作检查；已开始的交还与恢复继续完成 |
-| `data_dir`、`listen`、`mount_roots`、`directory_roots` | daemon 重启后 |
-| `credentials`、token 文件内容、`administrators`、进程环境变量 | daemon 重启后 |
+| `remote` | 历史内容与目标连接准备完成后生效，无需重启 |
+| `cache` | 下次缓存检查，每 30 秒执行一次 |
+| `allowed_origins` | 下一次 HTTP 请求，包括已有 MCP 会话 |
+| `collaboration.enabled` | 下一次文件操作或协作检查；正在释放和恢复的操作继续执行 |
+| `data_dir`、`listen`、`mount_roots`、`directory_roots`、`principal`、进程环境 | 重启 daemon 后 |
 
-Origin 使用 HTTP 或 HTTPS 的 `scheme://host[:port]` 格式，不包含路径、末尾斜线、用户名密码、通配符或显式填写的默认端口。同源 Dashboard 请求及没有 Origin 的请求可以访问，所有请求仍需 Bearer 身份验证。此设置控制 Origin 检查，服务不会因此添加 CORS 响应头。
+Origin 使用 `scheme://host[:port]` 格式，不能包含路径、结尾斜线、凭据、通配符或显式默认端口。同源请求与没有 Origin 的请求可以访问。服务继续使用回环监听地址、Host 与 Origin 检查；此配置不启用 CORS 响应头。
 
-直接修改配置文件后，daemon 在每秒检查时读取候选内容，校验通过后发布。JSON 错误、无效容量、文件无法访问，以及任意启动字段的变化都会保留完整的当前配置，并在设置页面显示错误。修改启动字段后，需要重启 daemon 才能应用整个文件。修正文件后，下一次检查会清除错误。建议通过原子替换文件提交修改，避免读取正在写入的 JSON。daemon 不监听 token 文件内容。
+外部文件修改无效时，保留当前配置并在设置页面显示错误。修正文件后，下次检查清除错误。编辑配置时应使用原子替换；启动配置修改需要重启。
 
-带身份验证的 HTTP 接口：
+- `GET /api/settings` 返回当前 `runtime`、只读 `startup`、`config_path`、`revision` 和 `reload_error`。
+- `PUT /api/settings` 接受 `{ "revision": "<GET 返回的 revision>", "runtime": { "cache": { ... }, "allowed_origins": [], "remote": null, "collaboration": { "enabled": true } } }`，需要提供 GET 返回的完整运行配置。
 
-- `GET /api/settings`：返回当前 `runtime`、只读 `startup` 字段、`config_path`、配置版本 `revision` 和 `reload_error`。
-- `PUT /api/settings`：提交 `{ "revision": "<GET 返回的版本>", "runtime": { "cache": { ... }, "allowed_origins": [], "remote": null, "collaboration": { "enabled": true } } }`。需要提供 GET 返回的完整运行配置，成功后返回保存的设置。
-
-两个接口都要求身份属于 `administrators`，工作区授权不会授予设置权限。响应包含 token 文件路径，但不会返回 token 内容、已保存的 OpenCSG token 或 S3 环境凭据。缺少认证返回 401，设置权限不足返回 403，版本过期或检测到外部文件修改返回 409。校验失败时，当前配置和文件保持原有内容。页面检测到新版本时会保留尚未保存的表单内容，由用户选择重新载入。
+响应会隐藏已保存的远程密钥。配置版本过期或文件被外部修改时返回 409。校验失败保留当前配置与文件。页面发现新版本时保留尚未保存的表单内容，并提供重新载入操作。
 
 ## 自动协作
 
@@ -161,7 +155,7 @@ AgentDrive 继续管理 workspace、branch、autosave、commit、merge、操作�
 
 Dashboard 可以编辑并保存 S3 凭据到配置文件，Unix 保存权限为 `0600`。GET 设置接口会清空 `secret_access_key` 和 `session_token`；PUT 中同一个 Access Key ID 的空密钥表示保留已有凭据。修改 Session Token 时同时填写 Secret Access Key；将 `credentials` 设为 `null` 使用环境凭据。配置中的凭据优先于环境凭据。
 
-S3 凭据由**守护进程**读取。请在启动 `agentdrived serve` 的终端或服务环境中设置变量。`AGENTDRIVE_TOKEN_FILE` 用于 CLI 访问 AgentDrive 的身份验证。
+S3 凭据由**守护进程**读取。请在启动 `agentdrived serve` 的终端或服务环境中设置变量。
 
 ```sh
 export AWS_ACCESS_KEY_ID='your-access-key-id'
@@ -203,7 +197,7 @@ jq -n --arg operation "$(jq -r '.id' "$AGENTDRIVE_DIRECTORY/demo-import.json")" 
 
 ## 多台机器
 
-各守护进程需要选择相同后端和目标：S3 使用相同的 endpoint、bucket、prefix 和签名 region；OpenCSG 使用相同的域名、仓库、存储分支和 prefix。每台机器分别初始化状态目录并获得自己的 `LocationId`，然后使用源守护进程返回的 workspace ID。目标机器上通过身份验证的 principal 需要是工作区所有者，或者获得适当授权。各机器的 token 可以不同。
+各守护进程需要选择相同后端和目标：S3 使用相同的 endpoint、bucket、prefix 和签名 region；OpenCSG 使用相同的域名、仓库、存储分支和 prefix。每台机器分别初始化状态目录并获得自己的 `LocationId`，然后使用源守护进程返回的 workspace ID。目标机器上本地 principal 需要是工作区所有者，或者获得适当授权。各机器通过自己的 daemon 连接远程存储。
 
 在源机器执行推送，然后在目标机器使用相同 workspace ID 调用 `sync`，设置 `direction: "pull"`。拉取会导入历史和远端分支引用。可以使用已保留的版本创建本地分支；需要接管已有可写分支时，完成在线 `ownership_transfer`。详见[操作说明](operations.zh-CN.md)和 [MCP 参考](mcp.zh-CN.md)。
 

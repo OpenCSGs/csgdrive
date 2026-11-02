@@ -1,11 +1,8 @@
 use agentdrive_config::{ConfigStore, RemoteConfig, SettingsUpdate, initialize};
-use agentdrive_model::{ErrorCode, Principal};
+use agentdrive_model::ErrorCode;
 use serde_json::{Value, json};
 use std::{fs, sync::Arc};
 
-fn owner() -> Principal {
-    "owner".to_owned().try_into().unwrap()
-}
 fn setup() -> (tempfile::TempDir, Arc<ConfigStore>) {
     let directory = tempfile::tempdir().unwrap();
     let path = initialize(directory.path(), "127.0.0.1:7421".parse().unwrap()).unwrap();
@@ -16,7 +13,7 @@ fn setup() -> (tempfile::TempDir, Arc<ConfigStore>) {
 #[test]
 fn collaboration_defaults_on_and_updates_through_settings_and_file_reload() {
     let (_directory, store) = setup();
-    let settings = store.settings(&owner()).unwrap();
+    let settings = store.settings();
     assert!(settings.runtime.collaboration.enabled);
     let mut original: Value =
         serde_json::from_slice(&fs::read(&settings.config_path).unwrap()).unwrap();
@@ -28,17 +25,14 @@ fn collaboration_defaults_on_and_updates_through_settings_and_file_reload() {
     .unwrap();
     assert!(store.reload().unwrap());
     assert!(store.live().load().values.collaboration.enabled);
-    let settings = store.settings(&owner()).unwrap();
+    let settings = store.settings();
     let mut runtime = settings.runtime;
     runtime.collaboration.enabled = false;
     let saved = store
-        .update(
-            &owner(),
-            SettingsUpdate {
-                revision: settings.revision,
-                runtime,
-            },
-        )
+        .update(SettingsUpdate {
+            revision: settings.revision,
+            runtime,
+        })
         .unwrap();
     assert!(!saved.runtime.collaboration.enabled);
     let before_reload = store.live().load();
@@ -60,7 +54,7 @@ fn collaboration_defaults_on_and_updates_through_settings_and_file_reload() {
 #[test]
 fn opencsg_token_is_private_and_only_reused_for_the_same_destination() {
     let (_directory, store) = setup();
-    let settings = store.settings(&owner()).unwrap();
+    let settings = store.settings();
     let mut runtime = settings.runtime;
     runtime.remote = Some(
         serde_json::from_value(json!({
@@ -70,13 +64,10 @@ fn opencsg_token_is_private_and_only_reused_for_the_same_destination() {
         .unwrap(),
     );
     let saved = store
-        .update(
-            &owner(),
-            SettingsUpdate {
-                revision: settings.revision,
-                runtime,
-            },
-        )
+        .update(SettingsUpdate {
+            revision: settings.revision,
+            runtime,
+        })
         .unwrap();
     assert!(
         !serde_json::to_string(&saved)
@@ -91,13 +82,10 @@ fn opencsg_token_is_private_and_only_reused_for_the_same_destination() {
     assert!(config.token.is_empty());
     config.prefix = "agentdrive/other".into();
     let saved = store
-        .update(
-            &owner(),
-            SettingsUpdate {
-                revision: saved.revision,
-                runtime,
-            },
-        )
+        .update(SettingsUpdate {
+            revision: saved.revision,
+            runtime,
+        })
         .unwrap();
     let reopened = ConfigStore::open(&saved.config_path).unwrap();
     let snapshot = reopened.live().load();
@@ -114,13 +102,10 @@ fn opencsg_token_is_private_and_only_reused_for_the_same_destination() {
         };
         let before = fs::read(&saved.config_path).unwrap();
         let error = store
-            .update(
-                &owner(),
-                SettingsUpdate {
-                    revision: saved.revision.clone(),
-                    runtime: serde_json::from_value(update).unwrap(),
-                },
-            )
+            .update(SettingsUpdate {
+                revision: saved.revision.clone(),
+                runtime: serde_json::from_value(update).unwrap(),
+            })
             .unwrap_err();
         assert_eq!(error.code, ErrorCode::InvalidArgument);
         assert_eq!(fs::read(&saved.config_path).unwrap(), before);
@@ -170,10 +155,10 @@ fn remote_configuration_accepts_legacy_s3_and_rejects_unsafe_opencsg_destination
 fn file_updates_publish_complete_snapshots_and_preserve_in_flight_readers() {
     let (_directory, store) = setup();
     let before = store.live().load();
-    let settings = store.settings(&owner()).unwrap();
+    let settings = store.settings();
     let mut config: Value =
         serde_json::from_slice(&fs::read(&settings.config_path).unwrap()).unwrap();
-    assert_eq!(config.as_object().unwrap().len(), 6);
+    assert_eq!(config.as_object().unwrap().len(), 5);
     config["cache"] = json!({"max_bytes":3221225472u64});
     config["allowed_origins"] = json!(["https://example.com"]);
     fs::write(&settings.config_path, serde_json::to_vec(&config).unwrap()).unwrap();
@@ -190,7 +175,7 @@ fn file_updates_publish_complete_snapshots_and_preserve_in_flight_readers() {
 #[test]
 fn saved_cache_configuration_preserves_capacity_and_writes_one_field() {
     let (_directory, store) = setup();
-    let settings = store.settings(&owner()).unwrap();
+    let settings = store.settings();
     let mut config: Value =
         serde_json::from_slice(&fs::read(&settings.config_path).unwrap()).unwrap();
     config["cache"] = json!({
@@ -201,20 +186,17 @@ fn saved_cache_configuration_preserves_capacity_and_writes_one_field() {
     fs::write(&settings.config_path, serde_json::to_vec(&config).unwrap()).unwrap();
     assert!(store.reload().unwrap());
     let reopened = ConfigStore::open(&settings.config_path).unwrap();
-    let loaded = reopened.settings(&owner()).unwrap();
+    let loaded = reopened.settings();
     assert_eq!(loaded.runtime.cache.max_bytes, 128 * 1024 * 1024);
     assert_eq!(
         serde_json::to_value(&loaded.runtime.cache).unwrap(),
         json!({"max_bytes":134217728})
     );
     reopened
-        .update(
-            &owner(),
-            SettingsUpdate {
-                revision: loaded.revision,
-                runtime: loaded.runtime,
-            },
-        )
+        .update(SettingsUpdate {
+            revision: loaded.revision,
+            runtime: loaded.runtime,
+        })
         .unwrap();
     let saved: Value = serde_json::from_slice(&fs::read(&settings.config_path).unwrap()).unwrap();
     assert_eq!(saved["cache"], json!({"max_bytes":134217728}));
@@ -223,7 +205,7 @@ fn saved_cache_configuration_preserves_capacity_and_writes_one_field() {
 #[test]
 fn invalid_files_and_startup_changes_retain_all_active_values_until_repaired() {
     let (_directory, store) = setup();
-    let settings = store.settings(&owner()).unwrap();
+    let settings = store.settings();
     let original = fs::read(&settings.config_path).unwrap();
     let config: Value = serde_json::from_slice(&original).unwrap();
     let mut unknown = config.clone();
@@ -260,17 +242,14 @@ fn invalid_files_and_startup_changes_retain_all_active_values_until_repaired() {
 #[test]
 fn saves_survive_restart_and_reject_stale_or_unloaded_file_edits() {
     let (_directory, store) = setup();
-    let settings = store.settings(&owner()).unwrap();
+    let settings = store.settings();
     let mut runtime = settings.runtime.clone();
     runtime.cache.max_bytes = 128 * 1024 * 1024;
     let saved = store
-        .update(
-            &owner(),
-            SettingsUpdate {
-                revision: settings.revision.clone(),
-                runtime: runtime.clone(),
-            },
-        )
+        .update(SettingsUpdate {
+            revision: settings.revision.clone(),
+            runtime: runtime.clone(),
+        })
         .unwrap();
     assert_ne!(saved.revision, settings.revision);
     assert_eq!(store.live().load().values, runtime);
@@ -284,13 +263,10 @@ fn saves_survive_restart_and_reject_stale_or_unloaded_file_edits() {
     );
     assert_eq!(
         store
-            .update(
-                &owner(),
-                SettingsUpdate {
-                    revision: settings.revision,
-                    runtime: runtime.clone()
-                }
-            )
+            .update(SettingsUpdate {
+                revision: settings.revision,
+                runtime: runtime.clone()
+            })
             .unwrap_err()
             .code,
         ErrorCode::Conflict
@@ -300,13 +276,10 @@ fn saves_survive_restart_and_reject_stale_or_unloaded_file_edits() {
     fs::write(&saved.config_path, &bytes).unwrap();
     assert_eq!(
         store
-            .update(
-                &owner(),
-                SettingsUpdate {
-                    revision: saved.revision,
-                    runtime
-                }
-            )
+            .update(SettingsUpdate {
+                revision: saved.revision,
+                runtime
+            })
             .unwrap_err()
             .code,
         ErrorCode::Conflict
@@ -328,44 +301,44 @@ fn saves_survive_restart_and_reject_stale_or_unloaded_file_edits() {
 }
 
 #[test]
-fn administrator_access_is_independent_of_workspace_access() {
-    let (_directory, store) = setup();
-    let visitor = "visitor".to_owned().try_into().unwrap();
-    assert_eq!(
-        store.settings(&visitor).unwrap_err().code,
-        ErrorCode::PermissionDenied
-    );
-    let settings = store.settings(&owner()).unwrap();
-    assert_eq!(
-        store
-            .update(
-                &visitor,
-                SettingsUpdate {
-                    revision: settings.revision,
-                    runtime: settings.runtime
-                }
-            )
-            .unwrap_err()
-            .code,
-        ErrorCode::PermissionDenied
-    );
+fn legacy_configuration_preserves_local_identity_without_token_files() {
+    let (directory, store) = setup();
+    assert!(!directory.path().join("token").exists());
+    let settings = store.settings();
     let mut config: Value =
         serde_json::from_slice(&fs::read(&settings.config_path).unwrap()).unwrap();
-    config["administrators"] = json!(["visitor"]);
+    assert!(config.get("credentials").is_none());
+    assert!(config.get("administrators").is_none());
+    config["credentials"] = json!([{"principal":"custom-owner","token_file":"missing-token"}]);
+    config["administrators"] = json!(["administrator"]);
     fs::write(&settings.config_path, serde_json::to_vec(&config).unwrap()).unwrap();
-    assert!(store.reload().is_err());
     let restarted = ConfigStore::open(&settings.config_path).unwrap();
-    assert!(restarted.settings(&visitor).is_ok());
+    assert_eq!(restarted.startup().principal.as_str(), "custom-owner");
+    let settings = restarted.settings();
+    restarted
+        .update(SettingsUpdate {
+            revision: settings.revision,
+            runtime: settings.runtime,
+        })
+        .unwrap();
+    let saved: Value = serde_json::from_slice(&fs::read(&settings.config_path).unwrap()).unwrap();
+    assert_eq!(saved["principal"], "custom-owner");
+    assert!(saved.get("credentials").is_none());
+    assert!(saved.get("administrators").is_none());
     assert_eq!(
-        restarted.settings(&owner()).unwrap_err().code,
-        ErrorCode::PermissionDenied
+        ConfigStore::open(&settings.config_path)
+            .unwrap()
+            .startup()
+            .principal
+            .as_str(),
+        "custom-owner"
     );
 }
 
 #[test]
 fn concurrent_saves_accept_one_revision_and_readers_never_mix_versions() {
     let (_directory, store) = setup();
-    let initial = store.settings(&owner()).unwrap();
+    let initial = store.settings();
     let barrier = Arc::new(std::sync::Barrier::new(8));
     std::thread::scope(|scope| {
         let mut writers = Vec::new();
@@ -378,7 +351,7 @@ fn concurrent_saves_accept_one_revision_and_readers_never_mix_versions() {
             runtime.allowed_origins = vec![format!("https://cache-{}.example", 100 + index)];
             writers.push(scope.spawn(move || {
                 barrier.wait();
-                store.update(&owner(), SettingsUpdate { revision, runtime })
+                store.update(SettingsUpdate { revision, runtime })
             }));
         }
         let results: Vec<_> = writers
@@ -410,18 +383,15 @@ fn concurrent_saves_accept_one_revision_and_readers_never_mix_versions() {
             });
         }
         for index in 0..20 {
-            let settings = store.settings(&owner()).unwrap();
+            let settings = store.settings();
             let mut runtime = settings.runtime;
             runtime.cache.max_bytes = index + 100;
             runtime.allowed_origins = vec![format!("https://cache-{}.example", index + 100)];
             store
-                .update(
-                    &owner(),
-                    SettingsUpdate {
-                        revision: settings.revision,
-                        runtime,
-                    },
-                )
+                .update(SettingsUpdate {
+                    revision: settings.revision,
+                    runtime,
+                })
                 .unwrap();
         }
     });
@@ -430,20 +400,17 @@ fn concurrent_saves_accept_one_revision_and_readers_never_mix_versions() {
 #[test]
 fn s3_settings_persist_secrets_without_returning_them_and_preserve_blank_passwords() {
     let (_directory, store) = setup();
-    let settings = store.settings(&owner()).unwrap();
+    let settings = store.settings();
     let mut runtime = settings.runtime;
     runtime.remote = Some(serde_json::from_value(json!({
         "bucket":"agentdrive-test", "endpoint":"https://s3.example.com",
         "credentials":{"access_key_id":"test-access", "secret_access_key":"test-secret", "session_token":"test-session"}
     })).unwrap());
     let saved = store
-        .update(
-            &owner(),
-            SettingsUpdate {
-                revision: settings.revision,
-                runtime,
-            },
-        )
+        .update(SettingsUpdate {
+            revision: settings.revision,
+            runtime,
+        })
         .unwrap();
     let response = serde_json::to_string(&saved).unwrap();
     assert!(!response.contains("test-secret"));
@@ -455,13 +422,10 @@ fn s3_settings_persist_secrets_without_returning_them_and_preserve_blank_passwor
     };
     config.region = "eu-west-1".into();
     let saved = store
-        .update(
-            &owner(),
-            SettingsUpdate {
-                revision: saved.revision,
-                runtime,
-            },
-        )
+        .update(SettingsUpdate {
+            revision: saved.revision,
+            runtime,
+        })
         .unwrap();
     let restarted = ConfigStore::open(&saved.config_path).unwrap();
     let snapshot = restarted.live().load();
@@ -477,13 +441,10 @@ fn s3_settings_persist_secrets_without_returning_them_and_preserve_blank_passwor
     };
     config.credentials = None;
     store
-        .update(
-            &owner(),
-            SettingsUpdate {
-                revision: saved.revision,
-                runtime,
-            },
-        )
+        .update(SettingsUpdate {
+            revision: saved.revision,
+            runtime,
+        })
         .unwrap();
     assert!(
         !fs::read_to_string(&saved.config_path)

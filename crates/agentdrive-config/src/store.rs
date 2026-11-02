@@ -1,5 +1,5 @@
 use crate::{CacheConfig, CollaborationConfig, Config, RemoteConfig, StartupConfig};
-use agentdrive_model::{Error, ErrorCode, Principal, Result};
+use agentdrive_model::{Error, ErrorCode, Result};
 use arc_swap::ArcSwap;
 use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
@@ -155,22 +155,7 @@ impl ConfigStore {
         self.live.clone()
     }
 
-    fn authorize(&self, actor: &Principal) -> Result<()> {
-        if !self.startup.administrators.contains(actor) {
-            return Err(Error::new(
-                ErrorCode::PermissionDenied,
-                "daemon administrator access is required",
-            ));
-        }
-        Ok(())
-    }
-
-    pub fn settings(&self, actor: &Principal) -> Result<Settings> {
-        self.authorize(actor)?;
-        Ok(self.view())
-    }
-
-    fn view(&self) -> Settings {
+    pub fn settings(&self) -> Settings {
         let snapshot = self.live.load();
         let mut runtime = snapshot.values.clone();
         if let Some(remote) = &mut runtime.remote {
@@ -243,8 +228,7 @@ impl ConfigStore {
         result
     }
 
-    pub fn update(&self, actor: &Principal, mut update: SettingsUpdate) -> Result<Settings> {
-        self.authorize(actor)?;
+    pub fn update(&self, mut update: SettingsUpdate) -> Result<Settings> {
         let _writer = self.writer.lock();
         let current = self.live.load();
         if current.revision != update.revision || revision(&read(&self.path)?) != update.revision {
@@ -301,7 +285,7 @@ impl ConfigStore {
             reload_error,
         };
         self.live.0.store(Arc::new(snapshot));
-        Ok(self.view())
+        Ok(self.settings())
     }
 }
 

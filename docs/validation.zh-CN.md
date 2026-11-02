@@ -32,7 +32,7 @@ make -j "$(getconf _NPROCESSORS_ONLN)" build
 python3 tests/cli_smoke.py
 ```
 
-流程测试覆盖并发请求重试、原子追加、持有打开句柄时重命名、重启恢复、挂载保存幂等性、并发挂载复用、不同 location 的分支独立性、自动保存时间、远端失败和确认丢失、所有权交接、合并文件编辑、过期挂载变更、缓存保留与回收，以及离线预取。持久化测试覆盖摘要失败、读取租约、事务回滚、请求恢复和未知格式拒绝。MCP 测试验证并发客户端、principal 隔离、身份验证，以及 Host/Origin 策略。CLI 测试启动实际进程，验证 stdio MCP、导入和导出的内容与元数据、允许的路径，以及进程重启。
+流程测试覆盖并发请求重试、原子追加、持有打开句柄时重命名、重启恢复、挂载保存幂等性、并发挂载复用、不同 location 的分支独立性、自动保存时间、远端失败和确认丢失、所有权交接、合并文件编辑、过期挂载变更、缓存保留与回收，以及离线预取。持久化测试覆盖摘要失败、读取租约、事务回滚、请求恢复和未知格式拒绝。MCP 测试验证并发客户端、本地身份共享、免令牌连接，以及 Host/Origin 策略。CLI 测试启动实际进程，验证 stdio MCP、导入和导出的内容与元数据、允许的路径，以及进程重启。
 
 `verify` 执行 rustfmt、禁止警告的 Clippy、workspace 测试和 `tests/architecture.py`。架构检查验证生产 crate 的依赖方向，保证数据库、原生驱动及协议适配器位于核心模块之外，要求继承统一 lint 设置，并检查 Python 测试语法。Make 默认使用已提交的依赖锁定文件。CI 在 Linux、macOS、Windows 执行这些检查；Linux 和 Windows 额外执行原生 branch 切换集成测试。Windows 没有 `python3` 命令时使用 `PYTHON=python`。
 
@@ -93,7 +93,7 @@ python3 tests/lifecycle_smoke.py
 python3 tests/config_smoke.py
 ```
 
-`lifecycle_smoke.py` 需要原生挂载支持，覆盖 ACP 和 Codex app-server 协议中的完成、取消、失败、进程中断、重复请求、自动保存、daemon 重启、重连、两个 Agent 连接共用挂载，以及已有挂载上的 CLI 分支切换。常规 Rust 测试还覆盖响应正文丢失后的重试、多个连接共用同一个挂载、切换时的文件句柄检查、分支选择持久化和 HTTP 权限。浏览器检查覆盖分支树、版本信息、令牌登录和小屏幕布局。本机 Codex app-server 的 initialize 与 thread/start 已验证工作目录指向 AgentDrive 挂载；完整任务流程通过协议测试程序验证。
+`lifecycle_smoke.py` 需要原生挂载支持，覆盖 ACP 和 Codex app-server 协议中的完成、取消、失败、进程中断、重复请求、自动保存、daemon 重启、重连、两个 Agent 连接共用挂载，以及已有挂载上的 CLI 分支切换。常规 Rust 测试还覆盖响应正文丢失后的重试、多个连接共用同一个挂载、切换时的文件句柄检查、分支选择持久化和 HTTP 权限。浏览器检查覆盖分支树、版本信息、工作区导航和小屏幕布局。本机 Codex app-server 的 initialize 与 thread/start 已验证工作目录指向 AgentDrive 挂载；完整任务流程通过协议测试程序验证。
 
 `config_smoke.py` 使用临时目录运行 daemon，验证文件热更新、错误配置保留、启动配置修改提示、单个缓存容量字段的 HTTP 保存、版本冲突和重启恢复。该脚本无需挂载驱动。配置测试覆盖已有文件的读取和快照一致性；engine 缓存测试验证修改容量后按 75% 目标清理，并保留当前分支内容。
 

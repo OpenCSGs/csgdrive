@@ -31,7 +31,8 @@ with tempfile.TemporaryDirectory(prefix='agentdrive-cli-') as temporary:
         assert result.stdout.strip() == f'http://127.0.0.1:{port}/'
     config_path = root / 'agentdrive.json'
     config = json.loads(config_path.read_text(encoding='utf-8'))
-    assert not {'allowed_origins', 'cache', 'remote'} & config.keys(), config
+    assert not {'allowed_origins', 'cache', 'remote', 'credentials', 'administrators'} & config.keys(), config
+    assert not (root / 'token').exists()
     for cache, expected in [
         ({'max_bytes': 0}, 'cache capacity must be greater than zero'),
         ({'max_byte': 1024}, 'unknown field'),
@@ -42,7 +43,7 @@ with tempfile.TemporaryDirectory(prefix='agentdrive-cli-') as temporary:
         assert invalid.returncode == 1 and expected in invalid.stderr, invalid.stderr
     config['cache'] = {'max_bytes': 3 * 1024 ** 3}
     config_path.write_text(json.dumps(config))
-    client = [str(binaries / ('agentdrive' + exe)), '--endpoint', endpoint, '--token-file', str(root / 'token')]
+    client = [str(binaries / ('agentdrive' + exe)), '--endpoint', endpoint]
     log_path = root / 'daemon.log'
     log = log_path.open('w')
     daemon = None

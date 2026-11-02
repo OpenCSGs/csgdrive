@@ -27,8 +27,8 @@ with tempfile.TemporaryDirectory(prefix='agentdrive-lifecycle-') as temporary:
         port = listener.getsockname()[1]
     base = f'http://127.0.0.1:{port}'
     subprocess.run([str(binaries / ('agentdrived' + exe)), 'init', '--directory', str(root), '--listen', f'127.0.0.1:{port}'], check=True, capture_output=True)
-    token = (root / 'token').read_text(encoding='utf-8').strip()
-    command = [str(binaries / ('agentdrive' + exe)), '--endpoint', base + '/mcp', '--token-file', str(root / 'token')]
+
+    command = [str(binaries / ('agentdrive' + exe)), '--endpoint', base + '/mcp']
     log = (root / 'test.log').open('w+')
     daemon = None
     bridges = []
@@ -54,7 +54,7 @@ with tempfile.TemporaryDirectory(prefix='agentdrive-lifecycle-') as temporary:
         return json.loads(result.stdout)
 
     def api(path, body=None):
-        headers = {'Authorization': 'Bearer ' + token}
+        headers = {}
         if body is not None:
             headers['Content-Type'] = 'application/json'
         request = urllib.request.Request(base + path, None if body is None else json.dumps(body).encode(), headers)

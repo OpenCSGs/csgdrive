@@ -2081,19 +2081,16 @@ async fn cache_uses_reloaded_capacity_and_collects_to_three_quarters() {
         cached_before
     );
     assert!(harness.local.stats().await.unwrap().cached_bytes > 5 * mib as u64);
-    let initial = config.settings(&actor()).unwrap();
+    let initial = config.settings();
     let mut runtime = initial.runtime;
     runtime.cache = CacheConfig {
         max_bytes: 4 * mib as u64,
     };
     config
-        .update(
-            &actor(),
-            SettingsUpdate {
-                revision: initial.revision,
-                runtime,
-            },
-        )
+        .update(SettingsUpdate {
+            revision: initial.revision,
+            runtime,
+        })
         .unwrap();
     assert!(harness.engine.services.cache.collect().await.unwrap() > 0);
     let remaining = harness.local.stats().await.unwrap().cached_bytes;

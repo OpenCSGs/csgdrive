@@ -7,14 +7,14 @@
 | Crate | 职责 |
 | --- | --- |
 | `agentdrive-model` | ID、路径、对象、版本、分支、挂载关联、操作、合并记录和错误 |
-| `agentdrive-config` | 配置定义、默认值、校验、文件原子替换、管理员授权和运行时配置快照 |
+| `agentdrive-config` | 配置定义、默认值、校验、文件原子替换和运行时配置快照 |
 | `agentdrive-ports` | 存储、文件系统、挂载、时钟、目录和应用接口 |
 | `agentdrive-engine` | 文件行为，以及工作区、版本、挂载、同步、缓存、所有权和合并流程 |
 | `agentdrive-local` | 进程锁定、SQLite 元数据、不可变对象、工作文件、租约和读取验证 |
 | `agentdrive-s3` | 不可变对象的流式传输和引用的条件更新 |
 | `agentdrive-opencsg` | Codes HTTP 对象传输、数据块验证和引用的条件更新 |
 | `agentdrive-platform` | FUSE/WinFsp 回调、受目录范围限制的主机目录访问和时钟 |
-| `agentdrive-mcp` | 具有明确类型的工具、带身份验证的 HTTP 路由、Dashboard 与设置接口、客户端和 stdio 转发 |
+| `agentdrive-mcp` | 具有明确类型的工具、本地 HTTP 路由、Dashboard 与设置接口、客户端和 stdio 转发 |
 | `agentdrive-test-support` | 可控时钟、挂载和存储测试替代对象、服务中断和确认丢失的故障注入 |
 | `agentdrived` / `agentdrive` | 守护进程生命周期和命令行客户端 |
 
@@ -39,7 +39,7 @@
 | `engine/merge` | 准备合并候选内容、编辑文件、解决冲突与应用结果 |
 | `engine/operations` | 请求去重、操作进度与持久化结果记录 |
 | `config/types`、`config/remote` | 缓存、S3 与 OpenCSG 的配置类型、凭据隐藏及策略校验 |
-| `config/file` | 配置文件结构、默认值、token 文件读取与初始化目录 |
+| `config/file` | 配置文件结构、默认值、本地身份迁移与初始化目录 |
 | `config/store` | 校验候选配置、控制写入顺序、保存文件与发布 `ArcSwap` 快照 |
 | `mcp/gateway`、`mcp/server` | 验证 HTTP 请求身份并调用应用接口 |
 | `mcp/web`、`mcp/dashboard` | 工作区、版本差异、生命周期、设置的 HTTP 接口与浏览器页面 |
@@ -117,11 +117,11 @@ SQLite 中的 `parent` 查询列和 `node_usage` 统计由 local 管理。新建
 
 ## 配置生命周期
 
-`ConfigStore::open` 读取并校验文件。`StartupConfig` 在服务创建时提供存储目录、挂载、连接与凭据配置。缓存策略、远程连接和 HTTP Origin 允许列表由同一个 `ArcSwap<Snapshot>` 保存。缓存清理在操作期间保持同一份快照；HTTP 身份验证为每次请求取得当前快照。
+`ConfigStore::open` 读取并校验文件。`StartupConfig` 在服务创建时提供存储目录、挂载、连接与本地 principal。缓存策略、远程连接和 HTTP Origin 允许列表由同一个 `ArcSwap<Snapshot>` 保存。缓存清理在操作期间保持同一份快照；HTTP Origin 检查为每次请求取得当前快照。
 
 daemon 每秒检查配置文件。Dashboard 保存与文件加载使用同一个 `ConfigStore` 和写入锁。保存时检查配置版本，在同目录写入并同步临时文件，替换配置文件，然后发布快照；Unix 还会同步目录。文件错误、无效内容以及启动配置变化都会保留当前有效配置，并提供错误信息。配置版本检查会拒绝过期的 API 保存请求及已经检测到的外部修改；外部编辑器不使用 daemon 的写入锁，建议通过原子替换文件提交修改。
 
-设置管理权限由启动配置中的 `administrators` 决定，默认为 `["owner"]`，与工作区授权分别管理。设置接口不会返回 token 内容或已保存的远程密钥。修改 HTTP 凭据、管理员、本地目录或监听地址需要重启。远程设置通过 `ConfigApplier` 检查服务、准备内容、保存配置，并在持有生命周期、发布和内容保护锁期间更换远程适配器。字段说明与 HTTP 接口见[配置说明](configuration.zh-CN.md)。
+设置通过 `ConfigStore` 管理整个 daemon，与工作区选择分别处理。接口隐藏已保存的远程密钥。修改本地目录、principal 或监听地址需要重启。`ConfigApplier` 检查远程连接、准备内容、保存配置，并在生命周期、发布和内容保护期间更换适配器。参见[配置说明](configuration.zh-CN.md)。
 
 ## 本地持久化
 
@@ -172,11 +172,11 @@ Git 分支 head 作为 `VersionedRef.version` 返回。单文件 POST/PUT 携带
 合并准备会选择共同祖先，或检查调用者指定的祖先，然后比较路径变化并生成不可变候选内容。AI 可以查询候选版本的文件列表，选择 source、target，删除文件，提交替换内容，或从已有版本复制文件。编辑会生成新的候选版本。应用要求目标分支没有未提交内容、所有权与版本匹配、全部冲突已处理，并且挂载允许切换。合并版本保留来源与目标两个父版本。
 
 
-## 身份验证边界
+## 本地访问边界
 
-创建 MCP 服务前，bearer 凭据会选择 principal。每项凭据拥有独立的 HTTP 会话管理器，工具参数无法覆盖 principal。HTTP 入口使用 Host 和 Origin 允许列表，并将请求正文限制为 8 MiB。守护进程监听本机回环地址。远程访问需要管理员管理的身份验证 TLS 代理，并保留允许的 Host 值。
+全部本地 HTTP 和 MCP 客户端使用 `StartupConfig.principal`，默认值为 `owner`。工具参数无法覆盖此身份。gateway 创建一个 HTTP 会话管理器。HTTP 入口保留 Host、Origin 检查和 8 MiB 请求限制，服务监听本机回环地址。
 
-工作区授权控制应用操作。原生文件系统访问使用守护进程的操作系统身份。配置、凭据、状态、挂载根目录和交换根目录应限制为该身份访问；Windows 需要相应配置 NTFS 权限。远程凭据持有者和管理员被视为可信的存储写入者。
+应用服务继续通过本地 principal 检查工作区操作权限。原生文件系统使用 daemon 的操作系统身份。远程存储凭据由对应适配器管理。
 
 参见[配置与远程存储](configuration.zh-CN.md)、[CLI 使用](cli.zh-CN.md)和 [MCP 参数与能力](mcp.zh-CN.md)。
 

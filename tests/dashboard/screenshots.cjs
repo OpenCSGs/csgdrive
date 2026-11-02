@@ -16,6 +16,7 @@ const revisions = revisionIds.map((id,i)=>({id,workspace,branch:i>3 ? ids[i-3] :
 const status = {workspace:{id:workspace,name:'市场调研'},location:'local',selected_branch:ids[0],branches,
  mounts:ids.map((id,i)=>({id:'mount-'+i,branch:id,path:'/projects/market-research/'+['main','competitors','customers'][i],principal:i ? 'research-agent' : 'owner',generation:1,state:'ready',access:'read_write'})),pending_jobs:0,capabilities:{remote_configured:true,handle_tracking_scope:'native',automatic_collaboration:true,collaboration_enabled:true},
  remote_branches:branches.map(branch=>({branch:branch.id,owner:branch.owner,authority_epoch:1,generation:1,durable_seq:branch.saved_seq,working_root:branch.working_root}))};
+status.synchronization = {state:'confirmed',branches:branches.map(branch=>({branch:branch.id,local_saved:true,remote_confirmed:true}))};
 const view = {status,branches,revisions,summary:{branch_count:3,mount_count:3,ready_mount_count:3,mounted_branch_count:3},origins:branches.map((branch,i)=>({branch:branch.id,source_branch:branch.source_branch,revision:revisionIds[0],revision_available:true,workspace_root:i===0}))};
 const collaboration = status.mounts.map(mount=>({workspace,branch:mount.branch,mounts:[mount.id],
  settings:{enabled:true,idle_timeout_secs:60,release_on_event:true},phase:'writing',writer:'local',authority_epoch:1,
@@ -50,6 +51,12 @@ function nodes(directory) {
   if (url.pathname===`/api/workspaces/${workspace}`) return json(view);
   if (url.pathname===`/api/workspaces/${workspace}/collaboration`) return json(collaboration);
   if (url.pathname===`/api/workspaces/${workspace}/relationships`) return json(relationships);
+  if (url.pathname.endsWith('/history')) {
+   const branch = url.pathname.split('/').at(-2), search = (url.searchParams.get('search') || '').toLowerCase();
+   const entries = revisions.filter(revision=>revision.branch === branch && (!search || revision.message.toLowerCase().includes(search))).sort((a,b)=>b.created_ns-a.created_ns);
+   const cursor = Number(url.searchParams.get('cursor') || 0), limit = Number(url.searchParams.get('limit') || 50);
+   return json({entries:entries.slice(cursor,cursor+limit),total:entries.length,next:cursor+limit<entries.length ? String(cursor+limit) : null});
+  }
   if (url.pathname.endsWith('/files')) { const branch=branches.find(b=>url.pathname.includes(b.id));return json({version:`${branch.id}:1:1:${branch.mutation_seq}`,next:null,entries:nodes(url.searchParams.get('path'))}); }
   if (url.pathname.endsWith('/file')) { const bytes=Buffer.from(content[url.searchParams.get('path')] || ''); const offset=Number(url.searchParams.get('offset')),size=Number(url.searchParams.get('size')); return res.writeHead(200,{'Content-Type':'application/octet-stream'}).end(bytes.subarray(offset,offset+size)); }
   const name=['/archive','/dashboard','/mounts','/branches','/'].includes(url.pathname) ? 'index.html' : url.pathname.slice(1);
@@ -61,7 +68,6 @@ function nodes(directory) {
  const browser=await chromium.launch({headless:true});
  try {
   const page=await browser.newPage({viewport:{width:1600,height:1120},deviceScaleFactor:1}); const errors=[];page.on('pageerror',e=>errors.push(e.message));
-  await page.addInitScript(()=>sessionStorage.setItem('agentdrive-token','demo-token'));
   const endpoint=`http://127.0.0.1:${server.address().port}`;
   await page.goto(endpoint+'/archive?'+new URLSearchParams({workspace,branch:ids[0]}));
   await page.locator('#archive-page .branch-file[data-path="/reports"]').click();

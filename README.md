@@ -80,14 +80,14 @@ For a client that supports stdio MCP, add this configuration and replace the exa
       "command": "/absolute/path/agentdrive/target/debug/agentdrive",
       "args": ["mcp"],
       "env": {
-        "AGENTDRIVE_TOKEN_FILE": "/absolute/path/to/agentdrive/token"
+        "AGENTDRIVE_ENDPOINT": "http://127.0.0.1:7421/mcp"
       }
     }
   }
 }
 ```
 
-Keep the AgentDrive service running. Agents can discover tool schemas and manage workspaces, branches, saves, synchronization and handoffs. Streamable HTTP clients can connect to `http://127.0.0.1:7421/mcp` with the local bearer token. CLI commands support terminal workflows and scripts; ACP / Codex app-server integrations connect working directories with end-of-task saving. [Agent integrations](docs/integrations.md) · [MCP tools](docs/mcp.md) · [CLI](docs/cli.md)
+Keep the AgentDrive service running. Agents can discover tool schemas and manage workspaces, branches, saves, synchronization and handoffs. Streamable HTTP clients can connect to `http://127.0.0.1:7421/mcp` without a token. CLI commands support terminal workflows and scripts; ACP / Codex app-server integrations connect working directories with end-of-task saving. [Agent integrations](docs/integrations.md) · [MCP tools](docs/mcp.md) · [CLI](docs/cli.md)
 
 A single `branch_switch` call completes a branch change. If a process occupies the directory, follow the response instructions to close it or restart the agent, then retry the same operation.
 

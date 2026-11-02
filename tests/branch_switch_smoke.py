@@ -26,8 +26,7 @@ with tempfile.TemporaryDirectory(prefix='agentdrive-switch-') as temporary:
     config = json.loads(config_path.read_text(encoding='utf-8'))
     config['directory_roots'].append(str(root / 'mounts'))
     config_path.write_text(json.dumps(config))
-    client = [str(binaries / ('agentdrive' + exe)), '--endpoint', f'http://127.0.0.1:{port}/mcp',
-              '--token-file', str(root / 'token')]
+    client = [str(binaries / ('agentdrive' + exe)), '--endpoint', f'http://127.0.0.1:{port}/mcp']
     daemon = proxy = holder = None
     log = (root / 'daemon.log').open('w')
     responses = queue.Queue()

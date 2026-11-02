@@ -9,7 +9,6 @@ license.workspace = true
 agentdrive-config.workspace = true
 rmcp.workspace = true
 axum.workspace = true
-sha2.workspace = true
 schemars.workspace = true
 agentdrive-model.workspace = true
 agentdrive-ports.workspace = true

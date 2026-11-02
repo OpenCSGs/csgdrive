@@ -44,7 +44,6 @@ struct Lifecycle {
     http: reqwest::Client,
     endpoint: String,
     execution_endpoint: String,
-    token: String,
     workspace: WorkspaceId,
     mount_path: PathBuf,
     binding: Value,
@@ -63,13 +62,7 @@ impl Lifecycle {
     async fn post(&self, endpoint: &str, request: &Value) -> Result<Value> {
         for attempt in 0..3 {
             let response = async {
-                let response = self
-                    .http
-                    .post(endpoint)
-                    .bearer_auth(&self.token)
-                    .json(request)
-                    .send()
-                    .await?;
+                let response = self.http.post(endpoint).json(request).send().await?;
                 let status = response.status();
                 let value = response.json::<Value>().await?;
                 Ok::<_, reqwest::Error>((status, value))
@@ -507,7 +500,7 @@ pub fn base_url(endpoint: &str) -> Result<reqwest::Url> {
     Ok(url)
 }
 
-pub async fn run(endpoint: &str, token: String, options: Options) -> Result<bool> {
+pub async fn run(endpoint: &str, options: Options) -> Result<bool> {
     if !options.mount_path.is_absolute() {
         return Err(Error::invalid("mount-path must be absolute"));
     }
@@ -521,7 +514,6 @@ pub async fn run(endpoint: &str, token: String, options: Options) -> Result<bool
         http,
         endpoint: format!("{base}api/lifecycle"),
         execution_endpoint: format!("{base}api/collaboration/events"),
-        token,
         workspace: options.workspace,
         mount_path: options.mount_path.clone(),
         binding: Value::Null,
@@ -658,7 +650,6 @@ mod tests {
                     http: reqwest::Client::new(),
                     endpoint: endpoint.clone(),
                     execution_endpoint: endpoint,
-                    token: "test".into(),
                     workspace: WorkspaceId::new(),
                     mount_path: "/mount".into(),
                     binding: Value::Null,
@@ -757,7 +748,6 @@ mod tests {
             http: reqwest::Client::new(),
             endpoint,
             execution_endpoint: String::new(),
-            token: "test".into(),
             workspace: WorkspaceId::new(),
             mount_path: PathBuf::from("/mount"),
             binding: json!({"id":"mount", "generation":1}),

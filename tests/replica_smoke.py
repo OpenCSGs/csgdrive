@@ -32,8 +32,8 @@ class Daemon:
         config['remote'] = {'bucket': 'agentdrive-integration', 'prefix': prefix, 'region': 'us-east-1', 'endpoint': endpoint, 'allow_http': True}
         config_path.write_text(json.dumps(config))
         self.endpoint = f'http://127.0.0.1:{port}'
-        self.token = (root / 'token').read_text(encoding='utf-8').strip()
-        self.client = [str(binaries / ('agentdrive' + exe)), '--endpoint', f'http://127.0.0.1:{port}/mcp', '--token-file', str(root / 'token')]
+
+        self.client = [str(binaries / ('agentdrive' + exe)), '--endpoint', f'http://127.0.0.1:{port}/mcp']
         self.log = (root / 'daemon.log').open('w')
         self.process = subprocess.Popen([str(binaries / ('agentdrived' + exe)), 'serve', '--config', str(config_path)], stdout=self.log, stderr=self.log)
         for _ in range(100):
@@ -58,7 +58,7 @@ class Daemon:
     def api(self, path, payload=None, method='GET'):
         request = urllib.request.Request(self.endpoint + path, method=method,
             data=None if payload is None else json.dumps(payload).encode(),
-            headers={'Authorization': f'Bearer {self.token}', 'Content-Type': 'application/json'})
+            headers={'Content-Type': 'application/json'})
         deadline = time.monotonic() + 30
         while True:
             try:
