@@ -8,8 +8,8 @@ const {chromium} = require('playwright');
 let browser, server, endpoint;
 before(async () => {
   server = createServer(async (request, response) => {
-    if (request.url === '/relationships.js') {
-      response.writeHead(200, {'Content-Type':'text/javascript'}).end(await readFile(path.resolve(__dirname, '../../crates/agentdrive-mcp/dashboard/relationships.js')));
+    if (['/relationships.js', '/relationship-detail.js'].includes(request.url)) {
+      response.writeHead(200, {'Content-Type':'text/javascript'}).end(await readFile(path.resolve(__dirname, '../../crates/agentdrive-mcp/dashboard', request.url.slice(1))));
       return;
     }
     response.writeHead(200, {'Content-Type':'text/html'}).end(`<!doctype html><style>td{padding:12px}body{font:16px sans-serif}table{width:100%}</style><div id="relationships"></div><script type="module">
@@ -60,7 +60,9 @@ test('background refresh retains loaded pages, open details and scroll position'
   const {page, data} = await open(t);
   const last = page.locator('#relationship-list tr').last();
   await last.scrollIntoViewIfNeeded();
-  await last.locator('details').first().evaluate(node => { node.open = true; });
+  await last.getByRole('button', {name:'查看详情'}).click();
+  const dialog = page.locator('#relationship-dialog');
+  assert.match(await dialog.textContent(), /\/workspace\/50/);
   const scroll = await page.evaluate(() => window.scrollY);
   let release, started;
   const blocked = new Promise(resolve => { release = resolve; });
@@ -71,7 +73,8 @@ test('background refresh retains loaded pages, open details and scroll position'
   assert.equal(await page.locator('#relationship-list tr').count(), 51);
   release(); await refreshing;
   assert.equal(await page.locator('#relationship-list tr').count(), 51);
-  assert.equal(await last.locator('details').first().evaluate(node => node.open), true);
+  assert.equal(await dialog.evaluate(node => node.open), true);
+  assert.match(await dialog.textContent(), /\/workspace\/50/);
   assert.equal(await page.evaluate(() => window.scrollY), scroll);
 });
 
