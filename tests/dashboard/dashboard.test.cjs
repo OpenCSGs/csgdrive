@@ -594,7 +594,7 @@ test('switching archive branches discards delayed directory and file responses',
   assert(requests.every(url=>!url.pathname.includes('/mcp')));
 });
 
-test('relationships display ownership, mount principals and exact origins and send filters', async t => {
+test('relationships show record metadata in a dialog and send filters', async t => {
   const data = fixture();
   const result = relationshipFixture(data);
   const entry = result.entries[1];
@@ -609,10 +609,27 @@ test('relationships display ownership, mount principals and exact origins and se
   assert.match(await panel.textContent(), /reader <script>/);
   assert.match(await panel.textContent(), /远端挂载、远端默认分支及机器在线状态未知/);
   assert.equal(await panel.locator('script').count(), 0);
-  await panel.getByText('记录详情', {exact:true}).click();
-  assert.match(await panel.textContent(), /storage-v7/);
-  await panel.getByText('创建时的内容对象', {exact:true}).click();
-  assert.equal(await panel.locator('.relationship-root').textContent(),'creation-root');
+  assert.equal(await panel.locator('tbody details').count(),0);
+  assert.doesNotMatch(await panel.locator('tbody').textContent(), /storage-v7|creation-root/);
+  const trigger = panel.getByRole('button',{name:'查看详情',exact:true}), dialog = page.getByRole('dialog',{name:'分支与挂载详情'});
+  await trigger.click();
+  assert.match(await dialog.textContent(), /storage-v7/);
+  assert.match(await dialog.textContent(), /creation-root/);
+  assert.match(await dialog.textContent(), /reader <script>/);
+  assert.equal(await dialog.locator('script').count(),0);
+  entry.branch.ownership.storage_version = 'storage-v8';
+  await refresh(page);
+  assert.equal(await dialog.isVisible(),true);
+  assert.match(await dialog.textContent(), /storage-v8/);
+  await page.keyboard.press('Escape');
+  assert.equal(await page.evaluate(() => document.activeElement.id),await trigger.getAttribute('id'));
+  await trigger.press('Enter');
+  await page.setViewportSize({width:390,height:844});
+  const bounds = await dialog.evaluate(node=>({width:node.clientWidth,scrollWidth:node.scrollWidth,left:node.getBoundingClientRect().left,right:node.getBoundingClientRect().right}));
+  assert(bounds.scrollWidth <= bounds.width && bounds.left >= 0 && bounds.right <= 390);
+  await dialog.getByRole('button',{name:'关闭关系详情'}).click();
+  assert.equal(await page.evaluate(() => document.activeElement.id),await trigger.getAttribute('id'));
+  await page.setViewportSize({width:1440,height:1000});
   await page.locator('#relationship-branch').selectOption('feature');
   await panel.getByText('更多筛选', {exact:true}).click();
   await page.locator('#relationship-mount_state').selectOption('released');
@@ -628,6 +645,18 @@ test('relationships display ownership, mount principals and exact origins and se
   assert.equal(request.searchParams.get('owner_location'),'remote-owner');
   assert.equal(request.searchParams.get('mount_location'),'local');
   assert.equal(request.searchParams.get('mount'),'mount-1');
+  entry.mount = null; entry.branch.origin.status = 'restricted';
+  await refresh(page); await trigger.click();
+  assert.match(await dialog.textContent(), /本机暂无挂载/);
+  assert.match(await dialog.textContent(), /无权限/);
+  assert.doesNotMatch(await dialog.textContent(), /creation-root|parent-commit/);
+  const rectangle = await dialog.boundingBox();
+  await page.mouse.click(rectangle.x-4,rectangle.y+5);
+  assert.equal(await dialog.count(),0);
+  await trigger.click();
+  await page.evaluate(() => document.querySelector('#branches-nav').click());
+  await page.locator('#branch-create-form').waitFor();
+  assert.equal(await dialog.count(),0);
   await page.setViewportSize({width:390,height:844});
   const widths = await page.evaluate(() => [document.documentElement.scrollWidth,innerWidth]);
   assert(widths[0] <= widths[1]);
