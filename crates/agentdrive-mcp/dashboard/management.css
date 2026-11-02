@@ -1,9 +1,9 @@
 .management-content { display:grid; gap:24px; }
 .management-heading .location-label { white-space:normal; overflow-wrap:anywhere; }
 .management-create .panel-heading,.management-list .panel-heading { display:flex; align-items:center; gap:12px; }
-.management-form { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:18px; padding:0 24px 24px; align-items:end; }
+.management-form { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:18px; padding:0 24px 24px; align-items:start; }
 .management-field { display:flex; flex-direction:column; gap:8px; min-width:0; font-size:13px; color:var(--muted); }
-.management-field input,.management-field select { width:100%; min-width:0; border:1px solid var(--line); background:var(--paper); border-radius:8px; padding:12px; font:inherit; color:var(--ink); }
+.management-field input,.management-field select { width:100%; min-width:0; min-height:44px; border:1px solid var(--line); background:var(--paper); border-radius:8px; padding:12px; font:inherit; color:var(--ink); }
 .revision-source-search { min-width:0; display:grid; gap:8px; }
 .management-hint { grid-column:1 / -1; margin:0; color:var(--muted); font-size:12px; line-height:1.7; }
 .management-form .primary { justify-self:start; padding:12px 20px; }
