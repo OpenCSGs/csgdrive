@@ -4,7 +4,10 @@ use agentdrive_ports::*;
 use async_trait::async_trait;
 use bytes::Bytes;
 use parking_lot::Mutex;
-use std::{collections::BTreeMap, sync::Arc};
+use std::{
+    collections::BTreeMap,
+    sync::{Arc, OnceLock, Weak},
+};
 
 #[derive(Clone, Debug)]
 struct OpenFile {
@@ -23,6 +26,7 @@ pub struct FileService {
     working: Arc<dyn WorkingTreeStore>,
     durability: Arc<dyn DurabilityService>,
     handles: Mutex<BTreeMap<HandleId, OpenFile>>,
+    write_access: OnceLock<Weak<dyn WriteAccess>>,
 }
 
 impl std::fmt::Debug for FileService {
@@ -50,10 +54,41 @@ impl FileService {
             working,
             durability,
             handles: Mutex::new(BTreeMap::new()),
+            write_access: OnceLock::new(),
         })
     }
 
+    pub(crate) fn set_write_access(&self, access: Weak<dyn WriteAccess>) {
+        let _ = self.write_access.set(access);
+    }
+
+    async fn prepare_mutation(&self, context: &FsContext) -> Result<()> {
+        if let Some(access) = self.write_access.get().and_then(Weak::upgrade) {
+            self.authorized_view(context, true, FileQuery::Binding)
+                .await?;
+            access.prepare_write(context.mount).await?;
+        }
+        Ok(())
+    }
+
     async fn view(&self, context: &FsContext, write: bool, query: FileQuery) -> Result<FileView> {
+        let view = self.authorized_view(context, write, query).await?;
+        if write {
+            view.branch
+                .check_write(self.runtime.location, view.branch.authority_epoch)?;
+        }
+        Ok(view)
+    }
+
+    async fn authorized_view(
+        &self,
+        context: &FsContext,
+        write: bool,
+        query: FileQuery,
+    ) -> Result<FileView> {
+        // Native mount startup needs root attributes while the binding transition is protected.
+        let root_metadata =
+            !write && matches!(&query, FileQuery::Inode(inode) if *inode == InodeId::ROOT);
         let view = self
             .runtime
             .state
@@ -92,7 +127,9 @@ impl FileService {
                 Permission::Read
             },
         )?;
-        if mount.revision.is_none() && branch.generation != mount.generation {
+        if mount.revision.is_none()
+            && branch.generation != mount.branch_generation.unwrap_or(mount.generation)
+        {
             return Err(Error::new(
                 ErrorCode::StaleBinding,
                 "branch generation changed",
@@ -104,11 +141,21 @@ impl FileService {
                 "branch stopped after a storage failure",
             ));
         }
-        if write {
-            if mount.access != AccessMode::ReadWrite || mount.revision.is_some() {
-                return Err(Error::new(ErrorCode::ReadOnly, "mount is read-only"));
-            }
-            branch.check_write(self.runtime.location, branch.authority_epoch)?;
+        if !root_metadata
+            && self
+                .runtime
+                .collaboration_blocked
+                .lock()
+                .contains(&branch.id)
+        {
+            return Err(Error::new(
+                ErrorCode::BranchBusy,
+                "branch is preparing its next working view",
+            )
+            .retryable());
+        }
+        if write && (mount.access != AccessMode::ReadWrite || mount.revision.is_some()) {
+            return Err(Error::new(ErrorCode::ReadOnly, "mount is read-only"));
         }
         Ok(view)
     }
@@ -344,7 +391,12 @@ impl FileSystem for FileService {
     }
 
     async fn getattr(&self, context: &FsContext, inode: InodeId) -> Result<Inode> {
-        let (mount, _) = self.binding(context, false).await?;
+        let query = if inode == InodeId::ROOT {
+            FileQuery::Inode(inode)
+        } else {
+            FileQuery::Binding
+        };
+        let mount = self.view(context, false, query).await?.mount;
         let _gate = self.runtime.lock_branch(mount.branch).await;
         let view = self.view(context, false, FileQuery::Inode(inode)).await?;
         let node = if view.mount.revision.is_some() {
@@ -396,6 +448,7 @@ impl FileSystem for FileService {
         kind: FileKind,
         mode: u32,
     ) -> Result<Inode> {
+        self.prepare_mutation(context).await?;
         let (mount, _) = self.binding(context, true).await?;
         let _gate = self.runtime.lock_branch(mount.branch).await;
         let (mount, branch) = self.binding(context, true).await?;
@@ -464,6 +517,7 @@ impl FileSystem for FileService {
         inode: InodeId,
         attributes: AttributeUpdate,
     ) -> Result<Inode> {
+        self.prepare_mutation(context).await?;
         let (mount, _) = self.binding(context, true).await?;
         let _gate = self.runtime.lock_branch(mount.branch).await;
         let (mount, branch) = self.binding(context, true).await?;
@@ -534,6 +588,9 @@ impl FileSystem for FileService {
     ) -> Result<FileHandle> {
         if (mode.append || !mode.read) && !mode.write {
             return Err(Error::invalid("invalid file open mode"));
+        }
+        if mode.write {
+            self.prepare_mutation(context).await?;
         }
         let (mount, _) = self.binding(context, mode.write).await?;
         let _gate = self.runtime.lock_branch(mount.branch).await;
@@ -614,6 +671,7 @@ impl FileSystem for FileService {
         if data.len() > IO_BUFFER_BYTES * 16 {
             return Err(Error::invalid("write request exceeds the buffer limit"));
         }
+        self.prepare_mutation(context).await?;
         let handle = self.handle(context, id)?;
         let _gate = self.runtime.lock_branch(handle.branch).await;
         let handle = self.handle(context, id)?;
@@ -682,6 +740,7 @@ impl FileSystem for FileService {
         new_name: &str,
         replace: bool,
     ) -> Result<()> {
+        self.prepare_mutation(context).await?;
         let (mount, _) = self.binding(context, true).await?;
         let _gate = self.runtime.lock_branch(mount.branch).await;
         let (mount, branch) = self.binding(context, true).await?;
@@ -808,6 +867,7 @@ impl FileSystem for FileService {
         directory: bool,
         closing_handle: Option<HandleId>,
     ) -> Result<()> {
+        self.prepare_mutation(context).await?;
         let (mount, _) = self.binding(context, true).await?;
         let _gate = self.runtime.lock_branch(mount.branch).await;
         let (mount, branch) = self.binding(context, true).await?;
@@ -854,6 +914,7 @@ impl FileSystem for FileService {
         name: &str,
         directory: bool,
     ) -> Result<()> {
+        self.prepare_mutation(context).await?;
         let (mount, _) = self.binding(context, true).await?;
         let _gate = self.runtime.lock_branch(mount.branch).await;
         let (mount, branch) = self.binding(context, true).await?;
@@ -933,7 +994,8 @@ impl FileSystem for FileService {
     }
 
     async fn statfs(&self, context: &FsContext) -> Result<VolumeStats> {
-        self.binding(context, false).await?;
+        self.view(context, false, FileQuery::Inode(InodeId::ROOT))
+            .await?;
         self.objects.volume_stats().await
     }
 }

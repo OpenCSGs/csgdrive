@@ -14,6 +14,9 @@ use std::{
     sync::Arc,
 };
 
+#[path = "native_mount/collaboration.rs"]
+mod collaboration;
+
 fn user_entries(path: &std::path::Path) -> usize {
     std::fs::read_dir(path)
         .unwrap()
@@ -34,6 +37,65 @@ fn context() -> RequestContext {
 fn success(record: OperationRecord) -> OperationRecord {
     assert!(record.error.is_none(), "{record:?}");
     record
+}
+
+async fn unmount_when_idle(engine: &Engine, binding: &MountBinding) {
+    let request = context();
+    let mut record = engine
+        .services
+        .mounts
+        .unmount(request.clone(), binding.id, binding.generation)
+        .await
+        .unwrap();
+    let operation = record.id;
+    let release_context = context();
+    let completed = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        loop {
+            if record
+                .error
+                .as_ref()
+                .is_some_and(|error| error.code == ErrorCode::MountBusy && error.retryable)
+            {
+                assert!(record.pending.is_some(), "{record:?}");
+                // Resume the original pending action after native close callbacks complete.
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+                let released = engine
+                    .services
+                    .mounts
+                    .release(
+                        release_context.clone(),
+                        ReleaseMount {
+                            operation,
+                            expected_binding_generation: binding.generation,
+                        },
+                    )
+                    .await
+                    .unwrap();
+                if !released
+                    .error
+                    .as_ref()
+                    .is_some_and(|error| error.code == ErrorCode::MountBusy && error.retryable)
+                {
+                    success(released);
+                }
+                record = engine
+                    .services
+                    .operations
+                    .get(&request.principal, operation)
+                    .await
+                    .unwrap();
+                continue;
+            }
+            assert_eq!(success(record.clone()).phase, OperationPhase::Complete);
+            assert_eq!(record.id, operation);
+            return;
+        }
+    })
+    .await;
+    assert!(
+        completed.is_ok(),
+        "native mount did not become idle within five seconds: {record:?}"
+    );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -91,6 +153,7 @@ async fn native_mount_supports_file_io_durable_snapshots_and_read_only_history()
             .prepare(
                 context(),
                 PrepareMount {
+                    automatic: false,
                     workspace: workspace.id,
                     branch: None,
                     revision: None,
@@ -108,6 +171,7 @@ async fn native_mount_supports_file_io_durable_snapshots_and_read_only_history()
         CommandResult::Mount { binding } => binding,
         _ => panic!("wrong result"),
     };
+    assert!(driver.supports_automatic_collaboration());
     let operation_path = path.clone();
     let expected = tokio::task::spawn_blocking(move || {
         let path = operation_path;
@@ -184,6 +248,7 @@ async fn native_mount_supports_file_io_durable_snapshots_and_read_only_history()
             .prepare(
                 context(),
                 PrepareMount {
+                    automatic: false,
                     workspace: workspace.id,
                     branch: Some(binding.branch),
                     revision: Some(revision),
@@ -206,16 +271,180 @@ async fn native_mount_supports_file_io_durable_snapshots_and_read_only_history()
     })
     .await
     .unwrap();
-    for mount in local.mounts().await.unwrap() {
-        let record = success(
-            engine
-                .services
-                .mounts
-                .unmount(context(), mount.id, mount.generation)
-                .await
-                .unwrap(),
+    let fork = success(
+        engine
+            .services
+            .revisions
+            .fork(
+                context(),
+                ForkBranch {
+                    workspace: workspace.id,
+                    source: Some(revision),
+                    source_branch: None,
+                    name: "recovery-native".into(),
+                },
+            )
+            .await
+            .unwrap(),
+    );
+    let recovery = local.branch(fork.branch.unwrap()).await.unwrap().unwrap();
+    let recovery_path = mounts.join("recovery");
+    let recovery_mount = success(
+        engine
+            .services
+            .mounts
+            .prepare(
+                context(),
+                PrepareMount {
+                    automatic: false,
+                    workspace: workspace.id,
+                    branch: Some(recovery.id),
+                    revision: None,
+                    path: recovery_path.clone(),
+                    access: AccessMode::ReadWrite,
+                    durability: Durability::Local,
+                },
+            )
+            .await
+            .unwrap(),
+    );
+    let Some(CommandResult::Mount {
+        binding: recovery_binding,
+    }) = recovery_mount.result
+    else {
+        panic!("missing recovery mount");
+    };
+    tokio::task::spawn_blocking(move || {
+        std::fs::write(
+            recovery_path.join("directory/Renamed"),
+            b"recovery branch contents",
+        )
+        .unwrap();
+        std::fs::write(recovery_path.join("recovery-only.txt"), b"new branch").unwrap();
+    })
+    .await
+    .unwrap();
+    unmount_when_idle(&engine, &recovery_binding).await;
+    let mut next = binding.clone();
+    next.branch = recovery.id;
+    next.generation += 1;
+    next.branch_generation = Some(recovery.generation);
+    let directory_path = path.clone();
+    let directory = tokio::task::spawn_blocking(move || {
+        let mut entries = std::fs::read_dir(directory_path).unwrap();
+        entries.next().unwrap().unwrap();
+        entries
+    })
+    .await
+    .unwrap();
+    let directory_handles = driver.open_handles(&binding).await.unwrap();
+    eprintln!(
+        "open directory: {directory_handles} handles, scope {:?}",
+        driver.handle_tracking_scope()
+    );
+    if driver.handle_tracking_scope() == HandleTrackingScope::Native {
+        assert!(directory_handles > 0);
+    }
+    if directory_handles > 0 {
+        assert_eq!(
+            driver.rebind(&binding, &next).await.unwrap_err().code,
+            ErrorCode::MountBusy
         );
-        assert_eq!(record.phase, OperationPhase::Complete, "{record:?}");
+    }
+    tokio::task::spawn_blocking(move || drop(directory))
+        .await
+        .unwrap();
+    let file_path = path.join("directory/Renamed");
+    let file = tokio::task::spawn_blocking(move || {
+        let mut file = std::fs::File::open(file_path).unwrap();
+        file.read_exact(&mut [0]).unwrap();
+        file
+    })
+    .await
+    .unwrap();
+    let file_handles = driver.open_handles(&binding).await.unwrap();
+    eprintln!(
+        "open file: {file_handles} handles, scope {:?}",
+        driver.handle_tracking_scope()
+    );
+    if driver.handle_tracking_scope() == HandleTrackingScope::Native {
+        assert!(file_handles > 0);
+    }
+    if file_handles > 0 {
+        assert_eq!(
+            driver.rebind(&binding, &next).await.unwrap_err().code,
+            ErrorCode::MountBusy
+        );
+    }
+    tokio::task::spawn_blocking(move || drop(file))
+        .await
+        .unwrap();
+    for _ in 0..100 {
+        if driver.open_handles(&binding).await.unwrap() == 0 {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+    assert_eq!(driver.open_handles(&binding).await.unwrap(), 0);
+    local
+        .commit(LocalCommit {
+            mounts: vec![next.clone()],
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    driver.rebind(&binding, &next).await.unwrap();
+    driver.rebind(&binding, &next).await.unwrap();
+    assert_eq!(
+        driver.status(&next).await.unwrap(),
+        NativeMountState::Mounted
+    );
+    assert_eq!(
+        engine
+            .services
+            .files
+            .getattr(
+                &FsContext {
+                    mount: binding.id,
+                    generation: binding.generation,
+                    identity: local_identity(),
+                },
+                InodeId::ROOT,
+            )
+            .await
+            .unwrap_err()
+            .code,
+        ErrorCode::StaleBinding
+    );
+    tokio::task::spawn_blocking(move || {
+        let bytes = std::fs::read(path.join("directory/Renamed")).unwrap();
+        assert_eq!(bytes, b"recovery branch contents");
+        assert_eq!(
+            std::fs::read(path.join("recovery-only.txt")).unwrap(),
+            b"new branch"
+        );
+        std::fs::write(path.join("continued.txt"), b"after rebind").unwrap();
+    })
+    .await
+    .unwrap();
+    assert!(
+        local
+            .nodes(binding.branch)
+            .await
+            .unwrap()
+            .iter()
+            .all(|node| node.path.as_str() != "/continued.txt")
+    );
+    assert!(
+        local
+            .nodes(recovery.id)
+            .await
+            .unwrap()
+            .iter()
+            .any(|node| node.path.as_str() == "/continued.txt")
+    );
+    for mount in local.mounts().await.unwrap() {
+        unmount_when_idle(&engine, &mount).await;
     }
 }
 
@@ -298,14 +527,7 @@ async fn native_directory_adoption_preserves_files_at_original_path() {
             .unwrap(),
     );
     assert_eq!(replay.id, record.id);
-    success(
-        engine
-            .services
-            .mounts
-            .unmount(context(), binding.id, binding.generation)
-            .await
-            .unwrap(),
-    );
+    unmount_when_idle(&engine, &binding).await;
 }
 
 #[cfg(unix)]
@@ -481,14 +703,7 @@ async fn native_branch_switch_completes_and_reports_file_and_cwd_occupancy() {
     .unwrap();
     for mount in local.mounts().await.unwrap() {
         if mount.state == MountState::Ready {
-            success(
-                engine
-                    .services
-                    .mounts
-                    .unmount(context(), mount.id, mount.generation)
-                    .await
-                    .unwrap(),
-            );
+            unmount_when_idle(&engine, &mount).await;
         }
     }
 }

@@ -17,6 +17,7 @@ export function createSettingsPage({api, element, $}) {
     current = data; dirty = false;
     $('settings-form').hidden = false; $('startup-panel').hidden = false;
     $('cache-max').value = data.runtime.cache.max_bytes / gib;
+    $('settings-collaboration-enabled').checked = data.runtime.collaboration?.enabled ?? true;
     $('allowed-origins').value = data.runtime.allowed_origins.join('\n');
     const remote = data.runtime.remote;
     const backend = remote?.backend || 's3';
@@ -97,7 +98,7 @@ export function createSettingsPage({api, element, $}) {
         prefix:$('opencsg-prefix').value.trim(), token:$('opencsg-token').value, allow_http:$('opencsg-http').checked};
       if (!remote.endpoint || !remote.repository) throw new Error('请填写 OpenCSG 域名和仓库。');
     }
-    return {cache, remote, allowed_origins:[...new Set($('allowed-origins').value.split('\n').map(value => value.trim()).filter(Boolean))]};
+    return {cache, remote, collaboration:{enabled:$('settings-collaboration-enabled').checked}, allowed_origins:[...new Set($('allowed-origins').value.split('\n').map(value => value.trim()).filter(Boolean))]};
   }
   function storageFields() {
     const mode = $('storage-mode').value;

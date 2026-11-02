@@ -9,4 +9,4 @@ pub use remote::{OpenCsgConfig, RemoteConfig};
 pub use store::{
     ConfigApplier, ConfigStore, LiveConfig, RuntimeConfig, Settings, SettingsUpdate, Snapshot,
 };
-pub use types::{CacheConfig, S3Config, S3Credentials};
+pub use types::{CacheConfig, CollaborationConfig, S3Config, S3Credentials};

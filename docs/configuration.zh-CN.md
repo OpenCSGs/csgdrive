@@ -6,7 +6,7 @@
 
 运行 `agentdrived init --directory /absolute/path/to/agentdrive`，创建 `agentdrive.json`、私有 token 文件，以及挂载和文件交换目录。修改生成的配置后，运行 `agentdrived serve --config /absolute/path/to/agentdrive/agentdrive.json`。daemon 在启动时读取配置，并每秒检查运行配置的修改。
 
-生成的文件包含 `data_dir`、`listen`、`mount_roots`、`directory_roots` 和 `credentials`。其他可选设置使用下表中的默认值，按需添加即可。
+生成的文件包含 `data_dir`、`listen`、`mount_roots`、`directory_roots`、`credentials` 和 `collaboration`。其他可选设置使用下表中的默认值，按需添加即可。
 
 | 字段 | 含义与默认值 |
 | --- | --- |
@@ -17,6 +17,7 @@
 | `credentials` | 必填，格式为 `{ "principal": "owner", "token_file": "/absolute/path/token" }` 的数组，至少需要一项凭据。 |
 | `administrators` | 可以读取和修改 daemon 设置的身份列表，默认为 `["owner"]`。与工作区授权分别管理，修改后需要重启。 |
 | `allowed_origins` | HTTP Origin 允许列表，默认 `[]`。CLI 和 stdio 连接不会发送 Origin。 |
+| `collaboration` | 默认为 `{ "enabled": true }`，统一管理此 daemon 全部工作区和读写挂载的自动协作。 |
 | `cache` | 可选对象，只包含 `max_bytes`：本地不可变对象的缓存容量，以字节为单位，默认为 `2147483648`（2 GiB），必须为正整数。启用远程存储时用于缓存清理。 |
 | `remote` | 下文的 S3 或 OpenCSG 配置，通过 `backend` 选择。省略或设置为 `null` 时仅使用本地存储。已有配置没有 `backend` 时继续使用 S3。 |
 
@@ -28,13 +29,14 @@ token 文件必须是普通文件，最多 4096 字节，去除首尾空白后�
 
 ## 热更新与 Dashboard 设置
 
-在 Dashboard 左侧选择“设置”，或访问 `/settings`，使用管理员 token 认证。页面可以选择本地、S3 或 OpenCSG Codes 存储，修改 S3 连接与凭据、OpenCSG 域名与仓库及 token、本地缓存容量，以及 HTTP Origin 允许列表。两种远程后端均显示缓存容量，本地模式保留已保存的容量值。连接设置保存后，在程序运行期间完成切换。保存会写入 daemon 启动时使用的同一个 `agentdrive.json`，并发布完整配置快照。这些设置适用于该 daemon 的全部工作区。配置文件保持原有顶层结构，保存时仍会省略采用默认值的可选字段。
+在 Dashboard 左侧选择“设置”，或访问 `/settings`，使用管理员 token 认证。“自动协作”开关默认开启，适用于该 daemon 的全部工作区和读写挂载。页面还可以选择本地、S3 或 OpenCSG Codes 存储，修改 S3 连接与凭据、OpenCSG 域名与仓库及 token、本地缓存容量，以及 HTTP Origin 允许列表。两种远程后端均显示缓存容量，本地模式保留已保存的容量值。连接设置保存后，在程序运行期间完成切换。保存会写入 daemon 启动时使用的同一个 `agentdrive.json`，并发布完整配置快照。
 
 | 配置 | 生效时间 |
 | --- | --- |
 | `remote` | 准备历史内容与远程连接后切换，无需重启 |
 | `cache` | 下一次缓存清理；后台任务每 30 秒执行一次 |
 | `allowed_origins` | 下一次 HTTP 请求，包括已有 MCP 会话的请求 |
+| `collaboration.enabled` | 下一次文件操作或协作检查；已开始的交还与恢复继续完成 |
 | `data_dir`、`listen`、`mount_roots`、`directory_roots` | daemon 重启后 |
 | `credentials`、token 文件内容、`administrators`、进程环境变量 | daemon 重启后 |
 
@@ -45,9 +47,15 @@ Origin 使用 HTTP 或 HTTPS 的 `scheme://host[:port]` 格式，不包含路径
 带身份验证的 HTTP 接口：
 
 - `GET /api/settings`：返回当前 `runtime`、只读 `startup` 字段、`config_path`、配置版本 `revision` 和 `reload_error`。
-- `PUT /api/settings`：提交 `{ "revision": "<GET 返回的版本>", "runtime": { "cache": { ... }, "allowed_origins": [], "remote": null } }`。需要提供 GET 返回的完整运行配置，成功后返回保存的设置。
+- `PUT /api/settings`：提交 `{ "revision": "<GET 返回的版本>", "runtime": { "cache": { ... }, "allowed_origins": [], "remote": null, "collaboration": { "enabled": true } } }`。需要提供 GET 返回的完整运行配置，成功后返回保存的设置。
 
 两个接口都要求身份属于 `administrators`，工作区授权不会授予设置权限。响应包含 token 文件路径，但不会返回 token 内容、已保存的 OpenCSG token 或 S3 环境凭据。缺少认证返回 401，设置权限不足返回 403，版本过期或检测到外部文件修改返回 409。校验失败时，当前配置和文件保持原有内容。页面检测到新版本时会保留尚未保存的表单内容，由用户选择重新载入。
+
+## 自动协作
+
+`collaboration.enabled: true` 且已经配置远程存储时，读写挂载自动跟随共享分支，在文件修改时申请写权限，在空闲达到指定时间或登记的工作结束后保存并交还权限。挂载点管理页面调整每个工作分支的交还时间与事件设置。只读挂载和仅使用本地存储的工作区保持原有行为。
+
+在设置页面或 `agentdrive.json` 中将 `collaboration.enabled` 改为 `false`，稳定状态的分支保留当前权限，转为手动管理。已经冻结写入的交还和恢复流程继续完成。重新开启后恢复自动协作。挂载点管理页面展示驱动的句柄统计范围，参见[集成说明](integrations.zh-CN.md#自动协作)。
 
 ## 本地缓存容量
 
@@ -56,6 +64,8 @@ Origin 使用 HTTP 或 HTTPS 的 `scheme://host[:port]` 格式，不包含路径
 清理只处理已获得远端确认、没有活动读取者且没有受保护引用的对象。当前分支内容、待发布数据、合并候选内容和固定缓存受到保护。受保护内容较多时，实际占用可能超过设置容量。SQLite 元数据、工作文件和临时文件另外占用磁盘空间。本地模式完整保留历史，不执行缓存清理，Dashboard 隐藏缓存容量输入框。
 
 ## 运行期间切换存储
+
+更换远端后端或存储命名空间、禁用远端存储之前，需要在设置中关闭自动协作并完成待处理的交接。协作流程仍依赖当前后端的写权限时，后台会拒绝该配置修改。同一后端和命名空间的凭据或 token 更新会直接刷新连接，可以在自动协作开启期间完成。
 
 在设置页面选择本地、S3 或 OpenCSG 模式，保存即可切换。`remote.enabled: false` 保留当前远程配置和凭据，便于再次启用。每次保存一份远程后端配置。直接修改配置文件也使用相同的切换过程。
 

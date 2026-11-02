@@ -20,10 +20,53 @@ pub enum NativeMountState {
     Unknown,
 }
 
+#[derive(
+    Clone,
+    Copy,
+    Debug,
+    Default,
+    PartialEq,
+    Eq,
+    serde::Serialize,
+    serde::Deserialize,
+    schemars::JsonSchema,
+)]
+#[serde(rename_all = "snake_case")]
+pub enum HandleTrackingScope {
+    Native,
+    #[default]
+    Protocol,
+}
+
 #[async_trait]
 pub trait MountDriver: Send + Sync {
+    /// Whether the compiled backend supports collaboration and native binding updates.
+    fn supports_automatic_collaboration(&self) -> bool {
+        false
+    }
+    fn handle_tracking_scope(&self) -> HandleTrackingScope {
+        HandleTrackingScope::Protocol
+    }
+    /// Backends without reliable cache invalidation must replace the session via unmount/mount.
+    fn requires_remount_for_rebind(&self) -> bool {
+        false
+    }
     async fn normalize_path(&self, path: &std::path::Path) -> Result<PathBuf>;
     async fn mount(&self, spec: MountSpec, file_system: Arc<dyn FileSystem>) -> Result<()>;
+    /// Counts driver-visible file, directory and metadata handles, including incomplete opens.
+    async fn open_handles(&self, _binding: &MountBinding) -> Result<usize> {
+        Err(Error::new(
+            ErrorCode::Unsupported,
+            "native handle accounting is not supported",
+        ))
+    }
+    /// The caller prevents new engine requests until the updated binding is persisted.
+    async fn rebind(&self, _previous: &MountBinding, _next: &MountBinding) -> Result<()> {
+        Err(Error::new(
+            ErrorCode::Unsupported,
+            "updating a native mount binding is not supported",
+        ))
+    }
     async fn unmount(&self, binding: &MountBinding) -> Result<()>;
     async fn status(&self, binding: &MountBinding) -> Result<NativeMountState>;
     fn capability(&self) -> &'static str;

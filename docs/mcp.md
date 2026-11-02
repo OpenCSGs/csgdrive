@@ -92,7 +92,7 @@ Fields below are inside `request`. A suffix `?` means the field may be omitted. 
 | `merge_prepare` | `workspace`, `source`, `target`, `base?` | `source` and optional `base` are revision IDs; `target` is a `BranchGuard`; returns `result.candidate`. |
 | `merge_resolve` | `merge`, `candidate`, `resolutions` | `candidate` is the current candidate revision ID; edits any candidate path using `source`, `target`, `delete`, `replace` or `copy` and returns a new candidate. |
 | `merge_apply` | `merge`, `candidate`, `target`, `durability?` | Requires resolved conflicts and a clean target matching its `BranchGuard`; may require mount release. |
-| `mount_prepare` | `workspace`, `path`, `branch?`, `access?`, `revision?`, `durability?` | Defaults to `read_write`. An omitted branch reuses this location's selection; a new location imports the workspace and creates its branch from the latest published working root. Identical requests from the same principal reuse the binding. An explicit branch must exist locally; a revision requires `read_only`. |
+| `mount_prepare` | `workspace`, `path`, `branch?`, `access?`, `revision?`, `durability?`, `automatic?` | Defaults to `read_write` and follows the daemon-wide `collaboration.enabled` setting. In automatic mode an omitted branch reuses the mounted/local selection, or the shared workspace root on a new location. Manual mode retains per-location branch creation. Identical requests from the same principal reuse the binding. A revision requires `read_only`. `automatic: true` explicitly requires automatic mode, remote storage and a supported driver; it cannot override the global switch. |
 | `mount_save` | `mount`, `expected_binding_generation`, `durability?`, `wait_for_remote_ms?` | Save the mounted files as a formal commit, update `formal_head`, and clear `dirty` for the saved content. Unchanged content reuses the current commit. Returns a revision receipt; a stale binding returns `STALE_BINDING`. |
 | `mount_release` | `operation`, `expected_binding_generation` | Continues a pending operation after processes release the original mount. The operation ID comes from the pending receipt. |
 | `mount_unmount` | `mount`, `generation` | Uses the binding ID and generation from `workspace_status.mounts`; requests normal unmount. |
@@ -124,6 +124,9 @@ Call `workspace_status` for an existing workspace and inspect `capabilities`:
 | Field | Current meaning |
 | --- | --- |
 | `format_version` | Persisted format version, currently `1`. |
+| `automatic_collaboration` | Whether the compiled native driver supports automatic collaboration. Linux FUSE, macOS FUSE and WinFsp support it; remote storage is also required. |
+| `collaboration_enabled` | Current daemon-wide `collaboration.enabled` setting, which defaults to true. Change it through Settings or the configuration file. |
+| `handle_tracking_scope` | `native` for native open/close callbacks, or `protocol` for protocol callbacks. This describes the reported handle count; consult `automatic_collaboration` for feature support. |
 | `platform_mount` | `linux-fuse`, `windows-winfsp`, `macos-macfuse`, `macos-fuse-t`, or `macos-macfuse-feature-required`, according to the build. This describes the compiled adapter; a successful mount also needs the OS driver and permissions. |
 | `file_operations` | `lookup`, `getattr`, `readdir`, `create`, `mkdir`, `read`, `write`, `truncate`, `chmod`, `rename`, `unlink`, `rmdir`, `fsync`. These describe mounted filesystem operations. |
 | `remote_configured` | Whether S3 or OpenCSG is currently enabled; a saved profile with `enabled: false` returns `false`. This flag does not test connectivity or credentials. |

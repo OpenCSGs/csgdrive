@@ -48,6 +48,7 @@ impl OwnershipService {
         })?;
         let branch = {
             let _gate = self.runtime.lock_branch(request.guard.branch).await;
+            self.runtime.check_mutation(request.guard.branch)?;
             let _protection = self.runtime.objects.read().await;
             let mut branch = self.runtime.branch(request.guard.branch).await?;
             check_guard(&branch, &request.guard)?;

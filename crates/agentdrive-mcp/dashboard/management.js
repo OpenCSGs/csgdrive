@@ -1,5 +1,6 @@
 import { createCommandPanel } from './commands.js';
 import { createRevisionSource } from './history.js';
+import { createCollaborationPanel } from './collaboration.js';
 
 export function createManagementPage({api, element, container, kind, changed, onBusy = () => {}}) {
   const mounts = kind === 'mounts';
@@ -38,10 +39,13 @@ export function createManagementPage({api, element, container, kind, changed, on
   listHeader.append(element('h2', '', mounts ? '本机挂载点' : '工作区分支'), count);
   const rows = element('div', 'management-rows'); rows.id = `${kind}-list`; listing.append(listHeader, rows);
   content.append(operationHost, formPanel); if (!mounts) content.append(listing); container.append(heading, empty, content);
+  const collaboration = mounts && createCollaborationPanel({api, element, container:content, changed});
   let snapshot = null, project = null, busy = false;
   const source = !mounts && createRevisionSource({api, element, select:revisionInput, form, changed:updateBusy});
   const runner = createCommandPanel({api, element, container:operationHost, scope:kind, changed,
     setBusy:value => { busy = value; updateBusy(); onBusy(value); }});
+  const automatic = () => mounts && inputs.access.value === 'read_write' && snapshot?.status.capabilities.collaboration_enabled === true
+    && snapshot.status.capabilities.remote_configured && snapshot.status.capabilities.automatic_collaboration;
   function updateBusy() {
     for (const input of form.elements) input.disabled = busy || !snapshot;
     for (const button of rows.querySelectorAll('button')) button.disabled = busy || button.dataset.unavailable === 'true';
@@ -50,7 +54,7 @@ export function createManagementPage({api, element, container, kind, changed, on
   function eligible() {
     if (!snapshot) return [];
     return snapshot.branches.filter(branch => branch.state !== 'deleted' &&
-      (!mounts || (branch.local_available ?? branch.local) && (inputs.access.value === 'read_only' || branch.owner === snapshot.status.location && branch.state === 'writable')));
+      (!mounts || automatic() || (branch.local_available ?? branch.local) && (inputs.access.value === 'read_only' || branch.owner === snapshot.status.location && branch.state === 'writable')));
   }
   function options(input, values, fallback) {
     const selected = input.value;
@@ -64,7 +68,9 @@ export function createManagementPage({api, element, container, kind, changed, on
     if (!snapshot) return;
     const branch = snapshot.branches.find(branch => branch.id === branchInput.value);
     if (mounts) {
-      hint.textContent = inputs.access.value === 'read_only' && branch && !branch.local
+      hint.textContent = automatic()
+        ? '跟随所选分支，首次修改时申请写权限。持有权限后自动保存，可跟踪的文件与目录句柄关闭后按空闲时间或事件交还。'
+        : inputs.access.value === 'read_only' && branch && !branch.local
         ? `只读挂载固定到保存版本 ${(branch.autosave_head || branch.formal_head).slice(0,8)}。`
         : '目录位于当前 AgentDrive 所在机器。一个分支在本机只能有一个读写挂载点。';
       return;
@@ -90,7 +96,7 @@ export function createManagementPage({api, element, container, kind, changed, on
       const copy = element('div', 'management-row-copy');
       copy.append(element('h3', '', item.name));
       const source = snapshot.branches.find(value => value.id === item.source_branch);
-      copy.append(element('p', '', `${item.owner === snapshot.status.location ? '本机管理写入' : `其他 location ${item.owner.slice(0,8)}`} · ${source ? `来自 ${source.name}` : item.source_branch ? `来自 ${item.source_branch.slice(0,8)}` : '工作区初始分支'}`));
+      copy.append(element('p', '', `${item.state === 'available' ? '写权限可领取' : item.owner === snapshot.status.location ? '本机管理写入' : `其他 location ${item.owner.slice(0,8)}`} · ${source ? `来自 ${source.name}` : item.source_branch ? `来自 ${item.source_branch.slice(0,8)}` : '工作区初始分支'}`));
       if (snapshot.status.selected_branch === item.id) copy.append(element('span', 'pill', '本机默认分支'));
       const identifier = element('code', 'management-id', item.id.slice(0,8)); identifier.title = item.id; copy.append(identifier);
       const buttons = element('div', 'management-actions');
@@ -107,15 +113,15 @@ export function createManagementPage({api, element, container, kind, changed, on
   function show(data) {
     const previous = project; snapshot = data; project = data?.status.workspace.id || null;
     content.hidden = !data; empty.hidden = !!data;
-    if (!data) { runner.clear(); if (source) source.clear(); return; }
+    if (!data) { runner.clear(); if (source) source.clear(); if (collaboration) collaboration.clear(); return; }
     if (previous !== project) { form.reset(); for (const input of Object.values(inputs)) delete input.dataset.options; }
     locationLabel.textContent = `本机 location ${data.status.location.slice(0,8)}`;
     const requested = new URLSearchParams(location.search).get('branch');
     options(branchInput, eligible().map(branch => [branch.id, branch.name]), requested || data.status.selected_branch);
     hint.textContent = mounts ? '目录位于当前 AgentDrive 所在机器。一个分支在本机只能有一个读写挂载点。' : '选择准确的来源内容；创建完成后，可以切换使用或挂载到本机目录。';
-    sourceOptions(); if (!mounts) renderRows(); runner.show(project); updateBusy();
+    sourceOptions(); if (!mounts) renderRows(); runner.show(project); updateBusy(); if (collaboration) collaboration.show(data);
   }
-  function clear() { snapshot = null; project = null; rows.replaceChildren(); form.reset(); if (source) source.clear(); runner.clear(); content.hidden = true; }
+  function clear() { snapshot = null; project = null; rows.replaceChildren(); form.reset(); if (source) source.clear(); if (collaboration) collaboration.clear(); runner.clear(); content.hidden = true; }
   form.onsubmit = event => {
     event.preventDefault(); if (busy || !snapshot) return;
     const textInput = mounts ? inputs.path : inputs.name;
@@ -133,7 +139,9 @@ export function createManagementPage({api, element, container, kind, changed, on
   };
   branchInput.onchange = sourceOptions;
   (mounts ? inputs.path : inputs.name).oninput = event => event.target.setCustomValidity('');
-  if (mounts) inputs.access.onchange = () => show(snapshot);
+  if (mounts) {
+    inputs.access.onchange = () => show(snapshot);
+  }
   const saveMount = mount => !busy && runner.run('mount_save', {mount:mount.id, expected_binding_generation:mount.generation, durability:snapshot.status.capabilities.remote_configured ? 'remote' : 'local'}, '保存挂载目录');
   const unmountMount = mount => !busy && runner.run('mount_unmount', {mount:mount.id, generation:mount.generation}, '卸载本机目录');
   return {show, clear, saveMount, unmountMount};

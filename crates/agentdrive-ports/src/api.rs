@@ -39,6 +39,12 @@ pub struct CreateWorkspace {
 pub struct Capabilities {
     pub format_version: u32,
     pub platform_mount: String,
+    #[serde(default)]
+    pub handle_tracking_scope: crate::HandleTrackingScope,
+    #[serde(default)]
+    pub automatic_collaboration: bool,
+    #[serde(default)]
+    pub collaboration_enabled: bool,
     pub file_operations: Vec<String>,
     pub remote_configured: bool,
     pub automatic_text_merge: bool,
@@ -266,6 +272,9 @@ pub struct ApplyMerge {
 #[derive(Clone, Debug, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct PrepareMount {
+    /// Require automatic mode. Omitted or false follows the daemon-wide setting.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub automatic: bool,
     pub workspace: WorkspaceId,
     pub branch: Option<BranchId>,
     pub revision: Option<RevisionId>,
@@ -502,6 +511,7 @@ pub struct ReadBranchFile {
 
 #[derive(Clone)]
 pub struct Services {
+    pub collaboration: Arc<dyn crate::CollaborationApi>,
     pub workspace: Arc<dyn WorkspaceApi>,
     pub revisions: Arc<dyn RevisionApi>,
     pub replica: Arc<dyn ReplicaApi>,

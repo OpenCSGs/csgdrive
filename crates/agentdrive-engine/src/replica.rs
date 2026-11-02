@@ -354,9 +354,35 @@ impl ReplicaService {
                         .acknowledge(jobs, remote, current.version.clone(), progress)
                         .await;
                 }
-                if remote.owner != reference.owner
-                    || remote.authority_epoch != reference.authority_epoch
-                {
+                let authority_matches = match job.expected_authority {
+                    Some(expected) => {
+                        remote.owner == expected.owner
+                            && remote.authority_epoch == expected.authority_epoch
+                            && remote.write_available == expected.available
+                    }
+                    None => {
+                        remote.owner == reference.owner
+                            && remote.authority_epoch == reference.authority_epoch
+                            && !remote.write_available
+                            && !remote.write_stopped
+                    }
+                };
+                if !authority_matches {
+                    if let Err(error) = self
+                        .runtime
+                        .state
+                        .commit(LocalCommit {
+                            remote_refs: vec![ObservedBranchRef::new(
+                                remote,
+                                current.version.clone(),
+                                self.runtime.clock.now_ns(),
+                            )],
+                            ..Default::default()
+                        })
+                        .await
+                    {
+                        tracing::warn!(branch = %reference.branch, %error, "remote authority changed but its observation could not be retained");
+                    }
                     return Err(Error::new(
                         ErrorCode::StaleAuthority,
                         "remote branch authority has changed",
@@ -415,7 +441,7 @@ impl ReplicaService {
         .retryable())
     }
 
-    async fn import_history(&self, observation: ObservedBranchRef) -> Result<()> {
+    pub(crate) async fn import_history(&self, observation: ObservedBranchRef) -> Result<()> {
         let reference = &observation.reference;
         let mut commit = LocalCommit::default();
         for entry in self
@@ -473,6 +499,7 @@ pub(crate) fn decode_branch_ref(
     if reference.workspace != workspace
         || reference.branch != branch
         || reference.authority_epoch == 0
+        || (reference.write_available && (!reference.write_stopped || reference.deleted))
         || reference.record_index.kind != ObjectKind::RecordIndex
         || reference.working_root.kind != ObjectKind::Tree
     {
@@ -649,6 +676,11 @@ impl ReplicaPublisher for ReplicaService {
                         branch.state = BranchState::Stopped;
                         commit.branches.push(branch);
                     }
+                    if let Some(record) = self.runtime.state.collaboration(id).await?
+                        && record.settings.enabled
+                    {
+                        self.runtime.collaboration_blocked.lock().insert(id);
+                    }
                     Some(gate)
                 } else {
                     None
@@ -812,6 +844,7 @@ impl ReplicaPublisher for ReplicaService {
         Ok(SyncJob {
             merge_history,
             operation: operation.id,
+            expected_authority: None,
             reference: BranchRef {
                 workspace: branch.workspace,
                 branch: branch.id,
@@ -825,7 +858,11 @@ impl ReplicaPublisher for ReplicaService {
                 working_root: branch.working_root.clone(),
                 record_index,
                 deleted: branch.state == BranchState::Deleted,
-                write_stopped: branch.state == BranchState::Stopped,
+                write_stopped: matches!(
+                    branch.state,
+                    BranchState::Stopped | BranchState::Available
+                ),
+                write_available: branch.state == BranchState::Available,
                 metadata: Some(branch.into()),
             },
             attempts: 0,
@@ -876,7 +913,9 @@ impl ReplicaService {
         let Some(carrier) = branches
             .iter()
             .filter(|branch| {
-                branch.owner == self.runtime.location && branch.state == BranchState::Writable
+                branch.owner == self.runtime.location
+                    && branch.state == BranchState::Writable
+                    && self.runtime.check_mutation(branch.id).is_ok()
             })
             .min_by_key(|branch| {
                 (
@@ -894,6 +933,9 @@ impl ReplicaService {
         let Some(_gate) = self.runtime.try_lock_branch(carrier.id) else {
             return Ok(());
         };
+        if self.runtime.check_mutation(carrier.id).is_err() {
+            return Ok(());
+        }
         let _protection = self.runtime.objects.read().await;
         let mut branch = self.runtime.branch(carrier.id).await?;
         if branch.owner != self.runtime.location || branch.state != BranchState::Writable {
@@ -1092,7 +1134,9 @@ impl ReplicaService {
                     ),
                     next_inode,
                     dirty: formal.root != reference.working_root,
-                    state: if reference.write_stopped {
+                    state: if reference.write_available {
+                        BranchState::Available
+                    } else if reference.write_stopped {
                         BranchState::Stopped
                     } else {
                         BranchState::Writable
