@@ -111,7 +111,7 @@ export function createRelationshipsView({api, element, container, onSave, onUnmo
     }
     row.append(name, ownership, directory, state, source);
     if (onUnmount) {
-      const actions = element('td'), buttons = element('div', 'management-actions');
+      const actions = element('td'), buttons = element('div', 'relationship-actions');
       if (mount && mount.state !== 'released') {
         for (const [label, handler] of [...(mount.access === 'read_write' ? [['保存版本', onSave]] : []), ['卸载', onUnmount]]) {
           const button = element('button', 'secondary', label); button.type = 'button'; button.disabled = busy;
@@ -119,7 +119,7 @@ export function createRelationshipsView({api, element, container, onSave, onUnmo
           button.dataset.mountAction = 'true'; button.onclick = () => handler(mount); buttons.append(button);
         }
       }
-      const link = element('a', 'management-link', '管理分支');
+      const link = element('a', 'secondary', '管理分支');
       link.href = '/branches?' + new URLSearchParams({workspace, branch:branch.id}); buttons.append(link);
       actions.append(buttons); row.append(actions);
     }
