@@ -92,7 +92,7 @@ jq '.tools[] | select(.name == "mount_prepare") | .inputSchema' tools.json
 | `merge_prepare` | `workspace`, `source`, `target`, `base?` | `source` 和可选的 `base` 为 revision ID；`target` 为 `BranchGuard`；返回 `result.candidate`。 |
 | `merge_resolve` | `merge`, `candidate`, `resolutions` | `candidate` 为当前候选 revision ID；通过 `source`、`target`、`delete`、`replace` 或 `copy` 编辑候选中的路径，返回新候选版本。 |
 | `merge_apply` | `merge`, `candidate`, `target`, `durability?` | 要求全部冲突已处理，目标分支没有未保存的修改并符合 `BranchGuard`；可能要求释放挂载。 |
-| `mount_prepare` | `workspace`, `path`, `branch?`, `access?`, `revision?`, `durability?` | 默认 `read_write`。省略 branch 时复用本机选择；新 location 自动读取远程 workspace，并从主分支最近发布的版本创建本机分支。同一个 principal 使用同路径和相同参数时复用 binding。指定 branch 时使用该本机分支；提供 revision 要求 `read_only`。 |
+| `mount_prepare` | `workspace`, `path`, `branch?`, `access?`, `revision?`, `durability?`, `automatic?` | 默认 `read_write`，遵从整个 AgentDrive 的 `collaboration.enabled` 开关。自动模式省略 branch 时沿用已有挂载或本机选择，新 location 使用共享根分支；手动模式保留创建 location 分支的行为。同一个 principal 使用同路径和相同参数时复用 binding。提供 revision 要求 `read_only`。`automatic: true` 明确要求自动模式、远端存储和支持的驱动，无法覆盖全局开关。 |
 | `mount_save` | `mount`, `expected_binding_generation`, `durability?`, `wait_for_remote_ms?` | 将当前挂载的文件保存为正式 commit，更新 `formal_head` 并清除已保存内容的 `dirty` 状态。内容没有变化时复用当前 commit。返回版本操作结果；过期 binding 返回 `STALE_BINDING`。 |
 | `mount_release` | `operation`, `expected_binding_generation` | 使用目录的进程释放原始挂载后，继续等待中的操作。operation ID 来自等待中的操作结果记录。 |
 | `mount_unmount` | `mount`, `generation` | 使用 `workspace_status.mounts` 中的 binding ID 和 generation，请求正常卸载。 |
@@ -124,6 +124,9 @@ jq '.tools[] | select(.name == "mount_prepare") | .inputSchema' tools.json
 | 字段 | 当前含义 |
 | --- | --- |
 | `format_version` | 持久化格式版本，当前为 `1`。 |
+| `automatic_collaboration` | 已编入的驱动是否支持自动协作。Linux FUSE、macOS FUSE 和 WinFsp 提供该能力，同时需要配置远端存储。 |
+| `collaboration_enabled` | 整个 AgentDrive 的 `collaboration.enabled` 当前设置，默认开启，通过设置页面或配置文件修改。 |
+| `handle_tracking_scope` | `native` 表示原生打开与关闭回调，`protocol` 表示协议回调。该字段说明句柄数量的统计范围，功能支持情况查询 `automatic_collaboration`。 |
 | `platform_mount` | 根据构建结果返回 `linux-fuse`、`windows-winfsp`、`macos-macfuse`、`macos-fuse-t` 或 `macos-macfuse-feature-required`。该值表示已编译的适配器；挂载成功还需要操作系统驱动和权限。 |
 | `file_operations` | `lookup`、`getattr`、`readdir`、`create`、`mkdir`、`read`、`write`、`truncate`、`chmod`、`rename`、`unlink`、`rmdir`、`fsync`，表示挂载文件系统支持的操作。 |
 | `remote_configured` | 当前是否启用 S3 或 OpenCSG；保存的配置为 `enabled: false` 时返回 `false`。此字段不会测试连接或凭据。 |

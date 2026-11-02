@@ -298,6 +298,20 @@ fn put_node(transaction: &Transaction<'_>, branch: BranchId, node: &Node) -> Res
 
 #[async_trait]
 impl LocalStateStore for LocalBackend {
+    async fn collaboration(&self, branch: BranchId) -> Result<Option<CollaborationRecord>> {
+        self.one(
+            "SELECT data FROM collaborations WHERE id=?1",
+            vec![branch.to_string()],
+        )
+        .await
+    }
+    async fn collaborations(&self, workspace: WorkspaceId) -> Result<Vec<CollaborationRecord>> {
+        self.many(
+            "SELECT data FROM collaborations WHERE workspace=?1 ORDER BY id",
+            vec![workspace.to_string()],
+        )
+        .await
+    }
     async fn relationship_snapshot(
         &self,
         workspace: WorkspaceId,
@@ -604,6 +618,9 @@ impl LocalStateStore for LocalBackend {
         self.db(move |connection| {
             let transaction = connection.transaction().map_err(sql_error)?;
             for guard in &commit.guards { check_guard(&transaction, guard)?; }
+            for record in &commit.collaborations {
+                upsert(&transaction, "collaborations", record.branch.to_string(), record.workspace, record)?;
+            }
             for guard in &commit.operation_guards {
                 let current: Option<OperationRecord> = read_one(&transaction, "SELECT data FROM operations WHERE id=?1", &[guard.id.to_string()])?;
                 if current.as_ref() != Some(guard) {
@@ -665,7 +682,7 @@ impl LocalStateStore for LocalBackend {
             }
             for merge in &commit.merges { upsert(&transaction, "merges", merge.id.to_string(), merge.workspace, merge)?; }
             for job in &commit.sync_jobs {
-                put_history(&transaction, &job.reference)?;
+                if job.expected_authority.is_none() { put_history(&transaction, &job.reference)?; }
                 transaction.execute("INSERT INTO sync_jobs(id,workspace,branch,source_generation,data) VALUES(?1,?2,?3,?4,?5) ON CONFLICT(id) DO UPDATE SET data=excluded.data",
                     params![job.operation.to_string(), job.reference.workspace.to_string(), job.reference.branch.to_string(), db_integer(job.reference.source_generation)?, encode(job)?]).map_err(sql_error)?;
             }

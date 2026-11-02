@@ -14,6 +14,50 @@ fn setup() -> (tempfile::TempDir, Arc<ConfigStore>) {
 }
 
 #[test]
+fn collaboration_defaults_on_and_updates_through_settings_and_file_reload() {
+    let (_directory, store) = setup();
+    let settings = store.settings(&owner()).unwrap();
+    assert!(settings.runtime.collaboration.enabled);
+    let mut original: Value =
+        serde_json::from_slice(&fs::read(&settings.config_path).unwrap()).unwrap();
+    original.as_object_mut().unwrap().remove("collaboration");
+    fs::write(
+        &settings.config_path,
+        serde_json::to_vec(&original).unwrap(),
+    )
+    .unwrap();
+    assert!(store.reload().unwrap());
+    assert!(store.live().load().values.collaboration.enabled);
+    let settings = store.settings(&owner()).unwrap();
+    let mut runtime = settings.runtime;
+    runtime.collaboration.enabled = false;
+    let saved = store
+        .update(
+            &owner(),
+            SettingsUpdate {
+                revision: settings.revision,
+                runtime,
+            },
+        )
+        .unwrap();
+    assert!(!saved.runtime.collaboration.enabled);
+    let before_reload = store.live().load();
+    let reopened = ConfigStore::open(&saved.config_path).unwrap();
+    assert!(!reopened.live().load().values.collaboration.enabled);
+    let mut config: Value = serde_json::from_slice(&fs::read(&saved.config_path).unwrap()).unwrap();
+    assert_eq!(config["collaboration"], json!({"enabled":false}));
+    config["collaboration"]["enabled"] = true.into();
+    fs::write(&saved.config_path, serde_json::to_vec(&config).unwrap()).unwrap();
+    assert!(store.reload().unwrap());
+    assert!(store.live().load().values.collaboration.enabled);
+    assert!(!before_reload.values.collaboration.enabled);
+    config["collaboration"]["enabled"] = "invalid".into();
+    fs::write(&saved.config_path, serde_json::to_vec(&config).unwrap()).unwrap();
+    assert_eq!(store.reload().unwrap_err().code, ErrorCode::InvalidArgument);
+    assert!(store.live().load().values.collaboration.enabled);
+}
+
+#[test]
 fn opencsg_token_is_private_and_only_reused_for_the_same_destination() {
     let (_directory, store) = setup();
     let settings = store.settings(&owner()).unwrap();
@@ -129,7 +173,7 @@ fn file_updates_publish_complete_snapshots_and_preserve_in_flight_readers() {
     let settings = store.settings(&owner()).unwrap();
     let mut config: Value =
         serde_json::from_slice(&fs::read(&settings.config_path).unwrap()).unwrap();
-    assert_eq!(config.as_object().unwrap().len(), 5);
+    assert_eq!(config.as_object().unwrap().len(), 6);
     config["cache"] = json!({"max_bytes":3221225472u64});
     config["allowed_origins"] = json!(["https://example.com"]);
     fs::write(&settings.config_path, serde_json::to_vec(&config).unwrap()).unwrap();

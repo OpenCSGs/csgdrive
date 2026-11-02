@@ -1,6 +1,7 @@
 //! Workspace services. Storage, host integration and transport remain behind ports.
 mod branch_files;
 mod cache;
+mod collaboration;
 mod content;
 mod engine;
 mod files;
@@ -44,6 +45,7 @@ pub(crate) use workspaces::WorkspaceService;
 pub(crate) use mounts::MountService;
 
 pub(crate) use cache::CacheService;
+pub(crate) use collaboration::CollaborationService;
 
 pub(crate) use ownership::OwnershipService;
 

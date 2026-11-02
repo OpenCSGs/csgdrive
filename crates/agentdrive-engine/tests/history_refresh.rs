@@ -179,6 +179,7 @@ impl Harness {
                 .prepare(
                     context(),
                     PrepareMount {
+                        automatic: false,
                         workspace: self.workspace,
                         branch: Some(self.branch),
                         revision: None,

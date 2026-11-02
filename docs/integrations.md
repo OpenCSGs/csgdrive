@@ -74,7 +74,7 @@ The bridge exchanges newline-delimited JSON-RPC, reuses the mount, and launches 
 
 Autosave runs after approximately five seconds without changes or thirty seconds of continuous changes; the daemon checks once per second. A save captures the current files of the shared branch.
 
-The bridge queries the current mount binding before each task and saves on completion, cancellation, failure, agent exit, or disconnection. Normal completion responses are forwarded after a successful local save. Save failures are reported. Retried requests retain their request ID, and duplicate protocol requests replay completed responses. Shared mounts remain available after disconnection.
+The bridge queries the current mount binding before each task. For a manually managed mount, it saves on completion, cancellation, failure, agent exit, or disconnection and forwards normal completion responses after a successful local save. For an automatic mount, it registers the execution before forwarding the task, then reports its terminal outcome to the daemon. The daemon completes saving and permission release asynchronously after the driver reports no tracked handles. Retried requests retain their identity, and duplicate protocol requests replay completed responses. Shared mounts remain available after disconnection.
 
 Switching or restoring a branch can change the binding ID or generation. Delayed save requests fail with `STALE_BINDING`; the next task queries the current binding again. Reconnection after a daemon restart restores saved content and checks the native mount. Changes that never reached a save can be lost.
 
@@ -82,11 +82,62 @@ Custom applications can call bearer-authenticated `POST /api/lifecycle`:
 
 | Event | Fields | Behavior |
 | --- | --- | --- |
-| `attach` | `request_id`, `workspace`, `mount_path` | Prepare or reuse the mount; return `binding` and `mount_path`. |
-| `check` | `request_id`, `workspace`, `mount_path` | Query the current writable binding at the normalized path returned by attach. |
+| `attach` | `request_id`, `workspace`, `mount_path`, optional `branch`, optional `automatic` | Prepare or reuse the mount; return `binding` and `mount_path`. Uses the daemon's collaboration setting. `automatic: true` requires automatic mode to be available. |
+| `check` | `request_id`, `workspace`, `mount_path` | Query the current writable binding and collaboration status at the normalized path returned by attach. |
 | `save` | `request_id`, `mount`, `expected_binding_generation` | Save that mount generation and return its operation record. |
 
 The daemon publishes remotely in the background. `remote_confirmed` indicates successful remote publication of the operation.
+
+## Automatic collaboration
+
+Upgrade every participating location to a version that supports automatic collaboration before enabling it for a shared branch.
+
+Automatic collaboration is available with Linux FUSE, macFUSE, FUSE-T, and WinFsp. The daemon follows the handle information supplied by each driver when deciding when to release ownership. FUSE can miss `O_PATH` references; FUSE-T's NFS backend can omit application-held directory references. The dashboard keeps this tracking scope visible beside the configuration and status.
+
+When receiving a new version on FUSE-T, AgentDrive automatically remounts the same directory. The unmounted directory rejects writes from unprivileged applications; file access during the mount update may need to be retried. If an application keeps the directory occupied, the daemon waits for it to be released and continues automatically.
+
+The **Automatic collaboration** switch in **Settings** applies to the entire AgentDrive daemon and defaults to enabled (`collaboration.enabled: true`). It requires configured remote storage. Create a writable mount in **Mounts** by selecting a branch and directory. The branch may belong to another location. The mounted directory follows published content while idle; its first modification requests write ownership automatically. While this location owns the branch, the daemon saves local changes and publishes them. Agent tools continue using ordinary filesystem operations.
+
+The **Automatic collaboration** panel in Mounts configures idle release and completion-event release for the selected mount's branch. Both triggers wait until the driver reports no open handles for that branch's local mounts. The panel shows the global setting with a link to Settings, active branch, writer, handle count and tracking scope, registered executions, local saving, remote confirmation, and any recovery branch awaiting a mount switch. An unavailable handle count is displayed as unknown. Unsaved form changes survive status refreshes.
+
+Disabling the global switch preserves stable branches' current authority for manual management. Releases and recovery switches that have already frozen mutations continue to completion. New writable mounts use the shared branch selected by the request, an existing mount, the local selection, or the workspace root branch. Local-only storage and read-only mounts retain ordinary mount behavior.
+
+`capabilities.handle_tracking_scope` describes what the driver can observe: `native` covers file and directory handles opened by the driver; `protocol` covers handles reported by the filesystem protocol. A zero count means the driver currently observes no open handles. `automatic_collaboration` reports driver support; `collaboration_enabled` reports the current global setting. A build without the required native driver rejects automatic mode.
+
+Wrap a Codex App Server process to register executions and forward completion outcomes:
+
+```sh
+agentdrive integrate --protocol codex-app-server \
+  --workspace "$WORKSPACE" --branch "$BRANCH" \
+  --mount-path "$AGENTDRIVE_DIRECTORY/mounts/project" -- codex app-server
+```
+
+The wrapper supports the same `--branch` option for ACP and detects the daemon's collaboration setting. Optional `--automatic` requires automatic mode to be available and cannot override a disabled global switch. This command wraps the process it launches; it does not subscribe to unrelated desktop-app sessions. No model-issued MCP acquisition call is required.
+
+Custom integrations use the existing bearer token with these HTTP endpoints:
+
+| Endpoint | Input / output |
+| --- | --- |
+| `GET /api/workspaces/{workspace}/collaboration` | Returns branch coordination status and associated local mount IDs. |
+| `PUT /api/collaboration` | `{mount, expected_binding_generation, enabled, idle_timeout_secs, release_on_event}`; `enabled` must match the current global setting. Use `null` for `idle_timeout_secs` to disable idle release. |
+| `POST /api/collaboration/events` | `{mount, source, thread_id, turn_id, phase}`; phase is `started`, `completed`, `interrupted`, or `failed`. |
+| `POST /api/collaboration/codex` | Codex notification with additional `mount` and `source` fields. Accepts `turn/started` and terminal `turn/completed` notifications. |
+
+Register `started` before the execution accesses the work directory. Reuse the same source, thread, turn, and mount identifiers for its completion. The daemon associates registration with the mount generation and write authority; clients do not supply an unlock epoch. Repeated terminal events are idempotent, and stale events cannot release a later grant. A successful event response acknowledges coordination state, not completion of remote publication or permission release.
+
+```json
+{
+  "mount": "<mount-id>",
+  "source": "codex-local",
+  "method": "turn/completed",
+  "params": {
+    "threadId": "thread-123",
+    "turn": {"id": "turn-456", "status": "completed"}
+  }
+}
+```
+
+The `failed` and `interrupted` outcomes preserve accepted filesystem changes. If publication finds that write authority has changed, the daemon saves a recovery branch and switches affected local writable mounts after their handles close. The directory path stays the same. Check the displayed current branch and remote confirmation before using the recovered work elsewhere. If a file operation reports stale content, reopen and read the current files before preparing the change again.
 
 ## Branches and dashboard
 
@@ -135,6 +186,8 @@ Remote confirmation requires a known remote reference with matching owner, autho
 ## macOS FUSE-T
 
 Install FUSE-T 1.2.9 and pkg-config, then build with `make -j "$(sysctl -n hw.ncpu)" build FEATURES=macos-fuse-t`. AgentDrive uses the local NFS backend and disables its attribute cache. FUSE-T runs without a kernel extension. Its [license](https://github.com/macos-fuse-t/fuse-t) requires a commercial license for commercial use or distribution with commercial software.
+
+The NFS backend does not support cache invalidation notifications. Automatic collaboration receives new versions by recreating the native mount at the same path. A busy directory keeps the operation pending for automatic retry; the daemon uses normal unmounting. The unmounted directory rejects writes from unprivileged applications; file access during the mount update may need to be retried. Directory owners can change these permissions, and privileged processes can bypass them. Mounting fails with an explicit error if the directory has additional write grants.
 
 macOS can create AppleDouble `._` metadata files on this filesystem; AgentDrive stores them as ordinary workspace files. `branch_switch` attempts normal unmount and remount in one call. A running Agent, terminal, or MCP stdio proxy can keep the directory occupied. On `MOUNT_BUSY`, stop those processes or restart the Agent and retry the same `branch_switch` request from outside the mount. Configure the MCP proxy's working directory outside the mount when the client supports it.
 

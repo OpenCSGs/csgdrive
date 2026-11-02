@@ -90,6 +90,7 @@ async fn storage_switch_preserves_autosaves_commits_and_history_on_a_fresh_locat
             .prepare(
                 context(),
                 PrepareMount {
+                    automatic: false,
                     workspace: workspace.id,
                     branch: None,
                     revision: None,

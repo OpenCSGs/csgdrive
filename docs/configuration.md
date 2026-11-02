@@ -6,7 +6,7 @@
 
 Run `agentdrived init --directory /absolute/path/to/agentdrive` to create `agentdrive.json`, a private token file, and the mount/exchange directories. Edit the generated configuration, then start `agentdrived serve --config /absolute/path/to/agentdrive/agentdrive.json`. The daemon loads the file at startup and checks it every second for runtime changes.
 
-The generated file contains `data_dir`, `listen`, `mount_roots`, `directory_roots`, and `credentials`. Optional settings use the defaults below and can be added when needed.
+The generated file contains `data_dir`, `listen`, `mount_roots`, `directory_roots`, `credentials`, and `collaboration`. Optional settings use the defaults below and can be added when needed.
 
 | Field | Meaning and default |
 | --- | --- |
@@ -17,6 +17,7 @@ The generated file contains `data_dir`, `listen`, `mount_roots`, `directory_root
 | `credentials` | Required array of `{ "principal": "owner", "token_file": "/absolute/path/token" }`. At least one credential is required. |
 | `administrators` | Principals allowed to read and change daemon settings, default `["owner"]`. Independent of workspace grants; changes require a restart. |
 | `allowed_origins` | HTTP Origin allowlist, default `[]`. CLI and stdio connections do not send an Origin. |
+| `collaboration` | `{ "enabled": true }` by default. One automatic collaboration switch for all workspaces and writable mounts in this daemon. |
 | `cache` | Optional object with one setting, `max_bytes`: local immutable-object cache capacity in bytes, default `2147483648` (2 GiB). Must be a positive integer. Used for cache collection while remote storage is enabled. |
 | `remote` | S3 or OpenCSG configuration below, selected by `backend`. Omitted or `null` means local storage only. Existing configurations without `backend` select S3. |
 
@@ -28,13 +29,14 @@ Token files must be regular files, at most 4096 bytes, containing at least 32 no
 
 ## Runtime updates and dashboard settings
 
-Open **Settings** in the dashboard sidebar, or visit `/settings`. Authenticate with an administrator token. Select local, S3, or OpenCSG Codes storage. The form edits S3 connections and credentials, OpenCSG domain/repository/token, local cache capacity in GiB, and allowed HTTP origins. The cache field appears for either remote backend; local mode retains its saved capacity. Connection changes apply while the daemon runs. Saving persists the changes to the same `agentdrive.json` used to start the daemon and publishes one configuration snapshot. Settings apply to all workspaces in that daemon. The configuration retains its existing top-level structure; optional defaults remain omitted when saving.
+Open **Settings** in the dashboard sidebar, or visit `/settings`. Authenticate with an administrator token. The **Automatic collaboration** switch defaults to enabled and applies to every workspace and writable mount in this daemon. The form also edits S3 connections and credentials, OpenCSG domain/repository/token, local cache capacity in GiB, and allowed HTTP origins. The cache field appears for either remote backend; local mode retains its saved capacity. Connection changes apply while the daemon runs. Saving persists the changes to the same `agentdrive.json` used to start the daemon and publishes one configuration snapshot.
 
 | Configuration | Effective time |
 | --- | --- |
 | `remote` | After preparing history and the destination connection, without restarting |
 | `cache` | Next cache collection; the background worker runs every 30 seconds |
 | `allowed_origins` | Next HTTP request, including existing MCP sessions |
+| `collaboration.enabled` | Next filesystem operation or coordination tick; pending release and recovery continue to completion |
 | `data_dir`, `listen`, `mount_roots`, `directory_roots` | After a daemon restart |
 | `credentials`, token-file contents, `administrators`, process environment | After a daemon restart |
 
@@ -45,9 +47,15 @@ External file edits are checked once per second. Each candidate is validated bef
 The authenticated HTTP interface provides:
 
 - `GET /api/settings`: active `runtime`, read-only `startup` fields, `config_path`, a `revision`, and `reload_error`.
-- `PUT /api/settings`: `{ "revision": "<revision from GET>", "runtime": { "cache": { ... }, "allowed_origins": [], "remote": null } }`. Supply the complete runtime object returned by GET. A successful response returns the saved settings.
+- `PUT /api/settings`: `{ "revision": "<revision from GET>", "runtime": { "cache": { ... }, "allowed_origins": [], "remote": null, "collaboration": { "enabled": true } } }`. Supply the complete runtime object returned by GET. A successful response returns the saved settings.
 
 Both endpoints require membership in `administrators`; workspace grants do not grant settings access. Responses contain token-file paths but never token contents, saved OpenCSG tokens, or S3 environment credentials. Missing authentication returns 401, insufficient settings access returns 403, and a stale revision or a detected external file edit returns 409. Validation failure preserves the active settings and file. The UI preserves unsaved form values when it detects a newer revision and offers an explicit reload action.
+
+## Automatic collaboration
+
+With `collaboration.enabled: true` and configured remote storage, writable mounts automatically follow shared branch contents, acquire ownership on filesystem mutation, and save and release ownership after the configured inactivity interval or a registered execution completes. The Mounts page adjusts each branch's release timing and event settings. Read-only mounts and local-only storage retain their existing behavior.
+
+Set `collaboration.enabled: false` in Settings or `agentdrive.json` to switch stable branches to manual management while preserving their current authority. A release or recovery that has already frozen mutations continues until its safe endpoint. Re-enabling resumes automatic coordination. Driver handle tracking scope is shown in the Mounts page; see [integrations](integrations.md#automatic-collaboration).
 
 ## Local cache capacity
 
@@ -56,6 +64,8 @@ The single `cache.max_bytes` setting applies to cached immutable objects across 
 Collection removes only remotely confirmed objects without active readers or protected references. Active branch contents, pending publications, merge candidates and explicit cache pins remain protected. Usage can exceed the setting when protected content requires more space. SQLite metadata, working files and staging files consume additional disk space. Local mode retains all history and does not run cache eviction; the Dashboard hides its cache field in that mode.
 
 ## Switching storage while running
+
+Disable automatic collaboration in Settings and finish pending handoffs before switching the remote backend or storage namespace, or disabling remote storage. The daemon rejects the change while an active coordinator still depends on that backend's write authority. Updating credentials or tokens for the same backend and namespace refreshes the connection directly and can proceed while collaboration remains enabled.
 
 Select local, S3, or OpenCSG mode in Settings and save. `remote.enabled: false` retains the selected remote profile and credentials for later use. One remote profile is stored at a time. Direct configuration-file edits use the same transition.
 

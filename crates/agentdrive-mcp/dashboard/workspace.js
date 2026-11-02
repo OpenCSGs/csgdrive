@@ -58,8 +58,8 @@ export function createWorkspaceView({element, selectBranch, showRevision, showBr
         const copy = element('span', 'branch-copy');
         copy.append(element('span', 'branch-name', branch.name));
         const badges = element('span', 'branch-badges');
-        const location = element('span', 'default-mark', branch.owner === status.location ? '本机' : `其他节点 ${short(branch.owner)}`);
-        location.title = `location：${branch.owner}`; badges.append(location);
+        const location = element('span', 'default-mark', branch.state === 'available' ? '可接续' : branch.owner === status.location ? '本机' : `其他节点 ${short(branch.owner)}`);
+        location.title = `${branch.state === 'available' ? '最近写入 location' : 'location'}：${branch.owner}`; badges.append(location);
         if (branch.id === status.selected_branch) {
           const badge = element('span', 'default-mark', '本机默认'); badge.title = '未指定分支时的本机选择'; badges.append(badge);
         }
