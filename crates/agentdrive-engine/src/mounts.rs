@@ -1037,7 +1037,7 @@ impl MountApi for MountService {
     }
 
     async fn save(&self, context: RequestContext, request: SaveMount) -> Result<OperationRecord> {
-        let _lifecycle = self.runtime.lifecycle.lock().await;
+        let lifecycle = self.runtime.lifecycle.lock().await;
         let wait_ms = request.wait_for_remote_ms.unwrap_or(30_000);
         if wait_ms > 120_000 {
             return Err(Error::invalid("remote wait exceeds 120000 ms"));
@@ -1056,7 +1056,7 @@ impl MountApi for MountService {
                 Permission::Write,
             )
             .await?;
-        let operation = match self
+        let mut operation = match self
             .operations
             .start(
                 context,
@@ -1067,6 +1067,12 @@ impl MountApi for MountService {
             )
             .await?
         {
+            OperationStart::Existing(record)
+                if record.phase == OperationPhase::Reserved
+                    || record.recovery() == Some(OperationRecovery::RetryRequest) =>
+            {
+                OperationContext { operation: record }
+            }
             OperationStart::Existing(record) => return self.operations.progress(record).await,
             OperationStart::New(context) => context,
         };
@@ -1082,7 +1088,28 @@ impl MountApi for MountService {
             if mount.access != AccessMode::ReadWrite {
                 return Err(Error::new(ErrorCode::ReadOnly, "mount is read-only"));
             }
+            // Authority recovery can rebind the mount and needs the lifecycle lock itself.
+            drop(lifecycle);
+            if let Some(access) = self.write_access.get().and_then(Weak::upgrade) {
+                access.prepare_write(mount.id, mount.generation).await?;
+            }
             let record = {
+                let _lifecycle = self.runtime.lifecycle.lock().await;
+                let current = self
+                    .operations
+                    .get(&operation.operation.principal, operation.operation.id)
+                    .await?;
+                if current.local_saved {
+                    return self.operations.progress(current).await;
+                }
+                if self.runtime.state.mount(mount.id).await?.as_ref() != Some(&mount) {
+                    return Err(Error::new(
+                        ErrorCode::StaleBinding,
+                        "mount changed while acquiring write authority",
+                    ));
+                }
+                operation.operation = current;
+                operation.operation.error = None;
                 let _gate = self.runtime.lock_branch(mount.branch).await;
                 self.runtime.check_mutation(mount.branch)?;
                 let _protection = self.runtime.objects.read().await;
@@ -1114,7 +1141,10 @@ impl MountApi for MountService {
         .await;
         match result {
             Ok(record) => Ok(record),
-            Err(error) => self.operations.fail(&operation, error).await,
+            Err(error) => {
+                let _lifecycle = self.runtime.lifecycle.lock().await;
+                self.operations.fail(&operation, error).await
+            }
         }
     }
 

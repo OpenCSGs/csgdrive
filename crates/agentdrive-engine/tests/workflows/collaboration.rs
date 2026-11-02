@@ -160,6 +160,372 @@ fn command_error(result: Result<OperationRecord>) -> Error {
     }
 }
 
+fn save_request(binding: &MountBinding) -> SaveMount {
+    SaveMount {
+        mount: binding.id,
+        expected_binding_generation: binding.generation,
+        durability: Durability::Remote,
+        wait_for_remote_ms: None,
+    }
+}
+
+#[tokio::test]
+async fn mount_save_acquires_released_authority_and_keeps_successful_retries_read_only() {
+    let remote = Arc::new(MemoryRemote::default());
+    let harness = new(Some(remote)).await;
+    let workspace = harness.workspace().await;
+    let (binding, fs) = harness.branch_mount(workspace.id, "saved-work", None).await;
+    harness.write_new(&fs, "work.txt", b"autosaved work").await;
+    harness.sync(workspace.id, SyncDirection::Push).await;
+    configure(&harness, &binding, Some(1)).await;
+    harness.clock.advance(1_001);
+    harness.engine.collaborate_due().await.unwrap();
+    let before = harness.local.branch(binding.branch).await.unwrap().unwrap();
+    assert_eq!(before.state, BranchState::Available);
+    assert!(before.dirty);
+    let autosave = before.autosave_head.unwrap();
+    let context = context();
+    let request = save_request(&binding);
+    let saved = success(
+        harness
+            .engine
+            .services
+            .mounts
+            .save(context.clone(), request.clone())
+            .await
+            .unwrap(),
+    );
+    assert!(saved.local_saved && saved.remote_confirmed);
+    assert!(saved.recovery().is_none());
+    let after = harness.local.branch(binding.branch).await.unwrap().unwrap();
+    assert_eq!(after.state, BranchState::Writable);
+    assert!(after.authority_epoch > before.authority_epoch);
+    assert_eq!(after.working_root, before.working_root);
+    assert!(!after.dirty);
+    let revision = harness
+        .local
+        .revision(after.formal_head)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(revision.kind, RevisionKind::Commit);
+    assert_eq!(revision.parents, vec![autosave]);
+    harness.clock.advance(1_001);
+    harness.engine.collaborate_due().await.unwrap();
+    let released = harness.local.branch(binding.branch).await.unwrap().unwrap();
+    assert_eq!(released.state, BranchState::Available);
+    let repeated = success(
+        harness
+            .engine
+            .services
+            .mounts
+            .save(context, request)
+            .await
+            .unwrap(),
+    );
+    assert_eq!(saved.id, repeated.id);
+    assert_eq!(saved.result, repeated.result);
+    assert_eq!(
+        harness.local.branch(binding.branch).await.unwrap().unwrap(),
+        released
+    );
+}
+
+#[tokio::test]
+async fn concurrent_mount_saves_have_one_writer_and_the_loser_can_retry_the_same_request() {
+    let remote = Arc::new(MemoryRemote::default());
+    let first = new(Some(remote.clone())).await;
+    let second = new(Some(remote.clone())).await;
+    let third = new(Some(remote)).await;
+    let workspace = first.workspace().await;
+    let (a, fs) = first.branch_mount(workspace.id, "shared-work", None).await;
+    first.write_new(&fs, "work.txt", b"shared contents").await;
+    first.sync(workspace.id, SyncDirection::Push).await;
+    configure(&first, &a, Some(1)).await;
+    first.clock.advance(1_001);
+    first.engine.collaborate_due().await.unwrap();
+    second.sync(workspace.id, SyncDirection::Pull).await;
+    third.sync(workspace.id, SyncDirection::Pull).await;
+    let (b, _) = automatic_mount(&second, workspace.id, a.branch).await;
+    let (c, _) = automatic_mount(&third, workspace.id, a.branch).await;
+    let b_context = context();
+    let c_context = context();
+    let (b_result, c_result) = tokio::join!(
+        second
+            .engine
+            .services
+            .mounts
+            .save(b_context.clone(), save_request(&b)),
+        third
+            .engine
+            .services
+            .mounts
+            .save(c_context.clone(), save_request(&c)),
+    );
+    let b_result = b_result.unwrap();
+    let c_result = c_result.unwrap();
+    assert_eq!(
+        usize::from(b_result.local_saved) + usize::from(c_result.local_saved),
+        1
+    );
+    let (winner, mount, loser, other, failed, retry) = if b_result.local_saved {
+        (&second, &b, &third, &c, c_result, c_context)
+    } else {
+        (&third, &c, &second, &b, b_result, b_context)
+    };
+    assert_eq!(failed.error.as_ref().unwrap().code, ErrorCode::BranchBusy);
+    assert_eq!(failed.recovery(), Some(OperationRecovery::RetryRequest));
+    assert!(failed.result.is_none());
+    configure(winner, mount, Some(1)).await;
+    winner.clock.advance(1_001);
+    winner.engine.collaborate_due().await.unwrap();
+    let saved = success(
+        loser
+            .engine
+            .services
+            .mounts
+            .save(retry, save_request(other))
+            .await
+            .unwrap(),
+    );
+    assert_eq!(saved.id, failed.id);
+    assert!(saved.local_saved && saved.remote_confirmed);
+    assert!(saved.recovery().is_none());
+}
+
+#[tokio::test]
+async fn mount_save_rejects_an_outdated_view_and_binding_before_committing() {
+    let remote = Arc::new(MemoryRemote::default());
+    let first = new(Some(remote.clone())).await;
+    let second = new(Some(remote)).await;
+    let workspace = first.workspace().await;
+    let (a, fs) = first.branch_mount(workspace.id, "shared-work", None).await;
+    first.sync(workspace.id, SyncDirection::Push).await;
+    configure(&first, &a, None).await;
+    second.sync(workspace.id, SyncDirection::Pull).await;
+    let (b, _) = automatic_mount(&second, workspace.id, a.branch).await;
+    event(&first, a.id, "update", ExecutionPhase::Started).await;
+    first.write_new(&fs, "latest.txt", b"latest").await;
+    event(&first, a.id, "update", ExecutionPhase::Completed).await;
+    first.engine.collaborate_due().await.unwrap();
+    let request = save_request(&b);
+    let retry = context();
+    let failed = second
+        .engine
+        .services
+        .mounts
+        .save(retry.clone(), request.clone())
+        .await
+        .unwrap();
+    assert_eq!(failed.error.as_ref().unwrap().code, ErrorCode::TargetMoved);
+    assert_eq!(failed.recovery(), Some(OperationRecovery::RetryRequest));
+    assert!(!failed.local_saved);
+    second.clock.advance(5_001);
+    second.engine.collaborate_due().await.unwrap();
+    let current = second.local.mount(b.id).await.unwrap().unwrap();
+    assert!(current.generation > b.generation);
+    let stale = second
+        .engine
+        .services
+        .mounts
+        .save(retry, request)
+        .await
+        .unwrap();
+    assert_eq!(stale.error.as_ref().unwrap().code, ErrorCode::StaleBinding);
+    assert!(stale.recovery().is_none());
+    let saved = success(
+        second
+            .engine
+            .services
+            .mounts
+            .save(context(), save_request(&current))
+            .await
+            .unwrap(),
+    );
+    let Some(CommandResult::Revision { revision, .. }) = saved.result else {
+        panic!("missing revision")
+    };
+    assert_eq!(
+        second
+            .engine
+            .services
+            .revisions
+            .read_file(
+                &actor(),
+                workspace.id,
+                revision,
+                path("/latest.txt"),
+                0,
+                1024
+            )
+            .await
+            .unwrap(),
+        b"latest"[..]
+    );
+}
+
+#[tokio::test]
+async fn concurrent_retries_of_one_mount_save_commit_only_once() {
+    let remote = Arc::new(MemoryRemote::default());
+    let harness = new(Some(remote.clone())).await;
+    let workspace = harness.workspace().await;
+    let (binding, fs) = harness
+        .branch_mount(workspace.id, "shared-work", None)
+        .await;
+    harness.write_new(&fs, "work.txt", b"saved once").await;
+    harness.sync(workspace.id, SyncDirection::Push).await;
+    configure(&harness, &binding, Some(1)).await;
+    harness.clock.advance(1_001);
+    harness.engine.collaborate_due().await.unwrap();
+    let before = harness.local.revisions(workspace.id).await.unwrap().len();
+    let (waiting, resume) = remote.pause_next_branch_cas();
+    let request = save_request(&binding);
+    let retry = context();
+    let engine = harness.engine.clone();
+    let running_request = request.clone();
+    let running_context = retry.clone();
+    let task = tokio::spawn(async move {
+        engine
+            .services
+            .mounts
+            .save(running_context, running_request)
+            .await
+    });
+    waiting.await.unwrap();
+    let duplicate = harness
+        .engine
+        .services
+        .mounts
+        .save(retry.clone(), request.clone())
+        .await
+        .unwrap();
+    assert_eq!(
+        duplicate.error.as_ref().unwrap().code,
+        ErrorCode::BranchBusy
+    );
+    resume.send(()).unwrap();
+    let saved = success(task.await.unwrap().unwrap());
+    assert_eq!(saved.id, duplicate.id);
+    assert_eq!(
+        harness.local.revisions(workspace.id).await.unwrap().len(),
+        before + 1
+    );
+    let repeated = success(
+        harness
+            .engine
+            .services
+            .mounts
+            .save(retry, request)
+            .await
+            .unwrap(),
+    );
+    assert_eq!(saved.result, repeated.result);
+}
+
+#[tokio::test]
+async fn mount_save_can_finish_authority_recovery_without_holding_the_mount_lifecycle() {
+    let remote = Arc::new(MemoryRemote::default());
+    let harness = new(Some(remote.clone())).await;
+    let workspace = harness.workspace().await;
+    let (binding, fs) = harness
+        .branch_mount(workspace.id, "recover-work", None)
+        .await;
+    harness.sync(workspace.id, SyncDirection::Push).await;
+    configure(&harness, &binding, Some(60)).await;
+    harness
+        .write_new(&fs, "local.txt", b"preserve this work")
+        .await;
+    harness.clock.advance(6_000);
+    harness.engine.autosave_due().await.unwrap();
+    let key = RefKey::Branch {
+        workspace: workspace.id,
+        branch: binding.branch,
+    };
+    let before = remote.get(&key).await.unwrap().unwrap();
+    let mut replacement: BranchRef = decode(&before.bytes).unwrap();
+    replacement.owner = LocationId::new();
+    replacement.authority_epoch += 1;
+    replacement.source_generation += 1;
+    assert!(matches!(
+        remote
+            .compare_exchange(RefUpdate {
+                key: key.clone(),
+                expected_version: Some(before.version),
+                bytes: encode(&replacement).unwrap().into()
+            })
+            .await
+            .unwrap(),
+        CasOutcome::Applied { .. }
+    ));
+    let failed = command_error(
+        harness
+            .engine
+            .services
+            .replica
+            .sync(
+                context(),
+                SyncRequest {
+                    workspace: workspace.id,
+                    branches: Some(vec![binding.branch]),
+                    direction: SyncDirection::Push,
+                },
+            )
+            .await,
+    );
+    assert_eq!(failed.code, ErrorCode::StaleAuthority);
+    let saved = tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        harness
+            .engine
+            .services
+            .mounts
+            .save(context(), save_request(&binding)),
+    )
+    .await
+    .expect("save must allow recovery to rebind")
+    .unwrap();
+    assert_eq!(
+        saved.error.as_ref().unwrap().code,
+        ErrorCode::RecoveryRequired
+    );
+    assert!(!saved.local_saved);
+    let recovered = harness.local.mount(binding.id).await.unwrap().unwrap();
+    assert_ne!(recovered.branch, binding.branch);
+    assert!(recovered.generation > binding.generation);
+    let result = success(
+        harness
+            .engine
+            .services
+            .mounts
+            .save(context(), save_request(&recovered))
+            .await
+            .unwrap(),
+    );
+    let Some(CommandResult::Revision { revision, branch }) = result.result else {
+        panic!("missing recovered revision")
+    };
+    assert_eq!(branch, recovered.branch);
+    assert_eq!(
+        harness
+            .engine
+            .services
+            .revisions
+            .read_file(
+                &actor(),
+                workspace.id,
+                revision,
+                path("/local.txt"),
+                0,
+                1024
+            )
+            .await
+            .unwrap(),
+        b"preserve this work"[..]
+    );
+    let published: BranchRef = decode(&remote.get(&key).await.unwrap().unwrap().bytes).unwrap();
+    assert_eq!(published, replacement);
+}
+
 #[tokio::test]
 async fn idle_release_waits_for_handles_and_new_mutations_restart_the_timer() {
     let remote = Arc::new(MemoryRemote::default());

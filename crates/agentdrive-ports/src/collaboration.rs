@@ -69,5 +69,5 @@ pub trait WriteAccess: Send + Sync {
         branch: BranchId,
     ) -> Result<()>;
     /// 在取得分支修改锁之前调用，文件服务取得锁后再次检查冻结状态。
-    async fn prepare_write(&self, mount: MountId) -> Result<()>;
+    async fn prepare_write(&self, mount: MountId, expected_binding_generation: u64) -> Result<()>;
 }

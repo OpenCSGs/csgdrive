@@ -66,7 +66,9 @@ impl FileService {
         if let Some(access) = self.write_access.get().and_then(Weak::upgrade) {
             self.authorized_view(context, true, FileQuery::Binding)
                 .await?;
-            access.prepare_write(context.mount).await?;
+            access
+                .prepare_write(context.mount, context.generation)
+                .await?;
         }
         Ok(())
     }

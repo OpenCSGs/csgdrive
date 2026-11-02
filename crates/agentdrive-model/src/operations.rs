@@ -1,4 +1,4 @@
-use crate::{OperationPhase, OperationRecord, PendingAction};
+use crate::{ErrorCode, OperationPhase, OperationRecord, PendingAction};
 use serde::Serialize;
 
 /// A safe continuation of an existing operation, derived from its saved action.
@@ -21,6 +21,16 @@ impl OperationRecord {
             return None;
         }
         match &self.pending {
+            None if self.name == "mount_save"
+                && self.phase == OperationPhase::Failed
+                && !self.local_saved
+                && self.result.is_none()
+                && self.error.as_ref().is_some_and(|error| {
+                    error.retryable || error.code == ErrorCode::StaleAuthority
+                }) =>
+            {
+                Some(OperationRecovery::RetryRequest)
+            }
             Some(PendingAction::BranchSwitch { .. }) if self.name == "branch_switch" => {
                 Some(OperationRecovery::RetryRequest)
             }

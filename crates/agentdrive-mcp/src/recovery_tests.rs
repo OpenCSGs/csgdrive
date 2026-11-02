@@ -160,6 +160,55 @@ async fn initial_mount_failure_advertises_retry_without_an_old_binding() {
 }
 
 #[tokio::test]
+async fn mount_save_advertises_a_safe_retry_for_a_failed_unsaved_request() {
+    let fixture = Fixture::new().await;
+    let mut branch = fixture
+        .local
+        .branch(fixture.binding.branch)
+        .await
+        .unwrap()
+        .unwrap();
+    branch.state = BranchState::Available;
+    fixture
+        .local
+        .commit(agentdrive_ports::LocalCommit {
+            branches: vec![branch.clone()],
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    let request = mutation(
+        json!({"mount":fixture.binding.id, "expected_binding_generation":fixture.binding.generation, "durability":"local"}),
+    );
+    let failed = fixture.call("mount_save", request.clone()).await;
+    assert_eq!(failed["error"]["code"], "STALE_AUTHORITY");
+    assert_eq!(failed["local_saved"], false);
+    assert_eq!(failed["recovery"], json!({"kind":"retry_request"}));
+    let checked = fixture
+        .call("operation_get", json!({"operation":failed["id"]}))
+        .await;
+    assert_eq!(checked["recovery"], failed["recovery"]);
+    branch.state = BranchState::Writable;
+    fixture
+        .local
+        .commit(agentdrive_ports::LocalCommit {
+            branches: vec![branch],
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    let saved = fixture.call("mount_save", request.clone()).await;
+    assert!(saved["error"].is_null());
+    assert_eq!(saved["local_saved"], true);
+    assert_eq!(saved["id"], failed["id"]);
+    assert!(saved["recovery"].is_null());
+    assert_eq!(
+        fixture.call("mount_save", request).await["result"],
+        saved["result"]
+    );
+}
+
+#[tokio::test]
 async fn release_retries_its_saved_target_after_a_failed_attempt_and_lost_response() {
     let fixture = Fixture::new().await;
     let pending = fixture.pending_unmount().await;

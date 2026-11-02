@@ -3,11 +3,12 @@ export function createCommandPanel({api, element, container, scope, changed, set
   panel.setAttribute('aria-label', '操作进度');
   const title = element('h2'), status = element('p', 'command-status'); status.setAttribute('role', 'status');
   const flags = element('div', 'command-flags'), error = element('p', 'command-error'); error.setAttribute('role', 'alert');
+  const note = element('p', 'command-note'); note.hidden = true;
   const actions = element('div', 'management-actions');
   const retry = element('button', 'secondary', '重试请求'), check = element('button', 'secondary', '检查结果');
   const release = element('button', 'secondary', '已关闭占用，继续操作');
   const detail = element('details'), details = element('code', 'command-details'); detail.append(element('summary', '', '操作详情'), details);
-  actions.append(retry, check, release); panel.append(title, status, flags, error, actions, detail); container.append(panel);
+  actions.append(retry, check, release); panel.append(title, status, flags, error, note, actions, detail); container.append(panel);
   let workspace = null, ticket = null, timer = null, generation = 0, running = false;
   const key = () => `agentdrive-action:${scope}:${workspace}`;
   const post = (tool, body) => api(`/api/commands/${tool}`, {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(body)});
@@ -29,12 +30,24 @@ export function createCommandPanel({api, element, container, scope, changed, set
     status.textContent = complete(record) ? record.phase === 'complete' ? '操作已完成' : '本机操作已完成' : running ? '正在处理…' :
       record?.phase === 'complete' ? '等待远端保存确认' : labels[record?.phase] || '结果尚未确认，可以检查结果或重试原请求。';
     flags.replaceChildren();
+    const stopped = record && ['failed','cancelled'].includes(record.phase);
     if (record) {
-      flags.append(element('span', 'pill', record.local_saved ? '本机已保存' : '等待本机保存'));
-      if (ticket.request.durability === 'remote') flags.append(element('span', 'pill', record.remote_confirmed ? '远端已确认' : '等待远端确认'));
+      flags.append(element('span', 'pill', record.local_saved ? '本机已保存' : stopped ? '此次操作未保存' : '等待本机保存'));
+      if (ticket.request.durability === 'remote') flags.append(element('span', 'pill', record.remote_confirmed ? '远端已确认' : stopped ? '此次操作未确认远端' : '等待远端确认'));
       if (record.mount_ready != null) flags.append(element('span', 'pill', record.mount_ready ? '挂载已就绪' : '挂载未就绪'));
     }
     error.textContent = ticket.message || record?.error?.message || '';
+    note.hidden = ticket.tool !== 'mount_save' || !stopped || record.local_saved;
+    note.textContent = note.hidden ? '' : '此次保存未完成。文件已有的自动保存和同步状态可在“自动协作”中查看。';
+    if (ticket.tool === 'mount_save' && !ticket.message && record?.error) {
+      const messages = {
+        BRANCH_BUSY:'分支写权限暂时不可用，请稍后重试。',
+        STALE_AUTHORITY:'本机当前没有分支写权限。',
+        TARGET_MOVED:'分支内容已更新，请等待目录同步后重新保存。',
+        STALE_BINDING:'挂载信息已变化，请刷新页面后重新点击“保存版本”。',
+      };
+      error.textContent = messages[record.error.code] || record.error.message;
+    }
     if (record?.phase === 'waiting_for_quiesce') error.textContent += ' 请关闭使用该目录的文件，让终端退出该目录后继续。';
     retry.hidden = !!record && (complete(record) || recovery?.kind === 'release_mount' ||
       recovery?.kind !== 'retry_request' && (!record.error?.retryable || terminal));

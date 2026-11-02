@@ -683,13 +683,19 @@ impl WriteAccess for CollaborationService {
         Ok(())
     }
 
-    async fn prepare_write(&self, mount: MountId) -> Result<()> {
+    async fn prepare_write(&self, mount: MountId, expected_binding_generation: u64) -> Result<()> {
         let binding = self
             .runtime
             .state
             .mount(mount)
             .await?
             .ok_or_else(|| Error::new(ErrorCode::NotFound, "mount does not exist"))?;
+        if binding.state != MountState::Ready || binding.generation != expected_binding_generation {
+            return Err(Error::new(
+                ErrorCode::StaleBinding,
+                "mount is no longer ready at the requested generation",
+            ));
+        }
         if self.automatic_enabled()
             && binding.access == AccessMode::ReadWrite
             && binding.revision.is_none()
