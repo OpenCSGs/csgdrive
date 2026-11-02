@@ -176,3 +176,30 @@ test('completed, cancelled and terminally failed receipts do not offer retries',
     assert.equal(await page.getByRole('button',{name:'恢复挂载',exact:true}).isVisible(),false);
   }
 });
+
+test('mount save failures describe the operation and retry the original request', async t => {
+  let attempts = 0;
+  const failed = {...receipt('failed',retryAction),mount_ready:null,
+    error:{code:'BRANCH_BUSY',message:'branch write authority is held by another location',retryable:true}};
+  const {page,calls} = await open(t, route => route.fulfill({json:attempts++ ? {...receipt('complete'),remote_confirmed:true} : failed}));
+  await run(page,'mount_save',{mount:'mount',expected_binding_generation:7,durability:'remote'});
+  assert.match(await page.locator('.command-error').textContent(),/写权限暂时不可用/);
+  assert.match(await page.locator('.command-flags').textContent(),/此次操作未保存/);
+  assert.doesNotMatch(await page.locator('.command-flags').textContent(),/等待/);
+  assert.match(await page.locator('.command-note').textContent(),/文件已有的自动保存和同步状态/);
+  await page.getByRole('button',{name:'重试请求'}).click();
+  await finished(page);
+  assert.deepEqual(calls[1],calls[0]);
+  assert.equal(await page.locator('.command-note').isVisible(),false);
+  assert.match(await page.locator('.command-flags').textContent(),/本机已保存.*远端已确认/);
+});
+
+test('failed publication retains the local save acknowledgement', async t => {
+  const {page} = await open(t, route => route.fulfill({json:{...receipt('failed'),local_saved:true,mount_ready:null,
+    error:{code:'STALE_AUTHORITY',message:'authority changed',retryable:false}}}));
+  await run(page,'mount_save',{mount:'mount',expected_binding_generation:7,durability:'remote'});
+  assert.match(await page.locator('.command-flags').textContent(),/本机已保存.*此次操作未确认远端/);
+  assert.doesNotMatch(await page.locator('.command-flags').textContent(),/等待|未保存/);
+  assert.equal(await page.locator('.command-note').isVisible(),false);
+  assert.equal(await page.getByRole('button',{name:'重试请求'}).isVisible(),false);
+});
