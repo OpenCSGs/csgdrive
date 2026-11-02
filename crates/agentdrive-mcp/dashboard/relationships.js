@@ -1,4 +1,7 @@
+import { createRelationshipDetail } from './relationship-detail.js';
+
 export function createRelationshipsView({api, element, container, onSave, onUnmount}) {
+  const details = createRelationshipDetail({element});
   const short = value => value?.slice(0, 8) || '—';
   const states = {preparing:'准备中', ready:'已挂载', paused:'已暂停', released:'已释放', recovery_required:'待恢复'};
   const heading = element('div', 'panel-heading');
@@ -38,7 +41,7 @@ export function createRelationshipsView({api, element, container, onSave, onUnmo
   const wrap = element('div', 'mount-table-wrap');
   const table = element('table', 'relationship-table'); table.id = 'relationship-table';
   const header = element('tr');
-  for (const text of ['分支', '写入所属 location', '挂载目录', '使用者与状态', '创建来源', ...(onUnmount ? ['操作'] : [])]) {
+  for (const text of ['分支', '写入所属 location', '挂载目录', '使用者与状态', '创建来源', '操作']) {
     const cell = element('th', '', text); cell.scope = 'col'; header.append(cell);
   }
   const head = element('thead'); head.append(header);
@@ -52,6 +55,7 @@ export function createRelationshipsView({api, element, container, onSave, onUnmo
 
   function clear() {
     generation++; controller?.abort(); controller = null;
+    details.clear();
     workspace = null; current = null; next = null; loading = false; rendered.clear(); body.replaceChildren(); count.textContent = '0';
     more.hidden = true; reload.hidden = true; status.textContent = ''; selection.textContent = '';
     for (const input of Object.values(fields)) input.value = '';
@@ -78,13 +82,6 @@ export function createRelationshipsView({api, element, container, onSave, onUnmo
     ownership.append(element('span', '', branch.state === 'available' ? '写权限可领取' : owner.location === location ? '本机' : '其他 location'));
     identifier(ownership, owner.location);
     value(ownership, branch.state === 'available' ? '最近持有权限的 location' : owner.source === 'local_authority' ? '本机管理写入' : owner.source === 'remote_reference' ? '远端观测记录' : '本机保留记录');
-    const ownershipDetails = element('details'); ownershipDetails.append(element('summary', '', '记录详情'));
-    value(ownershipDetails, `authority_epoch: ${owner.authority_epoch} · generation: ${owner.generation}`);
-    if (owner.source === 'remote_reference') {
-      value(ownershipDetails, owner.observed_ns == null ? '观测时间未知' : `观测于 ${new Date(owner.observed_ns / 1e6).toLocaleString('zh-CN', {hour12:false})}`);
-      value(ownershipDetails, `存储版本：${owner.storage_version ?? '未知'}`);
-    }
-    ownership.append(ownershipDetails);
     const directory = element('td');
     const state = element('td');
     if (mount) {
@@ -104,14 +101,10 @@ export function createRelationshipsView({api, element, container, onSave, onUnmo
       if (origin.source_branch) identifier(source, origin.source_branch, '分支 ');
       identifier(source, origin.base_revision, '版本 ');
       if (origin.status === 'unavailable' && origin.base_revision) value(source, '来源记录不完整');
-      if (origin.captured_working_root) {
-        const details = element('details'); details.append(element('summary', '', '创建时的内容对象'));
-        details.append(element('code', 'relationship-root', origin.captured_working_root.id)); source.append(details);
-      }
     }
     row.append(name, ownership, directory, state, source);
+    const actions = element('td'), buttons = element('div', 'relationship-actions');
     if (onUnmount) {
-      const actions = element('td'), buttons = element('div', 'relationship-actions');
       if (mount && mount.state !== 'released') {
         for (const [label, handler] of [...(mount.access === 'read_write' ? [['保存版本', onSave]] : []), ['卸载', onUnmount]]) {
           const button = element('button', 'secondary', label); button.type = 'button'; button.disabled = busy;
@@ -121,8 +114,9 @@ export function createRelationshipsView({api, element, container, onSave, onUnmo
       }
       const link = element('a', 'secondary', '管理分支');
       link.href = '/branches?' + new URLSearchParams({workspace, branch:branch.id}); buttons.append(link);
-      actions.append(buttons); row.append(actions);
     }
+    const detail = element('button', 'secondary', '查看详情'); details.bind(detail, workspace, entry); buttons.append(detail);
+    actions.append(buttons); row.append(actions);
     return row;
   }
   function display(result, mode) {
@@ -138,10 +132,6 @@ export function createRelationshipsView({api, element, container, onSave, onUnmo
       const signature = JSON.stringify([entry, result.selected_branch]);
       const old = rendered.get(key);
       const node = old?.signature === signature ? old.node : row(entry, result.observing_location);
-      if (old && node !== old.node) {
-        const opened = [...old.node.querySelectorAll('details')].map(details => details.open);
-        node.querySelectorAll('details').forEach((details, index) => { details.open = opened[index] || false; });
-      }
       updated.set(key, {node, signature});
       return node;
     });
@@ -152,6 +142,7 @@ export function createRelationshipsView({api, element, container, onSave, onUnmo
       window.scrollTo(scroll);
     }
     rendered = updated;
+    details.update(workspace, result.entries);
     count.textContent = result.total;
     const summary = result.total ? `已显示 ${result.entries.length} / ${result.total} 条已知关系` : '没有符合条件的已知关系。';
     status.textContent = mode === 'refresh' && previous && changed ? `关系已更新；${summary}` : summary;
@@ -165,7 +156,7 @@ export function createRelationshipsView({api, element, container, onSave, onUnmo
     const params = new URLSearchParams({limit:'50'});
     for (const [name, value] of Object.entries(applied)) if (value) params.set(name, value);
     if (append && next) params.set('cursor', next);
-    if (mode === 'replace') { current = null; next = null; rendered.clear(); body.replaceChildren(); count.textContent = '0'; more.hidden = true; }
+    if (mode === 'replace') { details.clear(); current = null; next = null; rendered.clear(); body.replaceChildren(); count.textContent = '0'; more.hidden = true; }
     status.textContent = mode === 'refresh' ? '正在更新关系，当前列表保持显示…' : '正在读取关系…'; more.disabled = true; reload.disabled = true; loading = true;
     try {
       const endpoint = `/api/workspaces/${encodeURIComponent(workspace)}/relationships`;

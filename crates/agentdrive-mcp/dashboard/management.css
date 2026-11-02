@@ -27,6 +27,11 @@
 #relationships-panel { margin-top:24px; }
 .relationship-actions { display:flex; flex-direction:column; gap:8px; width:88px; }
 .relationship-actions .secondary { display:flex; align-items:center; justify-content:center; min-height:36px; padding:7px 12px; font-size:12px; line-height:20px; text-decoration:none; }
+.relationship-dialog { width:min(840px,calc(100% - 32px)); }
+.relationship-dialog .revision-dialog-heading { position:sticky; top:0; z-index:1; background:var(--paper); }
+.relationship-detail > section { padding:22px 24px; }
+.relationship-detail > section + section { border-top:1px solid var(--line); }
+.relationship-dialog .detail-field { grid-template-columns:minmax(0,1fr); gap:5px; align-content:start; }
 .relationship-filters .relationship-search { flex-basis:100%; }
 .relationship-filters .relationship-advanced { flex-basis:100%; color:var(--muted); font-size:12px; }
 .relationship-advanced summary { cursor:pointer; margin:4px 0 12px; }
@@ -51,6 +56,7 @@
 .collaboration-help { margin:20px 24px 0; color:var(--muted); font-size:12px; line-height:1.7; }
 .collaboration-help summary { cursor:pointer; }
 @media(max-width:850px) {
+  .relationship-detail > section { padding:18px 16px; }
   .management-form { grid-template-columns:1fr; padding:0 16px 20px; }
   .management-row { align-items:stretch; flex-direction:column; padding:18px 16px; }
   .management-actions { flex-shrink:1; }

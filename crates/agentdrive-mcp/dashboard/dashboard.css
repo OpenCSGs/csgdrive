@@ -823,7 +823,4 @@ body:has(.revision-dialog[open]) { overflow:hidden; }
 .relationship-table td { max-width:280px; font-size:13px; overflow-wrap:anywhere; }
 .relationship-table small,.relationship-table .relationship-id,.relationship-table .mount-state { display:block; margin-top:5px; }
 .relationship-table small,.relationship-id { color:var(--muted); font-size:11px; }
-.relationship-table details { margin-top:8px; font-size:11px; }
-.relationship-table summary { cursor:pointer; color:var(--muted); }
-.relationship-root { display:block; margin-top:6px; overflow-wrap:anywhere; }
 .relationship-more { margin:12px 20px 20px; }
