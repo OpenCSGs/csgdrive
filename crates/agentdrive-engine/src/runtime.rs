@@ -150,7 +150,12 @@ pub(crate) fn check_guard(branch: &Branch, guard: &BranchGuard) -> Result<()> {
             "branch authority changed",
         ));
     }
-    if branch.generation != guard.generation
+    check_content_guard(branch, guard)
+}
+
+pub(crate) fn check_content_guard(branch: &Branch, guard: &BranchGuard) -> Result<()> {
+    if branch.id != guard.branch
+        || branch.generation != guard.generation
         || branch.formal_head != guard.expected_head
         || guard
             .mutation_seq

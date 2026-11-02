@@ -188,25 +188,19 @@ impl OperationCoordinator for OperationService {
     }
 
     async fn fail(&self, context: &OperationContext, error: Error) -> Result<OperationRecord> {
-        let mut operation = self
-            .runtime
-            .state
-            .operation(context.operation.id)
-            .await?
-            .ok_or_else(|| Error::integrity("operation reservation is missing"))?;
-        if !operation.local_saved {
-            operation.phase = OperationPhase::Failed;
-            operation.error = Some(error);
-            operation.record_merge_event(self.runtime.clock.now_ns());
-            self.runtime
-                .state
-                .commit(LocalCommit {
-                    operations: vec![operation.clone()],
-                    ..Default::default()
-                })
-                .await?;
-        }
-        Ok(operation)
+        let mut records = self
+            .update(
+                &[context.operation.id],
+                LocalCommit::default(),
+                |operation| {
+                    if !operation.local_saved {
+                        operation.phase = OperationPhase::Failed;
+                        operation.error = Some(error.clone());
+                    }
+                },
+            )
+            .await?;
+        self.progress(records.remove(0)).await
     }
 }
 

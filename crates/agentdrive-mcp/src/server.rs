@@ -332,7 +332,7 @@ pub fn tool_catalog() -> Vec<Tool> {
         ),
         tool::<Command<CommitRevision>>(
             "revision_commit",
-            "Save a formal commit or checkpoint using a current branch guard.",
+            "Save a formal commit or checkpoint using a current branch guard. Automatic collaboration acquires write authority and rechecks the expected content. Retry recoverable unsaved requests with the same request_id; TARGET_MOVED requires reading the updated branch before creating a new request.",
             false,
         ),
         tool::<RevisionList>(
@@ -372,7 +372,7 @@ pub fn tool_catalog() -> Vec<Tool> {
         ),
         tool::<Command<RestoreBranch>>(
             "branch_restore",
-            "Restore a branch to a revision with an explicit mount handoff when occupied.",
+            "Restore a branch to a revision with an explicit mount handoff when occupied. Automatic collaboration acquires write authority and validates the target content again when resuming the handoff.",
             false,
         ),
         tool::<Command<SyncRequest>>(
@@ -402,7 +402,7 @@ pub fn tool_catalog() -> Vec<Tool> {
         ),
         tool::<Command<PrepareMerge>>(
             "merge_prepare",
-            "Create a three-way merge candidate with explicit file conflicts.",
+            "Create a three-way merge candidate from fixed revisions with explicit file conflicts, without acquiring target write authority. The target must have no uncommitted changes.",
             false,
         ),
         tool::<MergeQuery>(
@@ -417,7 +417,7 @@ pub fn tool_catalog() -> Vec<Tool> {
         ),
         tool::<Command<ApplyMerge>>(
             "merge_apply",
-            "Apply a conflict-free candidate with two-parent history and target generation checks.",
+            "Apply a conflict-free candidate with two-parent history and target generation checks. Automatic collaboration acquires target write authority; changed target content requires a new merge candidate.",
             false,
         ),
         tool::<Command<PrepareMount>>(

@@ -139,6 +139,7 @@ impl Engine {
         let write_access: Arc<dyn WriteAccess> = collaboration.clone();
         files.set_write_access(Arc::downgrade(&write_access));
         mounts.set_write_access(Arc::downgrade(&write_access));
+        versions.set_write_access(Arc::downgrade(&write_access));
         collaboration.initialize().await?;
         let services = Services {
             collaboration: collaboration.clone(),

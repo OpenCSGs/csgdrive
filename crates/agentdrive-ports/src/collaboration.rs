@@ -70,4 +70,12 @@ pub trait WriteAccess: Send + Sync {
     ) -> Result<()>;
     /// 在取得分支修改锁之前调用，文件服务取得锁后再次检查冻结状态。
     async fn prepare_write(&self, mount: MountId, expected_binding_generation: u64) -> Result<()>;
+    /// Acquire authority for an explicit command, preserving its content preconditions.
+    /// Call before lifecycle and branch locks; validate the returned guard when saving.
+    async fn prepare_branch_write(
+        &self,
+        actor: &Principal,
+        guard: BranchGuard,
+        permission: Permission,
+    ) -> Result<BranchGuard>;
 }
