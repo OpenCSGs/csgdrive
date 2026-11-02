@@ -25,6 +25,8 @@
 .command-panel summary { cursor:pointer; }
 .command-details { display:block; white-space:pre-wrap; overflow-wrap:anywhere; margin-top:8px; }
 #relationships-panel { margin-top:24px; }
+.relationship-actions { display:flex; flex-direction:column; gap:8px; width:88px; }
+.relationship-actions .secondary { display:flex; align-items:center; justify-content:center; min-height:36px; padding:7px 12px; font-size:12px; line-height:20px; text-decoration:none; }
 .relationship-filters .relationship-search { flex-basis:100%; }
 .relationship-filters .relationship-advanced { flex-basis:100%; color:var(--muted); font-size:12px; }
 .relationship-advanced summary { cursor:pointer; margin:4px 0 12px; }
