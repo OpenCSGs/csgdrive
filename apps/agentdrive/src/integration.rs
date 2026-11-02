@@ -1,5 +1,5 @@
 use agentdrive_model::{
-    Error, ErrorCode, ObjectKind, OperationId, Result, WorkspaceId, object_ref,
+    BranchId, Error, ErrorCode, ObjectKind, OperationId, Result, WorkspaceId, object_ref,
 };
 use clap::{Args, ValueEnum};
 use serde_json::{Value, json};
@@ -31,6 +31,11 @@ pub struct Options {
     workspace: WorkspaceId,
     #[arg(long)]
     mount_path: PathBuf,
+    /// Require automatic collaboration to be enabled for this mount.
+    #[arg(long)]
+    automatic: bool,
+    #[arg(long)]
+    branch: Option<BranchId>,
     #[arg(required = true, last = true)]
     command: Vec<OsString>,
 }
@@ -38,10 +43,13 @@ pub struct Options {
 struct Lifecycle {
     http: reqwest::Client,
     endpoint: String,
+    execution_endpoint: String,
     token: String,
     workspace: WorkspaceId,
     mount_path: PathBuf,
     binding: Value,
+    source: String,
+    automatic: bool,
 }
 
 impl Lifecycle {
@@ -49,13 +57,17 @@ impl Lifecycle {
         let mut request = fields;
         request["event"] = json!(event);
         request["request_id"] = json!(request_id);
+        self.post(&self.endpoint, &request).await
+    }
+
+    async fn post(&self, endpoint: &str, request: &Value) -> Result<Value> {
         for attempt in 0..3 {
             let response = async {
                 let response = self
                     .http
-                    .post(&self.endpoint)
+                    .post(endpoint)
                     .bearer_auth(&self.token)
-                    .json(&request)
+                    .json(request)
                     .send()
                     .await?;
                 let status = response.status();
@@ -68,24 +80,40 @@ impl Lifecycle {
                     if status.is_success() {
                         return Ok(value);
                     }
-                    if let Ok(error) = serde_json::from_value::<Error>(value["error"].clone()) {
+                    let error = serde_json::from_value::<Error>(value["error"].clone())
+                        .unwrap_or_else(|_| {
+                            Error::new(
+                                ErrorCode::Unavailable,
+                                format!("lifecycle request failed: {status}"),
+                            )
+                        });
+                    if !error.retryable || attempt == 2 {
                         return Err(error);
                     }
-                    return Err(Error::new(
-                        ErrorCode::Unavailable,
-                        format!("lifecycle request failed: {status}"),
-                    ));
                 }
                 Err(error) if attempt == 2 => {
                     return Err(Error::new(ErrorCode::Unavailable, error.to_string()));
                 }
-                Err(_) => tokio::time::sleep(Duration::from_millis(100 * (attempt + 1))).await,
+                Err(_) => (),
             }
+            tokio::time::sleep(Duration::from_millis(100 * (attempt + 1))).await;
         }
         unreachable!()
     }
 
-    async fn begin(&mut self, turn: &str) -> Result<()> {
+    async fn execution(&self, turn: &str, thread: &str, phase: &str) -> Result<()> {
+        self.post(
+            &self.execution_endpoint,
+            &json!({
+                "mount":self.binding["id"], "source":self.source,
+                "thread_id":thread, "turn_id":turn, "phase":phase,
+            }),
+        )
+        .await?;
+        Ok(())
+    }
+
+    async fn begin(&mut self, turn: &str, thread: &str) -> Result<()> {
         let result = self
             .event(
                 &format!("{turn}-check"),
@@ -96,10 +124,19 @@ impl Lifecycle {
             )
             .await?;
         self.binding = result["binding"].clone();
+        self.automatic = result["collaboration"]["settings"]["enabled"]
+            .as_bool()
+            .unwrap_or(false);
+        if self.automatic {
+            self.execution(turn, thread, "started").await?;
+        }
         Ok(())
     }
 
-    async fn end(&self, turn: &str) -> Result<()> {
+    async fn end(&self, turn: &str, thread: &str, phase: &str) -> Result<()> {
+        if self.automatic {
+            return self.execution(turn, thread, phase).await;
+        }
         self.event(
             &format!("{turn}-save"),
             "save",
@@ -122,6 +159,7 @@ struct ActiveTurn {
     local: String,
     request: Option<String>,
     thread: String,
+    registration_thread: String,
     external: Option<String>,
     review: bool,
 }
@@ -153,9 +191,11 @@ fn rpc_error(message: &Value, error: &Error) -> Value {
 }
 
 impl Bridge {
-    async fn finish(&mut self) -> Result<()> {
+    async fn finish(&mut self, phase: &str) -> Result<()> {
         if let Some(active) = &self.active {
-            self.lifecycle.end(&active.local).await?;
+            self.lifecycle
+                .end(&active.local, &active.registration_thread, phase)
+                .await?;
             if let Some(external) = &active.external {
                 self.completed
                     .push_back((active.thread.clone(), external.clone()));
@@ -264,10 +304,11 @@ impl Bridge {
                     },
                 )?;
                 let local = OperationId::new().to_string();
-                self.lifecycle.begin(&local).await?;
+                self.lifecycle.begin(&local, &thread).await?;
                 self.active = Some(ActiveTurn {
                     local,
                     request: request.clone(),
+                    registration_thread: thread.clone(),
                     thread,
                     external: None,
                     review: self.protocol == Protocol::CodexAppServer && method == "review/start",
@@ -329,10 +370,11 @@ impl Bridge {
                         )
                         .id
                         .to_string();
-                        self.lifecycle.begin(&local).await?;
+                        self.lifecycle.begin(&local, &thread).await?;
                         self.active = Some(ActiveTurn {
                             local,
                             request: None,
+                            registration_thread: thread.clone(),
                             thread,
                             external: Some(external),
                             review: false,
@@ -348,11 +390,11 @@ impl Bridge {
                         return Err(Error::invalid("completion does not match the managed turn"));
                     }
                     active.external = Some(external);
-                    match message["params"]["turn"]["status"].as_str() {
-                        Some("completed" | "failed" | "interrupted") => (),
+                    let phase = match message["params"]["turn"]["status"].as_str() {
+                        Some(phase @ ("completed" | "failed" | "interrupted")) => phase,
                         _ => return Err(Error::invalid("unknown app-server turn status")),
-                    }
-                    self.finish().await?;
+                    };
+                    self.finish(phase).await?;
                 }
             }
         }
@@ -366,7 +408,7 @@ impl Bridge {
                 .is_some_and(|active| active.request.as_ref() == Some(&request))
             {
                 if message.get("error").is_some() {
-                    self.finish().await?;
+                    self.finish("failed").await?;
                 } else if self.protocol == Protocol::Acp && pending.method == "session/prompt" {
                     match message["result"]["stopReason"].as_str() {
                         Some(
@@ -375,7 +417,12 @@ impl Bridge {
                         ) => (),
                         _ => return Err(Error::invalid("unknown ACP stop reason")),
                     }
-                    self.finish().await?;
+                    self.finish(if message["result"]["stopReason"] == "cancelled" {
+                        "interrupted"
+                    } else {
+                        "completed"
+                    })
+                    .await?;
                 } else if self.protocol == Protocol::CodexAppServer
                     && matches!(pending.method.as_str(), "turn/start" | "review/start")
                 {
@@ -469,20 +516,24 @@ pub async fn run(endpoint: &str, token: String, options: Options) -> Result<bool
         .timeout(Duration::from_secs(30))
         .build()
         .map_err(|error| Error::invalid(error.to_string()))?;
+    let connection = OperationId::new().to_string();
     let mut lifecycle = Lifecycle {
         http,
         endpoint: format!("{base}api/lifecycle"),
+        execution_endpoint: format!("{base}api/collaboration/events"),
         token,
         workspace: options.workspace,
         mount_path: options.mount_path.clone(),
         binding: Value::Null,
+        source: format!("agentdrive-integrate:{connection}"),
+        automatic: false,
     };
-    let connection = OperationId::new().to_string();
     let attached = lifecycle
         .event(
             &format!("{connection}-attach"),
             "attach",
-            json!({"workspace": options.workspace, "mount_path":options.mount_path}),
+            json!({"workspace": options.workspace, "mount_path":options.mount_path,
+                "branch":options.branch,"automatic":options.automatic}),
         )
         .await?;
     let mount_path = PathBuf::from(text(&attached, "mount_path")?);
@@ -529,7 +580,7 @@ pub async fn run(endpoint: &str, token: String, options: Options) -> Result<bool
         result?;
         Ok(status.is_none_or(|status| status.success()))
     }.await;
-    bridge.finish().await?;
+    bridge.finish("interrupted").await?;
     result
 }
 
@@ -548,6 +599,107 @@ async fn shutdown() {
 mod tests {
     use super::*;
     use tokio::io::AsyncReadExt;
+
+    async fn read_request(reader: &mut BufReader<tokio::net::TcpStream>) -> Value {
+        let mut length = 0;
+        loop {
+            let mut line = String::new();
+            reader.read_line(&mut line).await.unwrap();
+            if line == "\r\n" {
+                break;
+            }
+            if let Some(value) = line.to_lowercase().strip_prefix("content-length: ") {
+                length = value.trim().parse().unwrap();
+            }
+        }
+        let mut body = vec![0; length];
+        reader.read_exact(&mut body).await.unwrap();
+        serde_json::from_slice(&body).unwrap()
+    }
+
+    #[tokio::test]
+    async fn automatic_bridge_registers_before_execution_and_preserves_terminal_identity() {
+        for (method, event_thread) in [
+            ("turn/start", "thread-1"),
+            ("review/start", "review-thread"),
+        ] {
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let endpoint = format!("http://{}", listener.local_addr().unwrap());
+            let server = tokio::spawn(async move {
+                let mut requests = Vec::new();
+                for index in 0..3 {
+                    let (stream, _) = listener.accept().await.unwrap();
+                    let mut reader = BufReader::new(stream);
+                    requests.push(read_request(&mut reader).await);
+                    let body = if index == 0 {
+                        json!({"binding":{"id":"mount","generation":4},"collaboration":{"settings":{"enabled":true}}})
+                    } else {
+                        json!({})
+                    };
+                    let body = body.to_string();
+                    let response = format!(
+                        "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                        body.len(),
+                        body
+                    );
+                    reader
+                        .get_mut()
+                        .write_all(response.as_bytes())
+                        .await
+                        .unwrap();
+                    reader.get_mut().shutdown().await.unwrap();
+                }
+                requests
+            });
+            let mut bridge = Bridge {
+                protocol: Protocol::CodexAppServer,
+                mount_path: "/mount".into(),
+                lifecycle: Lifecycle {
+                    http: reqwest::Client::new(),
+                    endpoint: endpoint.clone(),
+                    execution_endpoint: endpoint,
+                    token: "test".into(),
+                    workspace: WorkspaceId::new(),
+                    mount_path: "/mount".into(),
+                    binding: Value::Null,
+                    source: "bridge-instance".into(),
+                    automatic: false,
+                },
+                pending: BTreeMap::new(),
+                replies: VecDeque::new(),
+                reply_bytes: 0,
+                active: None,
+                completed: VecDeque::new(),
+            };
+            let mut child = Vec::new();
+            let mut output = Vec::new();
+            bridge
+                .client(
+                    json!({"id":1,"method":method,"params":{"threadId":"thread-1"}}),
+                    &mut child,
+                    &mut output,
+                )
+                .await
+                .unwrap();
+            assert!(!child.is_empty());
+            bridge.agent(json!({"id":1,"result":{"reviewThreadId":event_thread,"turn":{"id":"external-1","status":"inProgress"}}}),&mut output).await.unwrap();
+            bridge.agent(json!({"method":"turn/started","params":{"threadId":event_thread,"turn":{"id":"external-1","status":"inProgress"}}}),&mut output).await.unwrap();
+            assert!(bridge.agent(json!({"method":"turn/completed","params":{"threadId":event_thread,"turn":{"id":"old-turn","status":"completed"}}}),&mut output).await.is_err());
+            let completion = json!({"method":"turn/completed","params":{"threadId":event_thread,"turn":{"id":"external-1","status":"failed"}}});
+            bridge.agent(completion.clone(), &mut output).await.unwrap();
+            bridge.agent(completion, &mut output).await.unwrap();
+            let requests = server.await.unwrap();
+            assert_eq!(requests[0]["event"], "check");
+            assert_eq!(requests[1]["phase"], "started");
+            assert_eq!(requests[2]["phase"], "failed");
+            for key in ["mount", "source", "thread_id", "turn_id"] {
+                assert_eq!(requests[1][key], requests[2][key]);
+            }
+            assert_eq!(requests[1]["source"], "bridge-instance");
+            assert_eq!(requests[1]["thread_id"], "thread-1");
+            assert!(bridge.active.is_none());
+        }
+    }
 
     #[tokio::test]
     async fn cancelled_reads_preserve_partial_messages() {
@@ -604,10 +756,13 @@ mod tests {
         let lifecycle = Lifecycle {
             http: reqwest::Client::new(),
             endpoint,
+            execution_endpoint: String::new(),
             token: "test".into(),
             workspace: WorkspaceId::new(),
             mount_path: PathBuf::from("/mount"),
             binding: json!({"id":"mount", "generation":1}),
+            source: "test".into(),
+            automatic: false,
         };
         assert_eq!(
             lifecycle

@@ -1,3 +1,4 @@
+use crate::binding::{NativeBinding, NativeHandle};
 use agentdrive_model::*;
 use agentdrive_ports::{AttributeUpdate, FileSystem, MountSpec, NativeMountState};
 use bytes::Bytes;
@@ -6,7 +7,7 @@ use std::{
     collections::BTreeMap,
     sync::{
         Arc,
-        atomic::{AtomicBool, AtomicUsize, Ordering},
+        atomic::{AtomicBool, Ordering},
     },
 };
 use tokio::runtime::Handle;
@@ -18,9 +19,8 @@ use winfsp_wrs::{
 
 type NtResult<T> = std::result::Result<T, i32>;
 struct Mounted {
-    binding: MountBinding,
+    binding: Arc<NativeBinding>,
     filesystem: Option<win::FileSystem>,
-    open: Arc<AtomicUsize>,
     alive: Arc<AtomicBool>,
 }
 impl Drop for Mounted {
@@ -40,10 +40,9 @@ impl Driver {
         })
     }
     pub fn owns_mount_path(&self, path: &std::path::Path) -> bool {
-        self.mounts
-            .lock()
-            .values()
-            .any(|mount| mount.binding.path == path && mount.alive.load(Ordering::Acquire))
+        self.mounts.lock().values().any(|mount| {
+            mount.binding.snapshot().path == path && mount.alive.load(Ordering::Acquire)
+        })
     }
     pub async fn mount(&self, spec: MountSpec, files: Arc<dyn FileSystem>) -> Result<()> {
         let runtime = Handle::current();
@@ -70,14 +69,13 @@ impl Driver {
             volume
                 .set_file_system_name(win::u16cstr!("AgentDrive"))
                 .map_err(|_| Error::invalid("filesystem name exceeds WinFsp limit"))?;
-            let open = Arc::new(AtomicUsize::new(0));
+            let native_binding = NativeBinding::new(binding.clone());
             let alive = Arc::new(AtomicBool::new(true));
             let filesystem = WindowsFs {
-                binding: binding.clone(),
+                binding: native_binding.clone(),
                 files,
                 runtime,
                 descriptor: security::owner_descriptor()?,
-                open: open.clone(),
                 alive: alive.clone(),
             };
             let filesystem = crate::mount_point::start(&binding.path, || {
@@ -94,9 +92,8 @@ impl Driver {
             mounts.lock().insert(
                 binding.id,
                 Mounted {
-                    binding,
+                    binding: native_binding,
                     filesystem: Some(filesystem),
-                    open,
                     alive,
                 },
             );
@@ -107,7 +104,8 @@ impl Driver {
     }
     pub async fn status(&self, binding: &MountBinding) -> Result<NativeMountState> {
         if let Some(current) = self.mounts.lock().get(&binding.id)
-            && current.binding.generation == binding.generation
+            && current.binding.snapshot().generation == binding.generation
+            && current.binding.snapshot().path == binding.path
             && current.alive.load(Ordering::Acquire)
         {
             return Ok(NativeMountState::Mounted);
@@ -127,21 +125,49 @@ impl Driver {
             Err(error) => Err(error.into()),
         }
     }
+    pub async fn open_handles(&self, binding: &MountBinding) -> Result<usize> {
+        let mounts = self.mounts.lock();
+        let current = mounts
+            .get(&binding.id)
+            .ok_or_else(|| Error::new(ErrorCode::MountBusy, "native mount is not available"))?;
+        if current.binding.snapshot().path != binding.path || !current.alive.load(Ordering::Acquire)
+        {
+            return Err(Error::new(
+                ErrorCode::MountBusy,
+                "native mount is not available",
+            ));
+        }
+        Ok(current.binding.open_handles())
+    }
+    pub async fn rebind(&self, previous: &MountBinding, next: &MountBinding) -> Result<()> {
+        let mounts = self.mounts.lock();
+        let current = mounts
+            .get(&previous.id)
+            .ok_or_else(|| Error::new(ErrorCode::MountBusy, "native mount is not available"))?;
+        if !current.alive.load(Ordering::Acquire) {
+            return Err(Error::new(
+                ErrorCode::MountBusy,
+                "native mount is not available",
+            ));
+        }
+        current.binding.rebind(previous, next)
+    }
     pub async fn unmount(&self, binding: &MountBinding) -> Result<()> {
         let current = {
             let mut mounts = self.mounts.lock();
             if let Some(current) = mounts.get(&binding.id) {
-                if current.binding.generation != binding.generation {
+                if current.binding.snapshot().generation != binding.generation {
                     return Err(Error::new(
                         ErrorCode::StaleBinding,
                         "mount generation changed",
                     ));
                 }
-                if current.open.load(Ordering::Acquire) != 0 {
+                if current.binding.open_handles() != 0 {
                     return Err(Error::new(
                         ErrorCode::MountBusy,
                         "native mount still has open handles",
-                    ));
+                    )
+                    .retryable());
                 }
             }
             mounts.remove(&binding.id)
@@ -177,7 +203,9 @@ fn nt(error: Error) -> i32 {
         ErrorCode::InvalidArgument => win::STATUS_INVALID_PARAMETER,
         ErrorCode::Unsupported => win::STATUS_NOT_SUPPORTED,
         ErrorCode::CapacityExceeded => win::STATUS_DISK_FULL,
-        ErrorCode::StaleBinding => win::STATUS_FILE_INVALID,
+        ErrorCode::StaleBinding | ErrorCode::StaleAuthority | ErrorCode::TargetMoved => {
+            win::STATUS_FILE_INVALID
+        }
         _ => win::STATUS_IO_DEVICE_ERROR,
     }
 }
@@ -216,22 +244,18 @@ struct OpenFile {
     directory: bool,
     write_through: bool,
     entries: Mutex<Option<Vec<(String, Inode)>>>,
+    _native: NativeHandle,
 }
 struct WindowsFs {
-    binding: MountBinding,
+    binding: Arc<NativeBinding>,
     files: Arc<dyn FileSystem>,
     runtime: Handle,
     descriptor: SecurityDescriptor,
-    open: Arc<AtomicUsize>,
     alive: Arc<AtomicBool>,
 }
 impl WindowsFs {
     fn context(&self) -> FsContext {
-        FsContext {
-            mount: self.binding.id,
-            generation: self.binding.generation,
-            identity: self.binding.identity,
-        }
+        self.binding.context(None)
     }
     fn path(&self, name: &U16CStr) -> Result<WorkspacePath> {
         name.to_string()
@@ -240,26 +264,37 @@ impl WindowsFs {
             .try_into()
     }
     fn lookup(&self, path: &WorkspacePath) -> Result<Inode> {
+        self.lookup_at(&self.context(), path)
+    }
+    fn lookup_at(&self, context: &FsContext, path: &WorkspacePath) -> Result<Inode> {
         let mut inode = self
             .runtime
-            .block_on(self.files.getattr(&self.context(), InodeId::ROOT))?;
+            .block_on(self.files.getattr(context, InodeId::ROOT))?;
         for name in path.as_str().split('/').filter(|name| !name.is_empty()) {
             inode = self
                 .runtime
-                .block_on(self.files.lookup(&self.context(), inode.id, name))?;
+                .block_on(self.files.lookup(context, inode.id, name))?;
         }
         Ok(inode)
     }
     fn parent(&self, path: &WorkspacePath) -> Result<Inode> {
-        self.lookup(&path.parent().ok_or_else(|| {
-            Error::new(
-                ErrorCode::PermissionDenied,
-                "filesystem root cannot be changed",
-            )
-        })?)
+        self.parent_at(&self.context(), path)
+    }
+    fn parent_at(&self, context: &FsContext, path: &WorkspacePath) -> Result<Inode> {
+        self.lookup_at(
+            context,
+            &path.parent().ok_or_else(|| {
+                Error::new(
+                    ErrorCode::PermissionDenied,
+                    "filesystem root cannot be changed",
+                )
+            })?,
+        )
     }
     fn opened(
         &self,
+        context: &FsContext,
+        native: NativeHandle,
         inode: Inode,
         options: CreateOptions,
         access: FileAccessRights,
@@ -278,7 +313,7 @@ impl WindowsFs {
             Some(
                 self.runtime
                     .block_on(self.files.open(
-                        &self.context(),
+                        context,
                         inode.id,
                         OpenMode {
                             read,
@@ -291,7 +326,6 @@ impl WindowsFs {
         } else {
             None
         };
-        self.open.fetch_add(1, Ordering::Release);
         Ok((
             Arc::new(OpenFile {
                 inode: inode.id,
@@ -299,6 +333,7 @@ impl WindowsFs {
                 directory,
                 write_through: options.is(CreateOptions::FILE_WRITE_THROUGH),
                 entries: Mutex::new(None),
+                _native: native,
             }),
             info(inode),
         ))
@@ -371,14 +406,16 @@ impl FileSystemInterface for WindowsFs {
         create: CreateFileInfo,
         _: SecurityDescriptor,
     ) -> NtResult<(Arc<OpenFile>, FileInfo)> {
+        let context = self.context();
+        let native = self.binding.reserve(context.generation).map_err(nt)?;
         let path = self.path(name).map_err(nt)?;
-        let parent = self.parent(&path).map_err(nt)?;
+        let parent = self.parent_at(&context, &path).map_err(nt)?;
         let directory = create.create_options.is(CreateOptions::FILE_DIRECTORY_FILE);
         let mode = if directory { 0o755 } else { 0o644 };
         let inode = self
             .runtime
             .block_on(self.files.create(
-                &self.context(),
+                &context,
                 parent.id,
                 path.name(),
                 if directory {
@@ -391,11 +428,17 @@ impl FileSystemInterface for WindowsFs {
             .map_err(nt)?;
         let id = inode.id;
         let (file, mut info) = self
-            .opened(inode, create.create_options, create.granted_access)
+            .opened(
+                &context,
+                native,
+                inode,
+                create.create_options,
+                create.granted_access,
+            )
             .map_err(nt)?;
         if !directory && create.file_attributes.is(FileAttributes::READONLY) {
             match self.runtime.block_on(self.files.setattr(
-                &self.context(),
+                &context,
                 id,
                 AttributeUpdate {
                     mode: Some(0o444),
@@ -417,8 +460,13 @@ impl FileSystemInterface for WindowsFs {
         options: CreateOptions,
         access: FileAccessRights,
     ) -> NtResult<(Arc<OpenFile>, FileInfo)> {
+        let context = self.context();
+        let native = self.binding.reserve(context.generation).map_err(nt)?;
         self.opened(
-            self.lookup(&self.path(name).map_err(nt)?).map_err(nt)?,
+            &context,
+            native,
+            self.lookup_at(&context, &self.path(name).map_err(nt)?)
+                .map_err(nt)?,
             options,
             access,
         )
@@ -469,7 +517,6 @@ impl FileSystemInterface for WindowsFs {
     }
     fn close(&self, file: Arc<OpenFile>) {
         self.release(&file);
-        self.open.fetch_sub(1, Ordering::Release);
     }
     fn read(&self, file: Arc<OpenFile>, buffer: &mut [u8], offset: u64) -> NtResult<usize> {
         let size = buffer.len().min(IO_BUFFER_BYTES * 16) as u32;
@@ -557,7 +604,7 @@ impl FileSystemInterface for WindowsFs {
         Ok((written as usize, self.get_file_info(file)?))
     }
     fn flush(&self, file: Option<Arc<OpenFile>>) -> NtResult<FileInfo> {
-        if self.binding.access == AccessMode::ReadWrite {
+        if self.binding.snapshot().access == AccessMode::ReadWrite {
             self.runtime
                 .block_on(self.files.fsync(&self.context()))
                 .map_err(nt)?;

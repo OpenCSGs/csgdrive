@@ -21,6 +21,29 @@ pub struct BranchSynchronization {
     pub remote_confirmed: bool,
 }
 
+impl BranchSynchronization {
+    pub fn new(branch: &Branch, reference: Option<&BranchRef>, configured: bool) -> Self {
+        let local_saved = branch.mutation_seq == branch.saved_seq;
+        let remote_confirmed = configured
+            && local_saved
+            && reference.is_some_and(|reference| {
+                !reference.deleted
+                    && reference.owner == branch.owner
+                    && reference.authority_epoch == branch.authority_epoch
+                    && reference.generation == branch.generation
+                    && reference.durable_seq == branch.saved_seq
+                    && reference.working_root == branch.working_root
+                    && reference.formal_head == branch.formal_head
+                    && reference.autosave_head == branch.autosave_head
+            });
+        Self {
+            branch: branch.id,
+            local_saved,
+            remote_confirmed,
+        }
+    }
+}
+
 #[derive(Clone, Debug, Default, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct WorkspaceSynchronization {
     pub state: SynchronizationState,
@@ -42,24 +65,7 @@ impl WorkspaceSynchronization {
         let states: Vec<_> = branches
             .iter()
             .map(|branch| {
-                let local_saved = branch.mutation_seq == branch.saved_seq;
-                let remote_confirmed = configured
-                    && local_saved
-                    && references.get(&branch.id).is_some_and(|reference| {
-                        !reference.deleted
-                            && reference.owner == branch.owner
-                            && reference.authority_epoch == branch.authority_epoch
-                            && reference.generation == branch.generation
-                            && reference.durable_seq == branch.saved_seq
-                            && reference.working_root == branch.working_root
-                            && reference.formal_head == branch.formal_head
-                            && reference.autosave_head == branch.autosave_head
-                    });
-                BranchSynchronization {
-                    branch: branch.id,
-                    local_saved,
-                    remote_confirmed,
-                }
+                BranchSynchronization::new(branch, references.get(&branch.id).copied(), configured)
             })
             .collect();
         let local: Vec<_> = branches

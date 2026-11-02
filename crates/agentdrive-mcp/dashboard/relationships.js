@@ -72,11 +72,12 @@ export function createRelationshipsView({api, element, container, onSave, onUnmo
     identifier(name, branch.id);
     if (current.selected_branch === branch.id) value(name, '本机默认分支');
     if (branch.state === 'stopped') value(name, '已停止写入');
+    if (branch.state === 'available') value(name, '可接续');
     if (branch.state === 'deleted') value(name, '已删除');
     const ownership = element('td');
-    ownership.append(element('span', '', owner.location === location ? '本机' : '其他 location'));
+    ownership.append(element('span', '', branch.state === 'available' ? '写权限可领取' : owner.location === location ? '本机' : '其他 location'));
     identifier(ownership, owner.location);
-    value(ownership, owner.source === 'local_authority' ? '本机管理写入' : owner.source === 'remote_reference' ? '远端观测记录' : '本机保留记录');
+    value(ownership, branch.state === 'available' ? '最近持有权限的 location' : owner.source === 'local_authority' ? '本机管理写入' : owner.source === 'remote_reference' ? '远端观测记录' : '本机保留记录');
     const ownershipDetails = element('details'); ownershipDetails.append(element('summary', '', '记录详情'));
     value(ownershipDetails, `authority_epoch: ${owner.authority_epoch} · generation: ${owner.generation}`);
     if (owner.source === 'remote_reference') {

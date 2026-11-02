@@ -117,6 +117,7 @@ pub struct Node {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum BranchState {
+    Available,
     Writable,
     Stopped,
     Deleted,
@@ -251,6 +252,8 @@ pub struct MountBinding {
     pub branch: BranchId,
     pub revision: Option<RevisionId>,
     pub generation: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub branch_generation: Option<u64>,
     pub path: PathBuf,
     pub principal: Principal,
     pub identity: LocalIdentity,
@@ -460,6 +463,9 @@ pub struct BranchRef {
     pub record_index: ObjectRef,
     pub deleted: bool,
     pub write_stopped: bool,
+    /// The last owner retains provenance while no location holds write authority.
+    #[serde(default)]
+    pub write_available: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub metadata: Option<BranchMetadata>,
 }
@@ -517,6 +523,8 @@ pub struct SyncJob {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub merge_history: Vec<crate::MergeHistoryVersion>,
     pub operation: OperationId,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expected_authority: Option<crate::AuthorityGuard>,
     pub reference: BranchRef,
     pub attempts: u32,
     pub error: Option<Error>,

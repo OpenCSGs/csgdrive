@@ -1,6 +1,7 @@
 //! Interfaces owned by the engine. Adapters translate their native types here.
 
 mod api;
+mod collaboration;
 mod filesystem;
 mod history;
 mod merge_history;
@@ -11,6 +12,7 @@ mod storage;
 mod synchronization;
 
 pub use api::*;
+pub use collaboration::*;
 pub use filesystem::*;
 pub use history::*;
 pub use merge_history::*;

@@ -15,6 +15,7 @@ pub struct Runtime {
     pub(crate) objects: RwLock<()>,
     pub(crate) lifecycle: AsyncMutex<()>,
     pub(crate) stopped: Mutex<BTreeSet<BranchId>>,
+    pub(crate) collaboration_blocked: Mutex<BTreeSet<BranchId>>,
     branches: Mutex<BTreeMap<BranchId, Weak<AsyncMutex<()>>>>,
     pub(crate) dirty: Mutex<BTreeMap<BranchId, DirtyTime>>,
     pub(crate) sync_progress: Mutex<BTreeMap<OperationId, Arc<Mutex<SyncProgress>>>>,
@@ -45,6 +46,7 @@ impl Runtime {
             objects: RwLock::new(()),
             lifecycle: AsyncMutex::new(()),
             stopped: Mutex::new(BTreeSet::new()),
+            collaboration_blocked: Mutex::new(BTreeSet::new()),
             branches: Mutex::new(BTreeMap::new()),
             dirty: Mutex::new(BTreeMap::new()),
             sync_progress: Mutex::new(BTreeMap::new()),
@@ -81,6 +83,17 @@ impl Runtime {
             branch.state = BranchState::Stopped;
         }
         Ok(branch)
+    }
+
+    pub(crate) fn check_mutation(&self, branch: BranchId) -> Result<()> {
+        if self.collaboration_blocked.lock().contains(&branch) {
+            return Err(Error::new(
+                ErrorCode::BranchBusy,
+                "branch is completing a collaboration transition",
+            )
+            .retryable());
+        }
+        Ok(())
     }
 
     pub async fn authorize(

@@ -14,9 +14,12 @@ const branches = ids.map((id,i)=>({id,workspace,name:names[i],owner:'local',loca
 const messages = ['建立项目资料与任务说明','补充用户访谈与市场数据','确认并行分析的任务范围','汇总调研结果，准备异地交接','完成竞品分析，附上证据来源','完成用户需求分析与建议'];
 const revisions = revisionIds.map((id,i)=>({id,workspace,branch:i>3 ? ids[i-3] : ids[0],kind:'commit',parents:i ? [revisionIds[i>3 ? 0 : i-1]] : [],actor:i>3 ? 'research-agent' : 'owner',root:{id:'tree-'+i},message:messages[i],created_ns:1792312200000000000+i*60000000000}));
 const status = {workspace:{id:workspace,name:'市场调研'},location:'local',selected_branch:ids[0],branches,
- mounts:ids.map((id,i)=>({id:'mount-'+i,branch:id,path:'/projects/market-research/'+['main','competitors','customers'][i],principal:i ? 'research-agent' : 'owner',generation:1,state:'ready',access:'read_write'})),pending_jobs:0,capabilities:{remote_configured:true},
+ mounts:ids.map((id,i)=>({id:'mount-'+i,branch:id,path:'/projects/market-research/'+['main','competitors','customers'][i],principal:i ? 'research-agent' : 'owner',generation:1,state:'ready',access:'read_write'})),pending_jobs:0,capabilities:{remote_configured:true,handle_tracking_scope:'native',automatic_collaboration:true,collaboration_enabled:true},
  remote_branches:branches.map(branch=>({branch:branch.id,owner:branch.owner,authority_epoch:1,generation:1,durable_seq:branch.saved_seq,working_root:branch.working_root}))};
 const view = {status,branches,revisions,summary:{branch_count:3,mount_count:3,ready_mount_count:3,mounted_branch_count:3},origins:branches.map((branch,i)=>({branch:branch.id,source_branch:branch.source_branch,revision:revisionIds[0],revision_available:true,workspace_root:i===0}))};
+const collaboration = status.mounts.map(mount=>({workspace,branch:mount.branch,mounts:[mount.id],
+ settings:{enabled:true,idle_timeout_secs:60,release_on_event:true},phase:'writing',writer:'local',authority_epoch:1,
+ open_handles:0,active_executions:0,local_saved:true,remote_confirmed:true,recovery_branch:null,error:null}));
 const relationships = {workspace,observing_location:status.location,selected_branch:status.selected_branch,remote_mounts_known:false,remote_selections_known:false,total:branches.length,next:null,
  entries:branches.map((branch,i)=>({branch:{id:branch.id,name:branch.name,state:branch.state,
   ownership:{location:branch.owner,source:'local_authority',authority_epoch:branch.authority_epoch,generation:branch.generation,storage_version:null,observed_ns:null},
@@ -45,6 +48,7 @@ function nodes(directory) {
   if (url.pathname==='/api/workspaces') return json([status.workspace]);
   if (url.pathname===`/api/workspaces/${workspace}/archive`) return json(status);
   if (url.pathname===`/api/workspaces/${workspace}`) return json(view);
+  if (url.pathname===`/api/workspaces/${workspace}/collaboration`) return json(collaboration);
   if (url.pathname===`/api/workspaces/${workspace}/relationships`) return json(relationships);
   if (url.pathname.endsWith('/files')) { const branch=branches.find(b=>url.pathname.includes(b.id));return json({version:`${branch.id}:1:1:${branch.mutation_seq}`,next:null,entries:nodes(url.searchParams.get('path'))}); }
   if (url.pathname.endsWith('/file')) { const bytes=Buffer.from(content[url.searchParams.get('path')] || ''); const offset=Number(url.searchParams.get('offset')),size=Number(url.searchParams.get('size')); return res.writeHead(200,{'Content-Type':'application/octet-stream'}).end(bytes.subarray(offset,offset+size)); }

@@ -4,6 +4,26 @@ use agentdrive_ports::*;
 use std::{collections::BTreeMap, sync::Arc};
 
 impl Engine {
+    /// Replace credentials for the same remote namespace, as verified by the configuration adapter.
+    pub async fn refresh_storage_connection(
+        &self,
+        next: RemoteStorage,
+        persist: &mut dyn FnMut() -> Result<()>,
+    ) -> Result<()> {
+        let _lifecycle = self.runtime.lifecycle.lock().await;
+        let _publication = self.publisher.publication.write().await;
+        let content = &self.revisions.trees.content;
+        if content.storage.load_full().is_none() {
+            return Err(Error::new(
+                ErrorCode::RemoteRequired,
+                "remote storage is not configured",
+            ));
+        }
+        persist()?;
+        content.storage.store(Some(Arc::new(next)));
+        Ok(())
+    }
+
     /// 准备全部历史内容后保存配置，并在持有保护锁期间更换远程适配器。
     pub async fn switch_storage(
         &self,
@@ -11,12 +31,33 @@ impl Engine {
         persist: &mut dyn FnMut() -> Result<()>,
     ) -> Result<()> {
         let _lifecycle = self.runtime.lifecycle.lock().await;
+        let workspaces = self.runtime.state.workspaces().await?;
+        for workspace in &workspaces {
+            if self
+                .runtime
+                .state
+                .collaborations(workspace.id)
+                .await?
+                .iter()
+                .any(|record| {
+                    (self.collaboration.automatic_enabled() && record.settings.enabled)
+                        || record.transition.is_some()
+                        || record.recovery.is_some()
+                        || record.release.is_some()
+                })
+            {
+                return Err(Error::new(
+                    ErrorCode::Busy,
+                    "disable automatic collaboration and complete pending handoffs before changing remote storage",
+                ));
+            }
+        }
         let _publication = self.publisher.publication.write().await;
         let _objects = self.runtime.objects.write().await;
         let trees = &self.revisions.trees;
         let content = &trees.content;
         let mut retained = Vec::new();
-        for workspace in self.runtime.state.workspaces().await? {
+        for workspace in workspaces {
             if self
                 .runtime
                 .state

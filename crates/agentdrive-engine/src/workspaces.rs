@@ -14,6 +14,7 @@ pub struct WorkspaceService {
     mount_capability: String,
     mounts: Arc<dyn MountApi>,
     driver: Arc<dyn MountDriver>,
+    live: Arc<agentdrive_config::LiveConfig>,
     adoption: tokio::sync::Mutex<()>,
 }
 
@@ -29,18 +30,19 @@ impl WorkspaceService {
         revisions: Arc<RevisionService>,
         operations: Arc<OperationService>,
         directories: Arc<dyn DirectoryAccess>,
-        mount_capability: String,
         mounts: Arc<dyn MountApi>,
         driver: Arc<dyn MountDriver>,
+        live: Arc<agentdrive_config::LiveConfig>,
     ) -> Arc<Self> {
         Arc::new(Self {
             runtime,
             revisions,
             operations,
             directories,
-            mount_capability,
+            mount_capability: driver.capability().to_owned(),
             mounts,
             driver,
+            live,
             adoption: tokio::sync::Mutex::new(()),
         })
     }
@@ -410,6 +412,7 @@ impl WorkspaceApi for WorkspaceService {
                 .prepare(
                     mount_context,
                     PrepareMount {
+                        automatic: false,
                         workspace: branch.workspace,
                         branch: Some(branch.id),
                         revision: None,
@@ -542,6 +545,9 @@ impl WorkspaceApi for WorkspaceService {
             capabilities: Capabilities {
                 format_version: FORMAT_VERSION,
                 platform_mount: self.mount_capability.clone(),
+                handle_tracking_scope: self.driver.handle_tracking_scope(),
+                automatic_collaboration: self.driver.supports_automatic_collaboration(),
+                collaboration_enabled: self.live.load().values.collaboration.enabled,
                 file_operations: [
                     "lookup", "getattr", "readdir", "create", "mkdir", "read", "write", "truncate",
                     "chmod", "rename", "unlink", "rmdir", "fsync",

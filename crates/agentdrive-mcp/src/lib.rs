@@ -1,5 +1,6 @@
 //! Authenticated MCP transport for the shared AgentDrive service facade.
 mod client;
+mod collaboration;
 mod gateway;
 mod server;
 mod web;

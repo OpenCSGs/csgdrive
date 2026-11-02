@@ -98,6 +98,7 @@ impl Location {
                         path: self.directory.path().join("project"),
                         access: AccessMode::ReadWrite,
                         durability: Durability::Local,
+                        automatic: false,
                     },
                 )
                 .await
@@ -322,6 +323,7 @@ async fn former_owner_displays_and_forks_the_new_owners_published_content() {
                     path: first.directory.path().join("remote-preview"),
                     access: AccessMode::ReadOnly,
                     durability: Durability::Local,
+                    automatic: false,
                 },
             )
             .await

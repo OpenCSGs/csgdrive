@@ -22,6 +22,7 @@ impl fmt::Debug for ObjectStream {
 
 #[derive(Clone, Debug, Default)]
 pub struct LocalCommit {
+    pub collaborations: Vec<CollaborationRecord>,
     pub selections: Vec<WorkspaceSelection>,
     pub guards: Vec<BranchGuard>,
     pub new_workspaces: Vec<Workspace>,
@@ -134,6 +135,8 @@ pub struct WorkingTreeUsage {
 /// 本地元数据查询与原子提交；权限、配额和发布决策由 engine 负责。
 #[async_trait]
 pub trait LocalStateStore: Send + Sync {
+    async fn collaboration(&self, branch: BranchId) -> Result<Option<CollaborationRecord>>;
+    async fn collaborations(&self, workspace: WorkspaceId) -> Result<Vec<CollaborationRecord>>;
     async fn relationship_snapshot(
         &self,
         workspace: WorkspaceId,
