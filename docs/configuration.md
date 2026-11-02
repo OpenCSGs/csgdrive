@@ -4,52 +4,46 @@
 
 ## Daemon configuration
 
-Run `agentdrived init --directory /absolute/path/to/agentdrive` to create `agentdrive.json`, a private token file, and the mount/exchange directories. Edit the generated configuration, then start `agentdrived serve --config /absolute/path/to/agentdrive/agentdrive.json`. The daemon loads the file at startup and checks it every second for runtime changes.
+Run `agentdrived init --directory /absolute/path/to/agentdrive` to create `agentdrive.json` and the mount/exchange directories. Start `agentdrived serve --config /absolute/path/to/agentdrive/agentdrive.json`. The daemon loads the file at startup and checks it every second for runtime changes. Dashboard, CLI and MCP connect directly without a token.
 
-The generated file contains `data_dir`, `listen`, `mount_roots`, `directory_roots`, `credentials`, and `collaboration`. Optional settings use the defaults below and can be added when needed.
+The generated file contains `data_dir`, `listen`, `mount_roots`, `directory_roots` and `collaboration`.
 
 | Field | Meaning and default |
 | --- | --- |
 | `data_dir` | Required absolute path for local state; initialization selects `<directory>/state`. One daemon per state directory. |
 | `listen` | Required loopback socket address; initialization selects `127.0.0.1:7421`. |
 | `mount_roots` | Required array of allowed absolute mount roots; initialization creates `<directory>/mounts`. |
-| `directory_roots` | Allowed absolute import/export roots; omitted means `[]`. Initialization creates and permits `<directory>/exchange`. |
-| `credentials` | Required array of `{ "principal": "owner", "token_file": "/absolute/path/token" }`. At least one credential is required. |
-| `administrators` | Principals allowed to read and change daemon settings, default `["owner"]`. Independent of workspace grants; changes require a restart. |
-| `allowed_origins` | HTTP Origin allowlist, default `[]`. CLI and stdio connections do not send an Origin. |
-| `collaboration` | `{ "enabled": true }` by default. One automatic collaboration switch for all workspaces and writable mounts in this daemon. |
-| `cache` | Optional object with one setting, `max_bytes`: local immutable-object cache capacity in bytes, default `2147483648` (2 GiB). Must be a positive integer. Used for cache collection while remote storage is enabled. |
-| `remote` | S3 or OpenCSG configuration below, selected by `backend`. Omitted or `null` means local storage only. Existing configurations without `backend` select S3. |
+| `directory_roots` | Allowed absolute import/export roots; omitted means `[]`. Initialization permits `<directory>/exchange`. |
+| `principal` | Local identity recorded on workspace operations, default `owner`. All clients share this identity. |
+| `allowed_origins` | Additional allowed HTTP origins, default `[]`. CLI and stdio connections omit Origin. |
+| `collaboration` | `{ "enabled": true }` by default; applies to all workspaces and writable mounts in the daemon. |
+| `cache` | Local immutable-object cache capacity: `max_bytes`, default `2147483648` (2 GiB), a positive integer. Used while remote storage is enabled. |
+| `remote` | S3 or OpenCSG configuration selected by `backend`. Omitted or `null` selects local storage. Existing configurations without `backend` select S3. |
 
-For example, `"cache": { "max_bytes": 536870912 }` sets a 512 MiB cache capacity. The collector automatically targets 75% of the configured capacity, which is 384 MiB in this example.
+All filesystem paths must be absolute. Create allowed roots before starting the daemon. JSON strings do not expand `~` or environment variables. Windows paths use escaped backslashes or forward slashes. Unknown fields are rejected and the file is limited to 1 MiB. Configuration and state use the daemon user's filesystem permissions.
 
-All state, root, and token paths must be absolute. Create allowed roots before starting the daemon. JSON strings do not expand `~`, `$HOME`, or environment variables. Windows paths use escaped backslashes, such as `"C:\\Users\\alice\\agentdrive\\state"`, or forward slashes. Unknown top-level configuration fields and unknown `cache` or `remote` fields are rejected. The configuration file is limited to 1 MiB.
-
-Token files must be regular files, at most 4096 bytes, containing at least 32 non-whitespace bytes after trimming. On Unix, group and other permissions must be absent; initialization creates mode `0600`. Tokens must be unique. A token selects the configured `principal`; workspace ownership and grants determine that principal's access. Protect configuration and state using the daemon user's filesystem permissions.
+Existing configurations retain the first configured principal when `principal` is absent. Legacy `credentials` and `administrators` fields are ignored after this migration and disappear when settings are saved. Existing token files are not read. Remote OpenCSG tokens and S3 credentials remain part of the remote connection settings.
 
 ## Runtime updates and dashboard settings
 
-Open **Settings** in the dashboard sidebar, or visit `/settings`. Authenticate with an administrator token. The **Automatic collaboration** switch defaults to enabled and applies to every workspace and writable mount in this daemon. The form also edits S3 connections and credentials, OpenCSG domain/repository/token, local cache capacity in GiB, and allowed HTTP origins. The cache field appears for either remote backend; local mode retains its saved capacity. Connection changes apply while the daemon runs. Saving persists the changes to the same `agentdrive.json` used to start the daemon and publishes one configuration snapshot.
+Open **Global settings** at the bottom left of the dashboard, or visit `/settings`. Settings apply to the whole daemon and remain accessible without any workspace. The form edits automatic collaboration, remote connections, local cache capacity in GiB and allowed HTTP origins. Saving persists the complete runtime configuration to the same `agentdrive.json` used to start the daemon.
 
 | Configuration | Effective time |
 | --- | --- |
 | `remote` | After preparing history and the destination connection, without restarting |
-| `cache` | Next cache collection; the background worker runs every 30 seconds |
+| `cache` | Next cache collection, every 30 seconds |
 | `allowed_origins` | Next HTTP request, including existing MCP sessions |
-| `collaboration.enabled` | Next filesystem operation or coordination tick; pending release and recovery continue to completion |
-| `data_dir`, `listen`, `mount_roots`, `directory_roots` | After a daemon restart |
-| `credentials`, token-file contents, `administrators`, process environment | After a daemon restart |
+| `collaboration.enabled` | Next filesystem operation or coordination tick; pending release and recovery continue |
+| `data_dir`, `listen`, `mount_roots`, `directory_roots`, `principal`, process environment | After a daemon restart |
 
-Origins use the exact `scheme://host[:port]` form for HTTP or HTTPS, without a path, trailing slash, credentials, wildcard, or an explicit default port. Same-origin dashboard requests and requests without Origin remain supported. Bearer authentication still applies. This setting controls Origin checks and does not enable CORS response headers.
+Origins use exact `scheme://host[:port]` values without a path, trailing slash, credentials, wildcard or explicit default port. Same-origin requests and requests without Origin are accepted. The daemon retains loopback binding and Host/Origin checks. This setting does not enable CORS response headers.
 
-External file edits are checked once per second. Each candidate is validated before publication. Invalid JSON, invalid limits, unavailable files, and changes to any startup field retain the complete active configuration and appear as an error on the settings page. When changing a startup field, restart the daemon to apply the whole file. Correcting the file clears the error on the next check. Prefer replacing the file atomically to avoid submitting partially written JSON. The daemon does not watch token-file contents.
+Invalid external changes preserve the active configuration and appear on the settings page. Correcting the file clears the error on the next check. Replace the file atomically when editing it. Startup changes require a restart.
 
-The authenticated HTTP interface provides:
+- `GET /api/settings` returns active `runtime`, read-only `startup`, `config_path`, `revision` and `reload_error`.
+- `PUT /api/settings` accepts `{ "revision": "<revision from GET>", "runtime": { "cache": { ... }, "allowed_origins": [], "remote": null, "collaboration": { "enabled": true } } }`. Supply the complete runtime object returned by GET.
 
-- `GET /api/settings`: active `runtime`, read-only `startup` fields, `config_path`, a `revision`, and `reload_error`.
-- `PUT /api/settings`: `{ "revision": "<revision from GET>", "runtime": { "cache": { ... }, "allowed_origins": [], "remote": null, "collaboration": { "enabled": true } } }`. Supply the complete runtime object returned by GET. A successful response returns the saved settings.
-
-Both endpoints require membership in `administrators`; workspace grants do not grant settings access. Responses contain token-file paths but never token contents, saved OpenCSG tokens, or S3 environment credentials. Missing authentication returns 401, insufficient settings access returns 403, and a stale revision or a detected external file edit returns 409. Validation failure preserves the active settings and file. The UI preserves unsaved form values when it detects a newer revision and offers an explicit reload action.
+Responses redact saved remote secrets. A stale revision or an external file edit returns 409. Validation failures preserve the file and active settings. The UI retains unsaved form values when it detects a newer revision and offers a reload action.
 
 ## Automatic collaboration
 
@@ -161,7 +155,7 @@ For AWS S3, replace the bucket and region, and omit a custom endpoint:
 
 The dashboard can persist S3 credentials in the configuration file, using Unix mode `0600`. GET settings blanks `secret_access_key` and `session_token`; a PUT with the same Access Key ID and a blank secret retains the existing credentials. Supply the secret again when changing a session token. Set `credentials` to `null` to use environment credentials. Configured credentials override environment credentials.
 
-The **daemon process** reads S3 credentials. Set these variables in the shell or service environment that starts `agentdrived serve`. `AGENTDRIVE_TOKEN_FILE` authenticates the CLI to AgentDrive separately.
+The **daemon process** reads S3 credentials. Set these variables in the shell or service environment that starts `agentdrived serve`.
 
 ```sh
 export AWS_ACCESS_KEY_ID='your-access-key-id'
@@ -203,7 +197,7 @@ For a compatibility check covering conditional writes, competing updates, 20 MiB
 
 ## Multiple machines
 
-Configure each daemon with the same backend and destination: S3 endpoint, bucket, prefix and signing region, or OpenCSG domain, repository, storage branch and prefix. Each machine needs its own initialized state directory and `LocationId`; share the workspace ID returned by the source daemon. The destination's authenticated principal must be the workspace owner or have suitable grants. Tokens can differ between machines.
+Configure each daemon with the same backend and destination: S3 endpoint, bucket, prefix and signing region, or OpenCSG domain, repository, storage branch and prefix. Each machine needs its own initialized state directory and `LocationId`; share the workspace ID returned by the source daemon. The destination's local principal must be the workspace owner or have suitable grants. Each machine uses its own daemon connection to remote storage.
 
 Push on the source, then call `sync` with `direction: "pull"` and the same workspace ID on the destination. Pull imports history and remote branch references. Use a retained revision to create a local branch, or complete an online `ownership_transfer` before adopting an existing writable branch. See [operations](operations.md) and the [MCP reference](mcp.md).
 

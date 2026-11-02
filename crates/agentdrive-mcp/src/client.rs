@@ -22,8 +22,8 @@ impl std::fmt::Debug for Client {
     }
 }
 impl Client {
-    pub async fn connect(endpoint: &str, token: String) -> Result<Arc<Self>> {
-        let config = StreamableHttpClientTransportConfig::with_uri(endpoint).auth_header(token);
+    pub async fn connect(endpoint: &str) -> Result<Arc<Self>> {
+        let config = StreamableHttpClientTransportConfig::with_uri(endpoint);
         let transport = StreamableHttpClientTransport::from_config(config);
         let service = ().serve(transport).await.map_err(remote_error)?;
         Ok(Arc::new(Self { service }))

@@ -1,4 +1,4 @@
-use agentdrive_config::{ConfigStore, Credential, initialize};
+use agentdrive_config::{ConfigStore, initialize};
 use agentdrive_engine::{Adapters, Engine, EngineConfig};
 use agentdrive_local::LocalBackend;
 use agentdrive_mcp::{Client, GatewayConfig, router};
@@ -9,7 +9,7 @@ use std::sync::Arc;
 use tokio_util::sync::CancellationToken;
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn concurrent_mcp_clients_share_operations_and_enforce_principals() {
+async fn local_mcp_clients_share_operations_without_credentials() {
     let temporary = tempfile::tempdir().unwrap();
     let path = initialize(
         &temporary.path().join("configuration"),
@@ -39,24 +39,12 @@ async fn concurrent_mcp_clients_share_operations_and_enforce_principals() {
     )
     .await
     .unwrap();
-    let owner_token = "owner-test-token-with-at-least-32-bytes";
-    let visitor_token = "visitor-test-token-with-at-least-32-bytes";
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();
     let endpoint = format!("http://{address}/mcp");
     let cancellation = CancellationToken::new();
     let app = router(
         engine.services.clone(),
-        vec![
-            Credential {
-                principal: "owner".to_owned().try_into().unwrap(),
-                token: owner_token.into(),
-            },
-            Credential {
-                principal: "visitor".to_owned().try_into().unwrap(),
-                token: visitor_token.into(),
-            },
-        ],
         GatewayConfig {
             allowed_hosts: vec![address.to_string()],
             settings: settings.clone(),
@@ -66,10 +54,9 @@ async fn concurrent_mcp_clients_share_operations_and_enforce_principals() {
     .unwrap();
     let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
     let http = reqwest::Client::new();
-    assert_eq!(http.post(&endpoint).send().await.unwrap().status(), 401);
+
     assert_eq!(
         http.post(&endpoint)
-            .bearer_auth(owner_token)
             .header("Origin", "https://untrusted.example")
             .send()
             .await
@@ -79,7 +66,6 @@ async fn concurrent_mcp_clients_share_operations_and_enforce_principals() {
     );
     assert_eq!(
         http.post(&endpoint)
-            .bearer_auth(owner_token)
             .header("Host", "untrusted.example")
             .send()
             .await
@@ -87,12 +73,8 @@ async fn concurrent_mcp_clients_share_operations_and_enforce_principals() {
             .status(),
         403
     );
-    let owner = Client::connect(&endpoint, owner_token.into())
-        .await
-        .unwrap();
-    let visitor = Client::connect(&endpoint, visitor_token.into())
-        .await
-        .unwrap();
+    let owner = Client::connect(&endpoint).await.unwrap();
+    let peer = Client::connect(&endpoint).await.unwrap();
     let tools = owner.tools().await.unwrap().tools;
     assert_eq!(tools.len(), 32);
     let adoption = tools
@@ -145,9 +127,7 @@ async fn concurrent_mcp_clients_share_operations_and_enforce_principals() {
         let endpoint = endpoint.clone();
         let request = request.clone();
         tasks.spawn(async move {
-            let client = Client::connect(&endpoint, owner_token.into())
-                .await
-                .unwrap();
+            let client = Client::connect(&endpoint).await.unwrap();
             client
                 .call("workspace_create".into(), request)
                 .await
@@ -174,18 +154,18 @@ async fn concurrent_mcp_clients_share_operations_and_enforce_principals() {
     assert_eq!(result["local_saved"], true);
     let workspace = result["result"]["workspace"]["id"].clone();
     assert!(workspace.is_string(), "{result}");
-    let denied = visitor
+    let shared = peer
         .call("workspace_status".into(), json!({"workspace": workspace}))
         .await
         .unwrap();
-    assert_eq!(denied.is_error, Some(true));
-    let hidden = visitor
+    assert_ne!(shared.is_error, Some(true));
+    let listed = peer
         .call("workspace_list".into(), json!({}))
         .await
         .unwrap()
         .structured_content
         .unwrap();
-    assert_eq!(hidden, Value::Array(vec![]));
+    assert_eq!(listed.as_array().unwrap().len(), 1);
     let conflict = owner
         .call(
             "workspace_create".into(),
@@ -206,20 +186,17 @@ async fn concurrent_mcp_clients_share_operations_and_enforce_principals() {
         .unwrap();
     assert_eq!(forged.is_error, Some(true));
     let base = format!("http://{address}");
+    let compatibility = http
+        .get(format!("{base}/api/workspaces"))
+        .bearer_auth("obsolete-token")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(compatibility.status(), 200);
     let view = format!("{base}/api/workspaces/{}", workspace.as_str().unwrap());
-    assert_eq!(http.get(&view).send().await.unwrap().status(), 401);
+
     assert_eq!(
         http.get(&view)
-            .bearer_auth(visitor_token)
-            .send()
-            .await
-            .unwrap()
-            .status(),
-        403
-    );
-    assert_eq!(
-        http.get(&view)
-            .bearer_auth(owner_token)
             .header("Origin", "https://untrusted.example")
             .send()
             .await
@@ -229,7 +206,6 @@ async fn concurrent_mcp_clients_share_operations_and_enforce_principals() {
     );
     assert_eq!(
         http.get(&view)
-            .bearer_auth(owner_token)
             .header("Host", "untrusted.example")
             .send()
             .await
@@ -237,12 +213,7 @@ async fn concurrent_mcp_clients_share_operations_and_enforce_principals() {
             .status(),
         403
     );
-    let response = http
-        .get(&view)
-        .bearer_auth(owner_token)
-        .send()
-        .await
-        .unwrap();
+    let response = http.get(&view).send().await.unwrap();
     assert_eq!(response.headers()["cache-control"], "no-store");
     let view: Value = response.json().await.unwrap();
     assert_eq!(view["status"]["branches"].as_array().unwrap().len(), 1);
@@ -260,22 +231,8 @@ async fn concurrent_mcp_clients_share_operations_and_enforce_principals() {
         "{base}/api/workspaces/{}/archive",
         workspace.as_str().unwrap()
     );
-    assert_eq!(http.get(&archive_url).send().await.unwrap().status(), 401);
-    assert_eq!(
-        http.get(&archive_url)
-            .bearer_auth(visitor_token)
-            .send()
-            .await
-            .unwrap()
-            .status(),
-        403
-    );
-    let archive_response = http
-        .get(&archive_url)
-        .bearer_auth(owner_token)
-        .send()
-        .await
-        .unwrap();
+
+    let archive_response = http.get(&archive_url).send().await.unwrap();
     assert_eq!(archive_response.headers()["cache-control"], "no-store");
     let archive: Value = archive_response.json().await.unwrap();
     assert_eq!(archive["workspace"], view["status"]["workspace"]);
@@ -294,25 +251,8 @@ async fn concurrent_mcp_clients_share_operations_and_enforce_principals() {
         "{base}/api/workspaces/{}/relationships?branch={branch}&limit=1",
         workspace.as_str().unwrap()
     );
-    assert_eq!(
-        http.get(&relationships_url).send().await.unwrap().status(),
-        401
-    );
-    assert_eq!(
-        http.get(&relationships_url)
-            .bearer_auth(visitor_token)
-            .send()
-            .await
-            .unwrap()
-            .status(),
-        403
-    );
-    let response = http
-        .get(&relationships_url)
-        .bearer_auth(owner_token)
-        .send()
-        .await
-        .unwrap();
+
+    let response = http.get(&relationships_url).send().await.unwrap();
     assert_eq!(response.headers()["cache-control"], "no-store");
     assert!(response.status().is_success());
     let relationships: Value = response.json().await.unwrap();
@@ -337,7 +277,6 @@ async fn concurrent_mcp_clients_share_operations_and_enforce_principals() {
     assert_eq!(relationships["remote_mounts_known"], false);
     assert_eq!(
         http.get(relationships_url.replace("limit=1", "limit=201"))
-            .bearer_auth(owner_token)
             .send()
             .await
             .unwrap()
@@ -346,21 +285,12 @@ async fn concurrent_mcp_clients_share_operations_and_enforce_principals() {
     );
     assert_eq!(
         http.get(format!("{relationships_url}&unexpected=true"))
-            .bearer_auth(owner_token)
             .send()
             .await
             .unwrap()
             .status(),
         400
     );
-    let denied = visitor
-        .call(
-            "workspace_relationships".into(),
-            json!({"workspace": workspace}),
-        )
-        .await
-        .unwrap();
-    assert_eq!(denied.is_error, Some(true));
     let invalid = owner
         .call(
             "workspace_relationships".into(),
@@ -373,22 +303,8 @@ async fn concurrent_mcp_clients_share_operations_and_enforce_principals() {
         "{base}/api/workspaces/{}/branches/{branch}/files?path=%2F",
         workspace.as_str().unwrap()
     );
-    assert_eq!(http.get(&files_url).send().await.unwrap().status(), 401);
-    assert_eq!(
-        http.get(&files_url)
-            .bearer_auth(visitor_token)
-            .send()
-            .await
-            .unwrap()
-            .status(),
-        403
-    );
-    let listing = http
-        .get(&files_url)
-        .bearer_auth(owner_token)
-        .send()
-        .await
-        .unwrap();
+
+    let listing = http.get(&files_url).send().await.unwrap();
     assert_eq!(listing.headers()["cache-control"], "no-store");
     let listing: Value = listing.json().await.unwrap();
     assert_eq!(listing["entries"], json!([]));
@@ -405,31 +321,13 @@ async fn concurrent_mcp_clients_share_operations_and_enforce_principals() {
     ];
     let mut file_url = reqwest::Url::parse(&file_url).unwrap();
     file_url.query_pairs_mut().extend_pairs(query);
+
     assert_eq!(
         http.get(file_url.clone()).send().await.unwrap().status(),
-        401
-    );
-    assert_eq!(
-        http.get(file_url.clone())
-            .bearer_auth(visitor_token)
-            .send()
-            .await
-            .unwrap()
-            .status(),
-        403
-    );
-    assert_eq!(
-        http.get(file_url.clone())
-            .bearer_auth(owner_token)
-            .send()
-            .await
-            .unwrap()
-            .status(),
         400
     );
     assert_eq!(
         http.get(format!("{files_url}&version=stale"))
-            .bearer_auth(owner_token)
             .send()
             .await
             .unwrap()
@@ -438,7 +336,6 @@ async fn concurrent_mcp_clients_share_operations_and_enforce_principals() {
     );
     assert_eq!(
         http.get(files_url.replace("path=%2F", "path=%2F..%2Fsecret"))
-            .bearer_auth(owner_token)
             .send()
             .await
             .unwrap()
@@ -450,22 +347,8 @@ async fn concurrent_mcp_clients_share_operations_and_enforce_principals() {
         "{base}/api/workspaces/{}/branches/{branch}/history?limit=1",
         workspace.as_str().unwrap()
     );
-    assert_eq!(http.get(&history_url).send().await.unwrap().status(), 401);
-    assert_eq!(
-        http.get(&history_url)
-            .bearer_auth(visitor_token)
-            .send()
-            .await
-            .unwrap()
-            .status(),
-        403
-    );
-    let history_response = http
-        .get(&history_url)
-        .bearer_auth(owner_token)
-        .send()
-        .await
-        .unwrap();
+
+    let history_response = http.get(&history_url).send().await.unwrap();
     assert!(history_response.status().is_success());
     assert_eq!(history_response.headers()["cache-control"], "no-store");
     let history: Value = history_response.json().await.unwrap();
@@ -473,7 +356,6 @@ async fn concurrent_mcp_clients_share_operations_and_enforce_principals() {
     assert_eq!(history["entries"][0]["branch"], branch);
     assert_eq!(
         http.get(history_url.replace("limit=1", "limit=201"))
-            .bearer_auth(owner_token)
             .send()
             .await
             .unwrap()
@@ -482,7 +364,6 @@ async fn concurrent_mcp_clients_share_operations_and_enforce_principals() {
     );
     assert_eq!(
         http.get(format!("{history_url}&unknown=true"))
-            .bearer_auth(owner_token)
             .send()
             .await
             .unwrap()
@@ -493,19 +374,9 @@ async fn concurrent_mcp_clients_share_operations_and_enforce_principals() {
         "{base}/api/workspaces/{}/revisions/{revision}/changes",
         workspace.as_str().unwrap()
     );
-    assert_eq!(http.get(&changes_url).send().await.unwrap().status(), 401);
-    assert_eq!(
-        http.get(&changes_url)
-            .bearer_auth(visitor_token)
-            .send()
-            .await
-            .unwrap()
-            .status(),
-        403
-    );
+
     let changes: Value = http
         .get(&changes_url)
-        .bearer_auth(owner_token)
         .send()
         .await
         .unwrap()
@@ -516,7 +387,6 @@ async fn concurrent_mcp_clients_share_operations_and_enforce_principals() {
     assert_eq!(changes["entries"][0]["path"], "/");
     assert_eq!(
         http.get(format!("{changes_url}?limit=0"))
-            .bearer_auth(owner_token)
             .send()
             .await
             .unwrap()
@@ -525,7 +395,6 @@ async fn concurrent_mcp_clients_share_operations_and_enforce_principals() {
     );
     let unchanged: Value = http
         .get(format!("{changes_url}?before={revision}"))
-        .bearer_auth(owner_token)
         .send()
         .await
         .unwrap()
@@ -539,7 +408,6 @@ async fn concurrent_mcp_clients_share_operations_and_enforce_principals() {
     );
     let directory: Value = http
         .get(&diff_url)
-        .bearer_auth(owner_token)
         .send()
         .await
         .unwrap()
@@ -547,15 +415,7 @@ async fn concurrent_mcp_clients_share_operations_and_enforce_principals() {
         .await
         .unwrap();
     assert_eq!(directory["status"], "directory");
-    assert_eq!(
-        http.get(&diff_url)
-            .bearer_auth(visitor_token)
-            .send()
-            .await
-            .unwrap()
-            .status(),
-        403
-    );
+
     let mcp_diff = owner
         .call(
             "revision_diff".into(),
@@ -580,7 +440,6 @@ async fn concurrent_mcp_clients_share_operations_and_enforce_principals() {
     let attachment = json!({"request_id":"attach", "event":"attach", "workspace":workspace, "mount_path":temporary.path().join("mount")});
     let first: Value = http
         .post(&lifecycle)
-        .bearer_auth(owner_token)
         .json(&attachment)
         .send()
         .await
@@ -592,7 +451,6 @@ async fn concurrent_mcp_clients_share_operations_and_enforce_principals() {
         .unwrap();
     let repeated: Value = http
         .post(&lifecycle)
-        .bearer_auth(owner_token)
         .json(&attachment)
         .send()
         .await
@@ -607,7 +465,6 @@ async fn concurrent_mcp_clients_share_operations_and_enforce_principals() {
     changed["mount_path"] = json!(temporary.path().join("different"));
     assert_eq!(
         http.post(&lifecycle)
-            .bearer_auth(owner_token)
             .json(&changed)
             .send()
             .await
@@ -619,7 +476,6 @@ async fn concurrent_mcp_clients_share_operations_and_enforce_principals() {
         "mount_path": first["mount_path"]});
     assert!(
         http.post(&lifecycle)
-            .bearer_auth(owner_token)
             .json(&check)
             .send()
             .await
@@ -631,7 +487,6 @@ async fn concurrent_mcp_clients_share_operations_and_enforce_principals() {
         "expected_binding_generation":first["binding"]["generation"]});
     let saved: Value = http
         .post(&lifecycle)
-        .bearer_auth(owner_token)
         .json(&save)
         .send()
         .await
@@ -643,7 +498,6 @@ async fn concurrent_mcp_clients_share_operations_and_enforce_principals() {
         .unwrap();
     let repeated: Value = http
         .post(&lifecycle)
-        .bearer_auth(owner_token)
         .json(&save)
         .send()
         .await
@@ -659,7 +513,6 @@ async fn concurrent_mcp_clients_share_operations_and_enforce_principals() {
     reconnect["request_id"] = json!("another-agent");
     let connected: Value = http
         .post(&lifecycle)
-        .bearer_auth(owner_token)
         .json(&reconnect)
         .send()
         .await
@@ -689,7 +542,6 @@ async fn concurrent_mcp_clients_share_operations_and_enforce_principals() {
     assert!(readonly["error"].is_null(), "{readonly}");
     let inventory: Value = http
         .get(&dashboard_url)
-        .bearer_auth(owner_token)
         .send()
         .await
         .unwrap()
@@ -718,7 +570,6 @@ async fn concurrent_mcp_clients_share_operations_and_enforce_principals() {
     assert!(released["error"].is_null(), "{released}");
     let inventory: Value = http
         .get(&dashboard_url)
-        .bearer_auth(owner_token)
         .send()
         .await
         .unwrap()
@@ -743,22 +594,8 @@ async fn concurrent_mcp_clients_share_operations_and_enforce_principals() {
             .contains("script-src 'self'")
     );
     let settings_url = format!("{base}/api/settings");
-    assert_eq!(http.get(&settings_url).send().await.unwrap().status(), 401);
-    assert_eq!(
-        http.get(&settings_url)
-            .bearer_auth(visitor_token)
-            .send()
-            .await
-            .unwrap()
-            .status(),
-        403
-    );
-    let response = http
-        .get(&settings_url)
-        .bearer_auth(owner_token)
-        .send()
-        .await
-        .unwrap();
+
+    let response = http.get(&settings_url).send().await.unwrap();
     assert_eq!(response.headers()["cache-control"], "no-store");
     let initial: Value = response.json().await.unwrap();
     assert_eq!(
@@ -768,19 +605,9 @@ async fn concurrent_mcp_clients_share_operations_and_enforce_principals() {
     let mut update = json!({"revision":initial["revision"],"runtime":initial["runtime"]});
     update["runtime"]["allowed_origins"] = json!(["https://trusted.example"]);
     update["runtime"]["cache"]["max_bytes"] = json!(3221225472u64);
+
     assert_eq!(
         http.put(&settings_url)
-            .bearer_auth(visitor_token)
-            .json(&update)
-            .send()
-            .await
-            .unwrap()
-            .status(),
-        403
-    );
-    assert_eq!(
-        http.put(&settings_url)
-            .bearer_auth(owner_token)
             .header("Origin", "https://untrusted.example")
             .json(&update)
             .send()
@@ -789,20 +616,13 @@ async fn concurrent_mcp_clients_share_operations_and_enforce_principals() {
             .status(),
         403
     );
-    let response = http
-        .put(&settings_url)
-        .bearer_auth(owner_token)
-        .json(&update)
-        .send()
-        .await
-        .unwrap();
+    let response = http.put(&settings_url).json(&update).send().await.unwrap();
     assert_eq!(response.status(), 200);
     let applied: Value = response.json().await.unwrap();
     assert_ne!(applied["revision"], initial["revision"]);
     assert_eq!(settings.live().load().values.cache.max_bytes, 3221225472);
     assert_eq!(
         http.put(&settings_url)
-            .bearer_auth(owner_token)
             .json(&update)
             .send()
             .await
@@ -812,7 +632,6 @@ async fn concurrent_mcp_clients_share_operations_and_enforce_principals() {
     );
     assert_eq!(
         http.get(&settings_url)
-            .bearer_auth(owner_token)
             .header("Origin", "https://trusted.example")
             .send()
             .await
@@ -823,7 +642,6 @@ async fn concurrent_mcp_clients_share_operations_and_enforce_principals() {
     let mcp_request = json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-03-26","capabilities":{},"clientInfo":{"name":"origin-test","version":"1"}}});
     assert_eq!(
         http.post(&endpoint)
-            .bearer_auth(owner_token)
             .header("Origin", "https://trusted.example")
             .header("Accept", "application/json, text/event-stream")
             .json(&mcp_request)
@@ -837,7 +655,6 @@ async fn concurrent_mcp_clients_share_operations_and_enforce_principals() {
     invalid["runtime"]["cache"]["max_bytes"] = json!(0);
     assert_eq!(
         http.put(&settings_url)
-            .bearer_auth(owner_token)
             .json(&invalid)
             .send()
             .await
@@ -850,7 +667,6 @@ async fn concurrent_mcp_clients_share_operations_and_enforce_principals() {
     invalid["runtime"]["listen"] = json!("127.0.0.1:7999");
     assert_eq!(
         http.put(&settings_url)
-            .bearer_auth(owner_token)
             .json(&invalid)
             .send()
             .await
@@ -861,7 +677,6 @@ async fn concurrent_mcp_clients_share_operations_and_enforce_principals() {
     let cleared = json!({"revision":applied["revision"],"runtime":initial["runtime"]});
     assert_eq!(
         http.put(&settings_url)
-            .bearer_auth(owner_token)
             .json(&cleared)
             .send()
             .await
@@ -871,7 +686,6 @@ async fn concurrent_mcp_clients_share_operations_and_enforce_principals() {
     );
     assert_eq!(
         http.post(&endpoint)
-            .bearer_auth(owner_token)
             .header("Origin", "https://trusted.example")
             .header("Accept", "application/json, text/event-stream")
             .json(&mcp_request)
@@ -899,13 +713,15 @@ async fn concurrent_mcp_clients_share_operations_and_enforce_principals() {
         200
     );
     owner.close().await.unwrap();
-    visitor.close().await.unwrap();
+    peer.close().await.unwrap();
     for page in [
         "/mounts",
         "/branches",
         "/management.js",
         "/commands.js",
         "/management.css",
+        "/navigation.js",
+        "/navigation.css",
     ] {
         assert_eq!(
             http.get(format!("{base}{page}"))
@@ -919,28 +735,9 @@ async fn concurrent_mcp_clients_share_operations_and_enforce_principals() {
     let command_url = format!("{base}/api/commands/branch_create");
     let create = json!({"request_id":"dashboard-create", "request":{
         "workspace":workspace, "source_branch":branch, "name":"feat/dashboard"}});
+
     assert_eq!(
         http.post(&command_url)
-            .json(&create)
-            .send()
-            .await
-            .unwrap()
-            .status(),
-        401
-    );
-    assert_eq!(
-        http.post(&command_url)
-            .bearer_auth(visitor_token)
-            .json(&create)
-            .send()
-            .await
-            .unwrap()
-            .status(),
-        403
-    );
-    assert_eq!(
-        http.post(&command_url)
-            .bearer_auth(owner_token)
             .header("Origin", "https://untrusted.example")
             .json(&create)
             .send()
@@ -951,7 +748,6 @@ async fn concurrent_mcp_clients_share_operations_and_enforce_principals() {
     );
     let created: Value = http
         .post(&command_url)
-        .bearer_auth(owner_token)
         .json(&create)
         .send()
         .await
@@ -962,7 +758,6 @@ async fn concurrent_mcp_clients_share_operations_and_enforce_principals() {
     assert_eq!(created["local_saved"], true);
     let repeated: Value = http
         .post(&command_url)
-        .bearer_auth(owner_token)
         .json(&create)
         .send()
         .await
@@ -975,7 +770,6 @@ async fn concurrent_mcp_clients_share_operations_and_enforce_principals() {
     forged["principal"] = json!("owner");
     assert_eq!(
         http.post(&command_url)
-            .bearer_auth(owner_token)
             .json(&forged)
             .send()
             .await
@@ -985,7 +779,6 @@ async fn concurrent_mcp_clients_share_operations_and_enforce_principals() {
     );
     assert_eq!(
         http.post(format!("{base}/api/commands/workspace_create"))
-            .bearer_auth(owner_token)
             .json(&create)
             .send()
             .await
@@ -994,26 +787,25 @@ async fn concurrent_mcp_clients_share_operations_and_enforce_principals() {
         404
     );
     let child = created["result"]["branch"]["id"].clone();
-    let prepared: Value = http.post(format!("{base}/api/commands/mount_prepare")).bearer_auth(owner_token)
+    let prepared: Value = http.post(format!("{base}/api/commands/mount_prepare"))
         .json(&json!({"request_id":"dashboard-mount", "request":{"workspace":workspace,"branch":child,"path":temporary.path().join("dashboard-mount")}}))
         .send().await.unwrap().json().await.unwrap();
     assert_eq!(prepared["mount_ready"], true, "{prepared}");
     let binding = &prepared["result"]["binding"];
-    let saved: Value = http.post(format!("{base}/api/commands/mount_save")).bearer_auth(owner_token)
+    let saved: Value = http.post(format!("{base}/api/commands/mount_save"))
         .json(&json!({"request_id":"dashboard-save", "request":{"mount":binding["id"],"expected_binding_generation":binding["generation"]}}))
         .send().await.unwrap().json().await.unwrap();
     assert_eq!(saved["local_saved"], true);
-    let unmounted: Value = http.post(format!("{base}/api/commands/mount_unmount")).bearer_auth(owner_token)
+    let unmounted: Value = http.post(format!("{base}/api/commands/mount_unmount"))
         .json(&json!({"request_id":"dashboard-unmount", "request":{"mount":binding["id"],"generation":binding["generation"]}}))
         .send().await.unwrap().json().await.unwrap();
     assert_eq!(unmounted["phase"], "complete", "{unmounted}");
-    let switched: Value = http.post(format!("{base}/api/commands/branch_switch")).bearer_auth(owner_token)
+    let switched: Value = http.post(format!("{base}/api/commands/branch_switch"))
         .json(&json!({"request_id":"dashboard-switch", "request":{"workspace":workspace,"branch":child}}))
         .send().await.unwrap().json().await.unwrap();
     assert_eq!(switched["phase"], "complete", "{switched}");
     let inspected: Value = http
         .post(format!("{base}/api/commands/operation_get"))
-        .bearer_auth(owner_token)
         .json(&json!({"operation":created["id"]}))
         .send()
         .await

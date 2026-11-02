@@ -7,14 +7,14 @@
 | Crate | Responsibility |
 | --- | --- |
 | `agentdrive-model` | IDs, paths, objects, revisions, branches, mount bindings, operations, merge records, errors |
-| `agentdrive-config` | Configuration schema, defaults, validation, atomic file replacement, administrator access, and shared runtime snapshots |
+| `agentdrive-config` | Configuration schema, defaults, validation, atomic file replacement and shared runtime snapshots |
 | `agentdrive-ports` | Storage, filesystem, mount, clock, directory, and application interfaces |
 | `agentdrive-engine` | File semantics and workspace, revision, mount, replication, cache, ownership, merge workflows |
 | `agentdrive-local` | A process lock, SQLite metadata, immutable objects, working files, leases, verified reads |
 | `agentdrive-s3` | Streaming immutable object transport and conditional reference updates |
 | `agentdrive-opencsg` | Codes HTTP object transport, chunk verification and conditional reference updates |
 | `agentdrive-platform` | FUSE/WinFsp callbacks, contained host-directory access and clock |
-| `agentdrive-mcp` | Typed tools, authenticated HTTP routing, dashboard and settings HTTP API, client, stdio forwarding |
+| `agentdrive-mcp` | Typed tools, local HTTP routing, dashboard and settings HTTP API, client, stdio forwarding |
 | `agentdrive-test-support` | Deterministic clocks, mount and storage doubles, injected outages and lost acknowledgements |
 | `agentdrived` / `agentdrive` | Daemon lifecycle and command-line client |
 
@@ -40,7 +40,7 @@
 | `engine/merge` | Prepare candidates, edit files, resolve conflicts and apply results |
 | `engine/operations` | Durable request deduplication, progress and result receipts |
 | `config/types`, `config/remote` | Cache, S3 and OpenCSG configuration types, credential redaction and policy validation |
-| `config/file` | File schema, defaults, token-file loading and initial directory creation |
+| `config/file` | File schema, defaults, local identity migration and initial directory creation |
 | `config/store` | Validate candidate settings, serialize writers, save configuration and publish `ArcSwap` snapshots |
 | `mcp/gateway`, `mcp/server` | Authenticate HTTP requests and dispatch typed application tools |
 | `mcp/web`, `mcp/dashboard` | Workspace, revision differences, lifecycle and settings HTTP endpoints and browser views |
@@ -103,11 +103,11 @@ All compiled native backends support automatic collaboration. Handle tracking de
 
 ## Configuration lifecycle
 
-`ConfigStore::open` reads and validates the file. `StartupConfig` supplies storage paths, mounts, transport and credentials during construction. Cache policy, remote connections and allowed HTTP origins are held together in one `ArcSwap<Snapshot>`. Cache collection retains one snapshot for the operation; HTTP authorization checks the snapshot for each request.
+`ConfigStore::open` reads and validates the file. `StartupConfig` supplies storage paths, mounts, transport and the local principal. Cache policy, remote connections and allowed HTTP origins share one `ArcSwap<Snapshot>`. Cache collection retains one snapshot for each operation; HTTP Origin checks use the current snapshot.
 
 A daemon worker checks the configuration file once per second. A dashboard save uses the same store and writer lock, checks the expected file revision, writes and synchronizes a temporary file in the same directory, replaces the configuration file, and publishes the snapshot. On Unix the directory is also synchronized. File errors, invalid values and changes to startup settings preserve the active configuration and report an error. Configuration revision checks reject stale API writers and detected external file edits; external editors do not participate in the daemon's writer lock. Use atomic file replacement when editing externally.
 
-Settings administration uses the startup `administrators` list, default `["owner"]`, independently of workspace grants. The settings API does not return token contents or saved remote secrets. Changing HTTP credentials, administrator membership, local directories or listen address requires a restart. Remote settings use `ConfigApplier` to verify the service, prepare content, persist configuration, and replace the remote adapters while holding lifecycle, publication and object-retention locks. See [configuration](configuration.md) for the fields and HTTP interface.
+Settings apply to the whole daemon through `ConfigStore`, independently of workspace selection. Responses redact saved remote secrets. Changing local directories, the principal or the listen address requires a restart. `ConfigApplier` verifies remote connections, prepares content and persists configuration while protecting lifecycle, publication and object-retention operations. See [configuration](configuration.md).
 
 ## Local persistence
 
@@ -156,11 +156,11 @@ The Git branch head is an opaque `VersionedRef.version`. Single-file POST/PUT re
 Merge preparation selects a common ancestor or validates an explicit one, compares path changes, and produces an immutable candidate. AI can list candidate files, select source or target contents, delete paths, submit replacement bytes, or copy files from an existing revision. Each edit creates a new candidate. Apply requires clean target state, current ownership/generation/head, resolved conflicts, and mount quiescence. The resulting revision retains source and target parents.
 
 
-## Authentication boundary
+## Local access boundary
 
-Bearer credentials select a principal before creating the MCP service. Each credential has a separate HTTP session manager. Tool arguments cannot override the principal. Host and Origin allowlists and an 8 MiB request limit apply at the HTTP boundary. The daemon binds to loopback. Remote access requires an administrator-managed authenticated TLS proxy preserving the accepted Host value.
+All local HTTP and MCP clients use `StartupConfig.principal`, default `owner`. Tool arguments cannot override this identity. The gateway creates one HTTP session manager. Host and Origin checks and an 8 MiB request limit apply at the HTTP boundary; the daemon binds to loopback.
 
-Workspace grants authorize application actions. Native filesystem access is tied to the daemon's OS identity. Keep configuration, credentials, state, mount roots, and exchange roots restricted to that identity; on Windows configure their NTFS permissions accordingly. Remote credentials and administrators are trusted storage writers.
+Workspace grants remain in the application services and use the local principal. Native filesystem access uses the daemon OS identity. Remote storage credentials remain inside their adapters.
 
 See [configuration and remote storage](configuration.md), [CLI usage](cli.md), and [MCP parameters and capabilities](mcp.md).
 

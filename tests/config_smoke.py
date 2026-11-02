@@ -23,13 +23,13 @@ with tempfile.TemporaryDirectory(prefix='agentdrive-config-') as temporary:
     subprocess.run([str(executable), 'init', '--directory', str(root), '--listen', address], check=True, capture_output=True)
     path = root / 'agentdrive.json'
     original = json.loads(path.read_text(encoding='utf-8'))
-    token = (root / 'token').read_text(encoding='utf-8').strip()
+
     endpoint = f'http://{address}/api/settings'
     daemon = None
     log = (root / 'daemon.log').open('w')
 
-    def request(method='GET', payload=None, authenticated=True):
-        headers = {'Authorization': f'Bearer {token}'} if authenticated else {}
+    def request(method='GET', payload=None):
+        headers = {}
         data = None
         if payload is not None:
             headers['Content-Type'] = 'application/json'
@@ -40,7 +40,6 @@ with tempfile.TemporaryDirectory(prefix='agentdrive-config-') as temporary:
             return error.code, error.read().decode()
         with response:
             body = response.read().decode()
-            assert token not in body
             return response.status, json.loads(body)
 
     def wait_for(predicate):
@@ -67,7 +66,7 @@ with tempfile.TemporaryDirectory(prefix='agentdrive-config-') as temporary:
     try:
         daemon = start()
         initial = wait_for(lambda data: data['reload_error'] is None)
-        assert request(authenticated=False)[0] == 401
+        assert request()[0] == 200
         configured = dict(original, cache={'max_bytes': 3 * 1024 ** 3}, allowed_origins=['https://example.com'])
         replace_config(configured)
         loaded = wait_for(lambda data: data['runtime']['cache']['max_bytes'] == 3 * 1024 ** 3)

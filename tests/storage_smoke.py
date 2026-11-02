@@ -26,15 +26,15 @@ with tempfile.TemporaryDirectory(prefix='agentdrive-storage-') as temporary:
         port = listener.getsockname()[1]
     subprocess.run([str(binaries / ('agentdrived' + exe)), 'init', '--directory', str(root), '--listen', f'127.0.0.1:{port}'], check=True, capture_output=True)
     config_path = root / 'agentdrive.json'
-    token = (root / 'token').read_text(encoding='utf-8').strip()
-    client = [str(binaries / ('agentdrive' + exe)), '--endpoint', f'http://127.0.0.1:{port}/mcp', '--token-file', str(root / 'token')]
+
+    client = [str(binaries / ('agentdrive' + exe)), '--endpoint', f'http://127.0.0.1:{port}/mcp']
     log = (root / 'daemon.log').open('w')
     daemon = None
 
     def settings(payload=None):
         request = urllib.request.Request(f'http://127.0.0.1:{port}/api/settings',
             data=json.dumps(payload).encode() if payload else None,
-            headers={'Authorization': f'Bearer {token}', 'Content-Type': 'application/json'})
+            headers={'Content-Type': 'application/json'})
         request.method = 'PUT' if payload else 'GET'
         try:
             with urllib.request.urlopen(request, timeout=180) as response:

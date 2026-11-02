@@ -2,7 +2,7 @@
 
 [English](integrations.md) | [简体中文](integrations.zh-CN.md)
 
-Start `agentdrived` and configure `AGENTDRIVE_TOKEN_FILE`. Native directories require FUSE, FUSE-T/macFUSE, or WinFsp. Mount paths must be inside the daemon's `mount_roots`. The agent's execution environment must be able to access the mounted directory.
+Start `agentdrived`; the local connection needs no token. Native directories require FUSE, FUSE-T/macFUSE, or WinFsp. Mount paths must be inside the daemon's `mount_roots`. The agent's execution environment must be able to access the mounted directory.
 
 ## MCP and mounted directories
 
@@ -78,7 +78,7 @@ The bridge queries the current mount binding before each task. For a manually ma
 
 Switching or restoring a branch can change the binding ID or generation. Delayed save requests fail with `STALE_BINDING`; the next task queries the current binding again. Reconnection after a daemon restart restores saved content and checks the native mount. Changes that never reached a save can be lost.
 
-Custom applications can call bearer-authenticated `POST /api/lifecycle`:
+Custom applications can call `POST /api/lifecycle`:
 
 | Event | Fields | Behavior |
 | --- | --- | --- |
@@ -114,7 +114,7 @@ agentdrive integrate --protocol codex-app-server \
 
 The wrapper supports the same `--branch` option for ACP and detects the daemon's collaboration setting. Optional `--automatic` requires automatic mode to be available and cannot override a disabled global switch. This command wraps the process it launches; it does not subscribe to unrelated desktop-app sessions. No model-issued MCP acquisition call is required.
 
-Custom integrations use the existing bearer token with these HTTP endpoints:
+Custom integrations call these local HTTP endpoints:
 
 | Endpoint | Input / output |
 | --- | --- |
@@ -145,13 +145,13 @@ The `failed` and `interrupted` outcomes preserve accepted filesystem changes. If
 
 Existing databases retain their branches and selections. With no selection, one writable local branch is reused automatically; multiple writable local branches require an explicit `branch_switch`.
 
-Run `agentdrive dashboard --open` to open the daemon page. The browser reads the token from the URL fragment, removes it, and retains it in session storage. Manual token entry is also available. The page refreshes every 15 seconds and shows branch ancestry, revision history, and commit details. Selecting a branch changes the displayed history.
+Run `agentdrive dashboard --open` or open the daemon URL directly. The left panel lists all workspaces and supports searching and collapsing. Selecting a workspace opens its archive and the adjacent menu provides Archive, Branches & Versions, Mount management and Branch management. The root URL opens the first workspace archive; explicit workspace and file links remain supported. Global settings are at the bottom left. Pages refresh every 15 seconds.
 
 The **Merge records** tab shows merges performed through MCP, including preparation, candidate edits, application, failures and mount recovery. Filter by branch, source, target, location, status or time, and load further pages as needed. Each record retains its source revision and target revision at preparation time. Its detail view provides an action timeline and file comparisons against the original target, source, base or previous candidate. Applied merge revisions link back to their record from version history.
 
 Local saving, remote confirmation and mount readiness have separate indicators. Other locations see published records and referenced candidate content after synchronization; their mount indicators describe the recorded operation. Older records identify incomplete history. A resolved file conflict does not establish that the article or business decision has been reviewed. These views use read-only `GET /api/workspaces/{workspace}/merges`, `GET /api/workspaces/{workspace}/merges/{record}` and `GET /api/workspaces/{workspace}/merges/{record}/events` endpoints, with paginated records and events and existing branch read permissions.
 
-Read-only endpoints are `GET /api/workspaces` and `GET /api/workspaces/{workspace}`. The latter returns `status`, `revisions`, `summary` and `origins`. `summary` contains `branch_count`, `mount_count`, `ready_mount_count` and `mounted_branch_count`. `status.mounts` contains unreleased bindings sorted by path. `origins` identifies each branch's source branch and revision, revision availability, and whether it is the workspace root. `selected_branch` is this location's default selection for the workspace. Administrators edit runtime settings at `/settings`; see [configuration](configuration.md).
+Read-only endpoints are `GET /api/workspaces` and `GET /api/workspaces/{workspace}`. The latter returns `status`, `revisions`, `summary` and `origins`. `summary` contains `branch_count`, `mount_count`, `ready_mount_count` and `mounted_branch_count`. `status.mounts` contains unreleased bindings sorted by path. `origins` identifies each branch's source branch and revision, revision availability, and whether it is the workspace root. `selected_branch` is this location's default selection for the workspace. Global runtime settings are available at `/settings`; see [configuration](configuration.md).
 
 Protocol references: [ACP sessions](https://agentclientprotocol.com/protocol/v1/session-setup), [ACP turns](https://agentclientprotocol.com/protocol/v1/prompt-turn), and [Codex app-server](https://developers.openai.com/codex/app-server/).
 
@@ -163,7 +163,7 @@ The **Branch and mount relationships** panel on this page shows branch ownership
 
 **Branch management** (`/branches`) creates a named branch from selected source content. Local branches can use `source_branch` to capture current working content, including uncommitted changes. Saved revisions use `source`, including revisions from other locations. These two parameters are mutually exclusive. The list shows all known branches and their origins, with switch and mount links for locally writable branches. Switching updates the local selection and any mounted directory using the previous selected branch.
 
-The pages call existing MCP services through `POST /api/commands/{command}`. Allowed commands are `branch_create`, `branch_switch`, `mount_prepare`, `mount_save`, `mount_unmount`, `mount_release`, `operation_get` and `operation_by_request`, with the same argument shapes as the MCP tools. Bearer authentication, existing permissions and binding generation checks apply. Progress separately reports `local_saved`, `remote_confirmed` and `mount_ready`. Each action retains its `request_id` across reloads and interrupted responses so the browser can query or retry the original request. Busy directories show release instructions and recovery controls. Logout clears stored browser action records.
+The pages call existing MCP services through `POST /api/commands/{command}`. Allowed commands are `branch_create`, `branch_switch`, `mount_prepare`, `mount_save`, `mount_unmount`, `mount_release`, `operation_get` and `operation_by_request`, with the same argument shapes as the MCP tools. The daemon identity and binding generation checks apply. Progress separately reports `local_saved`, `remote_confirmed` and `mount_ready`. Each action retains its `request_id` across reloads and interrupted responses so the browser can query or retry the original request. Busy directories show release instructions and recovery controls.
 
 The branch badge distinguishes unsaved changes (`mutation_seq != saved_seq`), automatically saved but uncommitted changes (matching sequences with `dirty`), and committed content (matching sequences without `dirty`). Saved content has a durable local checkpoint. The tooltip identifies checkpoints awaiting an autosave revision; remote confirmation appears in the synchronization card. Stopped writers have a separate indicator.
 
@@ -171,11 +171,11 @@ Version history lists only revisions created on the selected branch. Select the 
 
 Double-click a history entry, or focus it and press Enter or Space, to open **Version details**. The dialog shows version metadata above a paginated changed-file list and automatically displays the first entry’s details and text differences on the right. Source revisions in the branch graph open the same dialog. Loading more entries preserves the current selection. Automatic refresh updates the current-commit marker in an open dialog while preserving the selected file and loaded differences. Close the dialog with its close button, Escape, or a click outside it. Comparison always uses the parent revision, or the first parent for a merge. Initial revisions compare against an empty tree. The previous version is determined by parent relationships. Exact-content moves with a unique source and destination are marked as renames. Ambiguous moves and moves with edited content appear as additions/deletions. Added and deleted empty files are explicitly labeled as empty (0 bytes); unchanged content from a rename or attribute change is labeled separately. Binary and oversized files show metadata. Browsing does not change mounts or the selected working branch.
 
-Revision endpoints are `GET /api/workspaces/{workspace}/revisions/{revision}/changes` and `GET /api/workspaces/{workspace}/revisions/{revision}/diff`; both require bearer authentication and workspace read access. `changes` accepts `before`, `cursor`, `limit`; `diff` accepts `before`, `path`, `previous_path`. Omitted `before` selects an empty base. See [MCP parameters](mcp.md) for response fields.
+Revision endpoints are `GET /api/workspaces/{workspace}/revisions/{revision}/changes` and `GET /api/workspaces/{workspace}/revisions/{revision}/diff`; both use the local daemon identity and require workspace read access. `changes` accepts `before`, `cursor`, `limit`; `diff` accepts `before`, `path`, `previous_path`. Omitted `before` selects an empty base. See [MCP parameters](mcp.md) for response fields.
 
 Double-click a branch, or focus it and press Enter or Space, to open **Branch files**. Browse directories on the left, including hidden files; the first ordinary file is previewed automatically on the right. Reads include current unsaved and uncommitted changes and also work for unmounted local branches. Text is displayed in 64 KiB chunks with previous/next controls. Binary and non-UTF-8 bytes use hexadecimal previews. Directories contain up to 200 entries per page, with a load-more control and parent/root navigation.
 
-If the branch changes during browsing, refresh the file dialog to read its latest contents. Browsing does not change mounts, create revisions or trigger checkpoints. `GET /api/workspaces/{workspace}/branches/{branch}/files` accepts `path`, optional `after` and `version`, returning `entries`, `next` and `version`. Subsequent directory pages and file reads use the same version; a changed branch returns HTTP 409. `GET /api/workspaces/{workspace}/branches/{branch}/file` accepts `path`, `version`, `offset` and `size`, returning raw bytes with a per-read limit of 1–262144 bytes. Both endpoints enforce bearer authentication, workspace membership and branch read permission, and disable response caching.
+If the branch changes during browsing, refresh the file dialog to read its latest contents. Browsing does not change mounts, create revisions or trigger checkpoints. `GET /api/workspaces/{workspace}/branches/{branch}/files` accepts `path`, optional `after` and `version`, returning `entries`, `next` and `version`. Subsequent directory pages and file reads use the same version; a changed branch returns HTTP 409. `GET /api/workspaces/{workspace}/branches/{branch}/file` accepts `path`, `version`, `offset` and `size`, returning raw bytes with a per-read limit of 1–262144 bytes. Both endpoints enforce workspace membership and branch read permission, and disable response caching.
 
 ## Archive
 

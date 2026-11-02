@@ -96,17 +96,15 @@ pub(crate) fn settings_api(settings: Arc<ConfigStore>) -> Router {
 
 async fn get_settings(
     State(settings): State<Arc<ConfigStore>>,
-    Extension(actor): Extension<Principal>,
 ) -> std::result::Result<Json<Settings>, ApiError> {
-    Ok(Json(settings.settings(&actor)?))
+    Ok(Json(settings.settings()))
 }
 
 async fn update_settings(
     State(settings): State<Arc<ConfigStore>>,
-    Extension(actor): Extension<Principal>,
     Json(update): Json<SettingsUpdate>,
 ) -> std::result::Result<Json<Settings>, ApiError> {
-    let result = tokio::task::spawn_blocking(move || settings.update(&actor, update))
+    let result = tokio::task::spawn_blocking(move || settings.update(update))
         .await
         .map_err(|error| Error::new(ErrorCode::Io, error.to_string()))??;
     Ok(Json(result))
@@ -125,6 +123,8 @@ pub(crate) fn assets() -> Router {
         .route("/collaboration.js", get(|| async { ([(header::CONTENT_TYPE, "text/javascript; charset=utf-8")], include_str!("../dashboard/collaboration.js")) }))
         .route("/commands.js", get(|| async { ([(header::CONTENT_TYPE, "text/javascript; charset=utf-8")], include_str!("../dashboard/commands.js")) }))
         .route("/management.css", get(|| async { ([(header::CONTENT_TYPE, "text/css; charset=utf-8")], include_str!("../dashboard/management.css")) }))
+        .route("/navigation.js", get(|| async { ([(header::CONTENT_TYPE, "text/javascript; charset=utf-8")], include_str!("../dashboard/navigation.js")) }))
+        .route("/navigation.css", get(|| async { ([(header::CONTENT_TYPE, "text/css; charset=utf-8")], include_str!("../dashboard/navigation.css")) }))
         .route("/dashboard.js", get(|| async { ([(header::CONTENT_TYPE, "text/javascript; charset=utf-8")], include_str!("../dashboard/dashboard.js")) }))
         .route("/history.js", get(|| async { ([(header::CONTENT_TYPE, "text/javascript; charset=utf-8")], include_str!("../dashboard/history.js")) }))
         .route("/merges.js", get(|| async { ([(header::CONTENT_TYPE, "text/javascript; charset=utf-8")], include_str!("../dashboard/merges.js")) }))

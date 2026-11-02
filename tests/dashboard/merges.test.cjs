@@ -53,7 +53,6 @@ async function open(t,data = fixture(),target = '/dashboard?view=merges') {
   const page = await browser.newPage({viewport:{width:1440,height:1000}}), errors = [], requests = [];
   page.on('pageerror', error => errors.push(error.message));
   t.after(async () => { await page.close(); assert.deepEqual(errors,[]); });
-  await page.addInitScript(() => sessionStorage.setItem('agentdrive-token','test-token'));
   await page.route('**/api/**',async route => {
     const url = new URL(route.request().url()); requests.push({url,method:route.request().method()});
     if (data.intercept && await data.intercept(route,url)) return;

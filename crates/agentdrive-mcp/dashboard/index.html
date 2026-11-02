@@ -10,30 +10,25 @@
   <link rel="stylesheet" href="/management.css">
   <link rel="stylesheet" href="/merges.css">
   <script src="/dashboard.js" type="module"></script>
+  <link rel="stylesheet" href="/navigation.css">
 </head>
 <body>
-  <section id="login" class="login-screen" hidden>
-    <form id="login-form" class="login-card">
-      <div class="brand"><span class="brand-mark">A</span> AgentDrive</div>
-      <h1>连接你的工作区</h1>
-      <p>浏览项目资料，查看 Agent 的工作成果与保存进度。</p>
-      <label for="token">访问令牌</label>
-      <input id="token" type="password" autocomplete="off" placeholder="输入 daemon token" required>
-      <button type="submit" class="primary">连接工作区 <span>→</span></button>
-      <p class="login-hint">也可以运行 <code>agentdrive dashboard --open</code>，直接在浏览器中打开。</p>
-      <p id="login-error" role="alert"></p>
-    </form>
-  </section>
-  <div id="app" class="app" hidden>
-    <aside class="sidebar">
-      <a class="brand" href="/archive"><span class="brand-mark">A</span> AgentDrive <span class="version">LOCAL</span></a>
-      <div class="workspace-picker"><label for="workspace">工作区</label><select id="workspace" aria-label="选择工作区"></select></div>
-      <nav aria-label="导航"><a id="archive-nav" class="nav-link" href="/archive"><span class="branch-icon" aria-hidden="true">▤</span> 档案室</a><a id="history-nav" class="nav-link nav-active" href="/dashboard"><span class="branch-icon">⑂</span> 分支与版本</a><a id="mounts-nav" class="nav-link" href="/mounts"><span class="branch-icon" aria-hidden="true">▣</span> 挂载点管理</a><a id="branches-nav" class="nav-link" href="/branches"><span class="branch-icon" aria-hidden="true">⑂</span> 分支管理</a><a id="settings-nav" class="nav-link" href="/settings"><span class="branch-icon">⚙</span> 设置</a></nav>
-      <div class="sidebar-note"><div class="note-icon">◷</div><strong>共享资料，接力工作</strong><p>把项目资料交给 Agent，让每次工作都有可以继续的起点。</p></div>
-      <div class="sidebar-bottom"><span class="connection-dot"></span><span id="connection">已连接本地 daemon</span><button id="logout" title="断开连接" aria-label="断开连接">↪</button></div>
+  <div id="app" class="app">
+    <aside id="workspace-sidebar" class="workspace-sidebar" aria-label="工作区列表">
+      <div class="workspace-brand"><a id="brand-link" class="brand" href="/archive" aria-label="AgentDrive 首页"><span class="brand-mark">A</span><span class="brand-name">AgentDrive</span></a><button id="workspace-toggle" class="workspace-toggle" type="button" aria-controls="workspace-list" aria-expanded="true" aria-label="收起工作区列表">‹</button></div>
+      <div class="workspace-list-heading"><span>工作区</span><span id="workspace-total" class="count-badge">0</span></div>
+      <input id="workspace-search" class="workspace-search" type="search" placeholder="查找工作区" aria-label="查找工作区">
+      <nav id="workspace-list" class="workspace-list" aria-label="选择工作区"></nav>
+      <p id="workspace-list-empty" class="workspace-list-empty" hidden>暂无工作区</p>
+      <div class="workspace-sidebar-footer"><a id="settings-nav" class="global-settings" href="/settings" aria-label="全局设置" title="全局设置"><span class="branch-icon" aria-hidden="true">⚙</span><span class="settings-label-text">全局设置</span></a><div class="connection-status"><span class="connection-dot" aria-hidden="true"></span><span id="connection" role="status">正在连接本地服务</span></div></div>
+    </aside>
+    <button id="workspace-backdrop" class="workspace-backdrop" type="button" aria-label="关闭工作区列表" hidden></button>
+    <aside id="workspace-menu" class="workspace-menu" aria-label="工作区功能">
+      <div class="workspace-menu-heading"><small>当前工作区</small><strong id="workspace-menu-name">加载中</strong></div>
+      <nav aria-label="工作区菜单"><a id="archive-nav" class="nav-link" href="/archive"><span class="branch-icon" aria-hidden="true">▤</span>档案室</a><a id="history-nav" class="nav-link" href="/dashboard"><span class="branch-icon" aria-hidden="true">⑂</span>分支与版本</a><a id="mounts-nav" class="nav-link" href="/mounts"><span class="branch-icon" aria-hidden="true">▣</span>挂载点管理</a><a id="branches-nav" class="nav-link" href="/branches"><span class="branch-icon" aria-hidden="true">⑂</span>分支管理</a></nav>
     </aside>
     <main>
-      <header class="topbar"><div id="history-breadcrumb" class="breadcrumb">工作区 <span>/</span> <strong id="workspace-name">加载中</strong></div><div id="settings-breadcrumb" class="breadcrumb" hidden>AgentDrive <span>/</span> <strong>设置</strong></div><div class="topbar-right"><span id="view-mode" class="read-only">只读浏览</span><span id="updated">正在连接</span><button id="refresh" class="refresh" aria-label="刷新数据">↻</button></div></header>
+      <header class="topbar"><div id="history-breadcrumb" class="breadcrumb">工作区 <span>/</span> <strong id="workspace-name">加载中</strong><span id="page-divider">/</span><strong id="page-name">档案室</strong></div><div id="settings-breadcrumb" class="breadcrumb" hidden>AgentDrive <span>/</span> <strong>设置</strong></div><div class="topbar-right"><span id="view-mode" class="read-only">只读浏览</span><span id="updated">正在连接</span><button id="refresh" class="refresh" aria-label="刷新数据">↻</button></div></header>
       <div id="error" class="error-banner global-error" role="alert" hidden></div>
       <div id="archive-page" class="content archive-page" hidden></div>
       <div id="mounts-page" class="content management-page" hidden><div id="mounts-management"></div><section id="relationships-panel" class="panel" aria-label="分支与挂载关系"></section></div>
@@ -110,13 +105,13 @@
               <div class="settings-heading"><div><h2 id="origins-title">HTTP 访问来源</h2><p>允许发送请求的额外页面来源，下一次请求使用新设置。</p></div><span class="pill">保存后生效</span></div>
               <label class="settings-label" for="allowed-origins">Origin 白名单，每行一个地址</label>
               <textarea id="allowed-origins" rows="3" placeholder="https://app.example.com" spellcheck="false"></textarea>
-              <p class="settings-help">使用 scheme://host[:port] 格式。同源 Dashboard 和没有 Origin 的 CLI 请求可以访问；所有请求均需认证。</p>
+              <p class="settings-help">使用 scheme://host[:port] 格式。同源 Dashboard 和没有 Origin 的 CLI 请求可以访问。</p>
             </section>
           </fieldset>
           <div class="settings-actions"><div><strong id="settings-state">配置已加载</strong><small id="settings-version"></small></div><button id="settings-reload" class="secondary" type="button">重新载入</button><button id="settings-save" class="primary" type="submit" disabled>保存并应用</button></div>
         </form>
         <section id="startup-panel" class="panel settings-panel" hidden aria-labelledby="startup-title">
-          <div class="settings-heading"><div><h2 id="startup-title">启动配置</h2><p>修改配置文件后重启 daemon 生效。这些设置决定存储位置、连接与访问权限。</p></div><span class="read-only">需要重启</span></div>
+          <div class="settings-heading"><div><h2 id="startup-title">启动配置</h2><p>修改配置文件后重启 daemon 生效。这些设置决定存储位置、挂载目录与监听地址。</p></div><span class="read-only">需要重启</span></div>
           <dl id="startup-values" class="detail-grid"></dl>
         </section>
         <footer class="page-footer"><span>AgentDrive <span class="footer-separator">/</span> 配置管理</span><span>配置文件每秒检查一次</span></footer>

@@ -37,15 +37,14 @@ AGENTDRIVE_DIRECTORY="$HOME/.local/share/agentdrive"
 In another terminal:
 
 ```sh
-export AGENTDRIVE_TOKEN_FILE="$HOME/.local/share/agentdrive/token"
 ./target/debug/agentdrive tools
 ./target/debug/agentdrive call workspace_create --request-id create-demo --json '{"name":"demo"}'
 ./target/debug/agentdrive call workspace_list
 ```
 
-`init` creates configuration, a random bearer token, and directories for state, mounts, and file exchange. Existing credentials are preserved by refusing initialization over an existing configuration. The daemon defaults to `127.0.0.1:7421`; its MCP endpoint is `/mcp`. Run one daemon per state directory.
+`init` creates configuration and directories for state, mounts and file exchange. It refuses initialization over an existing configuration. Dashboard and MCP connect directly without a token. The daemon defaults to `127.0.0.1:7421`; its MCP endpoint is `/mcp`. Run one daemon per state directory.
 
-To connect an MCP client through stdio, configure the executable as `agentdrive`, arguments as `["mcp"]`, and set `AGENTDRIVE_TOKEN_FILE`. `AGENTDRIVE_ENDPOINT` selects another daemon endpoint. The stdio process forwards requests to the running daemon.
+To connect an MCP client through stdio, configure the executable as `agentdrive`, arguments as `["mcp"]`. `AGENTDRIVE_ENDPOINT` selects another daemon endpoint. The stdio process forwards requests to the running daemon.
 
 Use `agentdrive tools` as the source for JSON input schemas. Command tools accept `{ "request_id": "stable-id", "request": { ... } }` over MCP. The CLI's `--request-id` option builds that envelope. Query tools and `operation_cancel` receive their arguments directly. `--json -` reads JSON from standard input. The CLI exits with 0 for successful tool responses, 2 for a tool error, and 1 for transport or input errors; command-line parsing errors also use 2. See [CLI usage](cli.md) for executable examples and [MCP parameters and capabilities](mcp.md) for the complete tool reference.
 

@@ -13,17 +13,16 @@
       "command": "/absolute/path/to/agentdrive",
       "args": ["mcp"],
       "env": {
-        "AGENTDRIVE_ENDPOINT": "http://127.0.0.1:7421/mcp",
-        "AGENTDRIVE_TOKEN_FILE": "/absolute/path/to/agentdrive-data/token"
+        "AGENTDRIVE_ENDPOINT": "http://127.0.0.1:7421/mcp"
       }
     }
   }
 }
 ```
 
-请将两个路径替换为实际绝对路径，Windows 使用 `agentdrive.exe`。外层配置格式取决于客户端。代理通过 stdin/stdout 传输 MCP，通过 stderr 输出日志。代理连接已经运行的守护进程，并与其他客户端共享该守护进程的状态。
+请将程序路径替换为实际绝对路径，Windows 使用 `agentdrive.exe`。外层配置格式取决于客户端。代理通过 stdin/stdout 传输 MCP，通过 stderr 输出日志。代理连接已经运行的守护进程，并与其他客户端共享该守护进程的状态。
 
-直接连接 Streamable HTTP 时，使用 `http://127.0.0.1:7421/mcp`，并提供 `Authorization: Bearer <token-file-contents>`。MCP 客户端需要完成初始化并保留返回的会话信息。允许的 Host 为监听地址和 `localhost:<port>`。请求携带 Origin 时，需要与请求地址同源，或匹配 `allowed_origins`；原生 CLI/stdio 连接省略 Origin。守护进程仅监听本机回环地址；其他机器访问时，需要使用经过身份验证的 TLS 代理，并保留允许的 Host 值。
+直接连接 Streamable HTTP 时，使用 `http://127.0.0.1:7421/mcp`，无需认证请求头。MCP 客户端需要完成初始化并保留返回的会话信息。允许的 Host 为监听地址和 `localhost:<port>`。请求携带 Origin 时，需要与请求地址同源，或匹配 `allowed_origins`；原生 CLI/stdio 连接省略 Origin。守护进程仅监听本机回环地址；其他机器访问时，需要使用经过身份验证的 TLS 代理，并保留允许的 Host 值。
 
 服务声明支持 MCP `tools` 能力，提供 32 个工具及其输入 JSON schema 和 annotations。可以通过 `tools/list` 读取已连接服务的工具目录，或者运行：
 
@@ -45,7 +44,7 @@ jq '.tools[] | select(.name == "mount_prepare") | .inputSchema' tools.json
 }
 ```
 
-对应 CLI 为 `agentdrive call workspace_create --request-id create-demo-1 --json '{"name":"demo"}'`。`request_id` 必须非空、不含控制字符，且最多为 256 个 UTF-8 字节。请求身份属于当前通过身份验证的 principal，并在进程重启后保留。重试需要使用相同 ID、工具和参数；冲突复用会返回 `REQUEST_ID_CONFLICT`。
+对应 CLI 为 `agentdrive call workspace_create --request-id create-demo-1 --json '{"name":"demo"}'`。`request_id` 必须非空、不含控制字符，且最多为 256 个 UTF-8 字节。请求身份属于当前本地 principal，并在进程重启后保留。重试需要使用相同 ID、工具和参数；冲突复用会返回 `REQUEST_ID_CONFLICT`。
 
 十一个查询工具直接接收参数对象。`operation_cancel` 也直接接收参数，并修改指定操作的状态，不接受命令工具的外层结构。调用 `operation_by_request` 时使用：
 
@@ -133,11 +132,11 @@ jq '.tools[] | select(.name == "mount_prepare") | .inputSchema' tools.json
 | `automatic_text_merge` | `false`，冲突需要明确解决。 |
 | `physical_remote_gc` | `false`，自动删除远程存储中不再被引用的历史对象的功能已禁用。 |
 
-文件编辑通常通过挂载后的原生路径完成，MCP 工具负责工作区、版本和生命周期管理。工具目录将十一个查询标记为 `readOnlyHint: true`、`destructiveHint: false`；命令和取消操作使用相反的值。全部工具当前声明 `idempotentHint: true` 和 `openWorldHint: true`。这些 annotations 描述工具行为，访问和重试由身份验证、授权、请求身份和状态检查控制。
+文件编辑通常通过挂载后的原生路径完成，MCP 工具负责工作区、版本和生命周期管理。工具目录将十一个查询标记为 `readOnlyHint: true`、`destructiveHint: false`；命令和取消操作使用相反的值。全部工具当前声明 `idempotentHint: true` 和 `openWorldHint: true`。这些 annotations 描述工具行为，访问和重试由工作区授权、请求身份和状态检查控制。
 
 源代码定义见[工具目录与调用分发](../crates/agentdrive-mcp/src/server.rs)、[请求类型](../crates/agentdrive-ports/src/api.rs)、[公共类型](../crates/agentdrive-model/src/entities.rs)和[错误代码](../crates/agentdrive-model/src/error.rs)。
 
-回合保存由 [Agent 集成](integrations.zh-CN.md)通过经过身份验证的生命周期 API 管理。分支包含 `source_branch` 和 `base_revision`，用于查询创建关系。
+回合保存由 [Agent 集成](integrations.zh-CN.md)通过本地生命周期 API 管理。分支包含 `source_branch` 和 `base_revision`，用于查询创建关系。
 
 ## 工作区关系查询
 
@@ -145,7 +144,7 @@ jq '.tools[] | select(.name == "mount_prepare") | .inputSchema' tools.json
 agentdrive call workspace_relationships --json '{"workspace":"<workspace-id>","limit":50}'
 ```
 
-同一查询通过 `WorkspaceApi::relationships` 和需要 bearer 认证的 `GET /api/workspaces/{workspace}/relationships` 提供。HTTP 使用查询参数传递筛选条件。`workspace` 必填，其他字段可选。`owner_location` 表示分支的写入所属 location，`mount_location` 表示提供挂载目录的 daemon location。`mount_state` 支持 `preparing`、`ready`、`paused`、`released`、`recovery_required`。
+同一查询通过 `WorkspaceApi::relationships` 和`GET /api/workspaces/{workspace}/relationships` 提供。HTTP 使用查询参数传递筛选条件。`workspace` 必填，其他字段可选。`owner_location` 表示分支的写入所属 location，`mount_location` 表示提供挂载目录的 daemon location。`mount_state` 支持 `preparing`、`ready`、`paused`、`released`、`recovery_required`。
 
 `search` 对有权查看的分支名称、本机目录、principal、分支 ID、mount ID 和 owner location ID 进行不区分大小写的部分匹配。`mounted: true` 仅返回本机就绪挂载，`mounted: false` 返回没有本机挂载或挂载尚未就绪的记录。`include_released: true` 将已释放的挂载记录加入查询范围。筛选在统计和分页之前执行。
 

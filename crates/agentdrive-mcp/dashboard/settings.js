@@ -44,8 +44,6 @@ export function createSettingsPage({api, element, $}) {
     const fields = [
       ['配置文件', data.config_path], ['监听地址', startup.listen], ['存储目录', startup.data_dir],
       ['挂载目录', startup.mount_roots.join('\n') || '未配置'], ['导入导出目录', (startup.directory_roots || []).join('\n') || '未配置'],
-      ['认证身份', startup.credentials.map(value => value.principal).join('、')],
-      ['设置管理员', (startup.administrators || ['owner']).join('、') || '未配置'],
     ];
     for (const [label, value] of fields) values.append(element('dt', '', label), element('dd', '', value));
     $('settings-version').textContent = `配置版本 ${data.revision.slice(0, 12)}`;
@@ -66,12 +64,11 @@ export function createSettingsPage({api, element, $}) {
       }
       message('settings-error', '');
       $('updated').textContent = `${new Date().toLocaleTimeString('zh-CN', {hour12:false})} 已刷新`;
-      $('connection').textContent = '已连接本地 daemon';
+      $('connection').textContent = '已连接本地服务';
     } catch (error) {
       if (request !== generation) return;
-      message('settings-error', error.status === 403 ? '当前身份没有设置管理权限。管理员由配置文件中的 administrators 指定，默认是 owner。' : error.message);
-      $('updated').textContent = error.status === 403 ? '需要管理员权限' : '刷新失败';
-      if (error.status === 403 || error.status === 401) { current = null; dirty = false; $('settings-form').hidden = true; $('startup-panel').hidden = true; }
+      message('settings-error', error.message);
+      $('updated').textContent = '刷新失败'; $('connection').textContent = '连接需要检查';
     } finally { if (request === generation) { busy = false; state(); } }
   }
   function runtime() {

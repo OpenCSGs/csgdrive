@@ -10,7 +10,7 @@ make -j "$(getconf _NPROCESSORS_ONLN)" build
 python3 tests/cli_smoke.py
 ```
 
-The workflow tests exercise concurrent request retries, atomic append, rename with open handles, restart recovery, idempotent mount saves, concurrent mount reuse, branch isolation across locations, autosave timing, remote failure and lost acknowledgements, ownership transfer, merge file edits, stale mount changes, cache pinning/eviction, and offline prefetch. Persistence tests cover digest failures, reader leases, transaction rollback, request recovery, and unknown format rejection. MCP tests verify concurrent clients, principal isolation, authentication, and Host/Origin policy. The CLI test starts real processes and verifies stdio MCP, import/export content and metadata, allowed paths, and process restart.
+The workflow tests exercise concurrent request retries, atomic append, rename with open handles, restart recovery, idempotent mount saves, concurrent mount reuse, branch isolation across locations, autosave timing, remote failure and lost acknowledgements, ownership transfer, merge file edits, stale mount changes, cache pinning/eviction, and offline prefetch. Persistence tests cover digest failures, reader leases, transaction rollback, request recovery, and unknown format rejection. MCP tests verify concurrent clients, shared local identity, credential-free connections, and Host/Origin policy. The CLI test starts real processes and verifies stdio MCP, import/export content and metadata, allowed paths, and process restart.
 
 Directory conversion tests cover initial `main` contents in a new workspace, import into an existing workspace, required Agent restart acknowledgement, preserved backups, invalid input, and retry after mount failure and daemon restart.
 

@@ -94,14 +94,14 @@ Agent 可以通过 `mount_save` 请求远端保存，并通过操作结果检查
       "command": "/absolute/path/agentdrive/target/debug/agentdrive",
       "args": ["mcp"],
       "env": {
-        "AGENTDRIVE_TOKEN_FILE": "/absolute/path/to/agentdrive/token"
+        "AGENTDRIVE_ENDPOINT": "http://127.0.0.1:7421/mcp"
       }
     }
   }
 }
 ```
 
-保持 AgentDrive 服务运行。Agent 可以查询工具说明，再完成创建工作区、分支、保存、同步与交接。支持 Streamable HTTP 的客户端也可以连接 `http://127.0.0.1:7421/mcp`，使用本机 token 认证；CLI 适合终端操作和脚本，ACP / Codex app-server 可连接工作目录与任务结束保存。[Agent 集成](docs/integrations.zh-CN.md) · [MCP 工具](docs/mcp.zh-CN.md) · [CLI](docs/cli.zh-CN.md)
+保持 AgentDrive 服务运行。Agent 可以查询工具说明，再完成创建工作区、分支、保存、同步与交接。支持 Streamable HTTP 的客户端也可以连接 `http://127.0.0.1:7421/mcp`，无需配置本机访问令牌；CLI 适合终端操作和脚本，ACP / Codex app-server 可连接工作目录与任务结束保存。[Agent 集成](docs/integrations.zh-CN.md) · [MCP 工具](docs/mcp.zh-CN.md) · [CLI](docs/cli.zh-CN.md)
 
 切换分支可以通过一次 `branch_switch` 调用完成。目录被进程占用时，按照返回提示关闭相关进程或重启 Agent，再重试同一个操作。
 

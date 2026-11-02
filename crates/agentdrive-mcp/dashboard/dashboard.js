@@ -1,3 +1,4 @@
+import { createNavigation } from './navigation.js';
 import { createManagementPage } from './management.js';
 import { createArchivePage } from './archive.js';
 import { createBranchFileViewer } from './branch-files.js';
@@ -9,17 +10,10 @@ import { createHistoryList } from './history.js';
 import { workspaceSyncStatus } from './sync-status.js';
 import { createMergesView } from './merges.js';
 const $ = (id) => document.getElementById(id);
-function clearCommandTickets() {
-  for (const key of Object.keys(sessionStorage)) if (key.startsWith('agentdrive-action:')) sessionStorage.removeItem(key);
-}
-const fragment = new URLSearchParams(location.hash.slice(1));
-if (fragment.has('token')) {
-  if (fragment.get('token') !== sessionStorage.getItem('agentdrive-token')) clearCommandTickets();
-  sessionStorage.setItem('agentdrive-token', fragment.get('token'));
-  history.replaceState(null, '', location.pathname + location.search);
-}
-let token = sessionStorage.getItem('agentdrive-token') || '';
+sessionStorage.removeItem('agentdrive-token');
+if (new URLSearchParams(location.hash.slice(1)).has('token')) history.replaceState(null, '', location.pathname + location.search);
 let snapshot = null;
+let currentWorkspace = null;
 let selectedBranch = new URLSearchParams(location.search).get('branch');
 let loading = false;
 let generation = 0;
@@ -35,15 +29,9 @@ function element(tag, className, text) {
 function short(id) { return id ? id.slice(0, 8) : '—'; }
 function date(ns) { return new Date(ns / 1e6); }
 function clock(ns) { return date(ns).toLocaleString('zh-CN', {month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit',hour12:false}); }
-function showLogin() { $('login').hidden = false; $('app').hidden = true; }
 async function api(path, options = {}) {
   const {binary = false, ...fetchOptions} = options;
-  const response = await fetch(path, {...fetchOptions, headers:{...options.headers, Authorization:`Bearer ${token}`}, cache:'no-store'});
-  if (response.status === 401) {
-    clearCommandTickets();
-    sessionStorage.removeItem('agentdrive-token'); token = ''; historyList.clear(); revisionViewer.clear(); branchFileViewer.clear(); archivePage.clear(); relationshipsView.clear(); mountsPage.clear(); branchesPage.clear(); mergesView.clear(); showLogin();
-    throw new Error('访问令牌无效，请重新连接。');
-  }
+  const response = await fetch(path, {...fetchOptions, cache:'no-store'});
   if (!response.ok) {
     const result = await response.json().catch(() => null);
     throw Object.assign(new Error(result?.error?.message || `请求失败：${response.status}`), {status:response.status, code:result?.error?.code});
@@ -117,22 +105,23 @@ async function render(updateTree = true) {
   if (focusId) document.getElementById(focusId)?.focus({preventScroll:true});
 }
 async function refresh(force=false) {
-  if (!token || (loading && !force)) return;
+  if (loading && !force) return;
   clearTimeout(remoteTimer);
   const request = ++generation; loading = true; $('refresh').disabled = true;
   try {
-    const workspaces = await api('/api/workspaces');
+    const [listed] = await Promise.allSettled([api('/api/workspaces'), isSettings() ? settingsPage.load() : null]);
     if (request !== generation) return;
-    const selection = new URLSearchParams(location.search).get('workspace') || $('workspace').value || sessionStorage.getItem('agentdrive-workspace');
-    $('workspace').replaceChildren();
-    for (const workspace of workspaces) { const option = element('option','',workspace.name); option.value = workspace.id; $('workspace').append(option); }
-    if (workspaces.some(workspace => workspace.id === selection)) $('workspace').value = selection;
-    if ($('workspace').value) sessionStorage.setItem('agentdrive-workspace', $('workspace').value);
+    if (listed.status === 'rejected') throw listed.reason;
+    const workspaces = listed.value;
+    const workspace = navigation.update(workspaces);
+    $('error').hidden = true;
+    if (isSettings()) return;
+    if (currentWorkspace !== workspace) { clearWorkspace(); currentWorkspace = workspace; }
     $('empty').hidden = workspaces.length > 0; $('panels').hidden = !workspaces.length || isMerges(); $('merges-panel').hidden = !workspaces.length || !isMerges();
     if (!workspaces.length) { snapshot = null; historyList.clear(); revisionViewer.clear(); branchFileViewer.clear(); relationshipsView.clear(); mountsPage.show(null); branchesPage.show(null); archivePage.show(null); mergesView.clear(); $('workspace-name').textContent='暂无工作区'; ['branch-count','mount-count','mounted-branch-count'].forEach(id => $(id).textContent='0'); $('mount-detail').textContent='暂无挂载点'; $('sync-status').textContent='—'; $('sync-detail').textContent='暂无工作区'; }
     else {
       const archive = isArchive();
-      const data = await api(`/api/workspaces/${encodeURIComponent($('workspace').value)}${archive ? '/archive' : ''}`);
+      const data = await api(`/api/workspaces/${encodeURIComponent(workspace)}${archive ? '/archive' : ''}`);
       if (request !== generation) return;
       if (archive) { $('workspace-name').textContent = data.workspace.name; archivePage.show(data); }
       else {
@@ -151,12 +140,13 @@ async function refresh(force=false) {
     if (remoteRefresh?.refreshing) $('updated').textContent += ' · 正在更新远端信息';
     if (remoteRefresh?.last_success_ns) $('updated').textContent += ` · 远端观察 ${new Date(remoteRefresh.last_success_ns / 1e6).toLocaleTimeString('zh-CN',{hour12:false})}`;
     if (remoteRefresh?.refreshing && !document.hidden) remoteTimer = setTimeout(refreshPage, 1000);
-    $('connection').textContent = '已连接本地 daemon';
+    $('connection').textContent = '已连接本地服务';
   } catch (error) {
     if (request !== generation) return;
-    $('error').textContent = error.message; $('error').hidden = false; $('login-error').textContent = error.message; $('connection').textContent = '连接需要检查';
+    $('error').textContent = error.message; $('error').hidden = false; $('connection').textContent = '连接需要检查';
   } finally { if (request === generation) { loading = false; $('refresh').disabled = false; } }
 }
+const navigation = createNavigation({element, $, navigate:showPage});
 const settingsPage = createSettingsPage({api, element, $});
 const revisionViewer = createRevisionViewer({api, element, onMerge:openMergeRevision});
 const historyList = createHistoryList({api, element, list:$('revision-list'), count:$('history-count'), viewer:revisionViewer});
@@ -199,16 +189,15 @@ function showRevision(revision, triggerId) {
 const workspaceView = createWorkspaceView({element, selectBranch:chooseBranch, showBranchFiles:showBranch, showRevision});
 function isArchive() { return location.pathname === '/archive' || location.pathname === '/'; }
 function isSettings() { return location.pathname === '/settings'; }
-async function refreshPage() {
-  if (!token) return;
-  if (isSettings()) await settingsPage.load();
-  else await refresh();
+async function refreshPage() { await refresh(); }
+function clearWorkspace() {
+  snapshot = null;
+  historyList.clear(); revisionViewer.clear(); branchFileViewer.clear(); archivePage.clear(); relationshipsView.clear(); mountsPage.clear(); branchesPage.clear(); mergesView.clear();
 }
 function showPage() {
   clearTimeout(remoteTimer);
-  generation++; loading = false; $('refresh').disabled = false;
-  historyList.clear();
-  revisionViewer.clear(); branchFileViewer.clear(); archivePage.clear(); relationshipsView.clear(); mountsPage.clear(); branchesPage.clear(); mergesView.clear();
+  generation++; loading = false; snapshot = null; $('refresh').disabled = false; $('error').hidden = true;
+  clearWorkspace();
   selectedBranch = new URLSearchParams(location.search).get('branch');
   const settings = isSettings(), archive = isArchive(), mounts = location.pathname === '/mounts', branches = location.pathname === '/branches';
   $('archive-page').hidden = !archive;
@@ -217,30 +206,12 @@ function showPage() {
   $('settings-page').hidden = !settings;
   $('history-breadcrumb').hidden = settings;
   $('settings-breadcrumb').hidden = !settings;
-  for (const [id, active] of [['archive-nav', archive], ['history-nav', !settings && !archive && !mounts && !branches], ['mounts-nav', mounts], ['branches-nav', branches], ['settings-nav', settings]]) {
-    $(id).classList.toggle('nav-active', active);
-    if (active) $(id).setAttribute('aria-current', 'page');
-    else $(id).removeAttribute('aria-current');
-  }
+  navigation.page();
   $('view-mode').textContent = settings ? '全局配置' : mounts || branches ? '工作区管理' : '只读浏览';
-  $('workspace').closest('.workspace-picker').hidden = settings;
-  document.title = settings ? 'AgentDrive · 设置' : archive ? 'AgentDrive · 档案室' : mounts ? 'AgentDrive · 挂载点管理' : branches ? 'AgentDrive · 分支管理' : 'AgentDrive · 分支与版本';
   showHistoryTab();
   refreshPage();
 }
-for (const id of ['archive-nav', 'history-nav', 'mounts-nav', 'branches-nav', 'settings-nav']) $(id).addEventListener('click', event => {
-  if (event.button || event.ctrlKey || event.metaKey || event.shiftKey || event.altKey) return;
-  event.preventDefault(); const url = new URL($(id).href); const current = new URLSearchParams(location.search);
-  for (const key of ['workspace','branch']) if (current.has(key)) url.searchParams.set(key,current.get(key));
-  history.pushState(null, '', url.pathname+url.search); showPage();
-});
 window.addEventListener('popstate', showPage);
-$('login-form').addEventListener('submit', event => { event.preventDefault(); clearCommandTickets(); token=$('token').value.trim(); sessionStorage.setItem('agentdrive-token',token); $('token').value=''; settingsPage.clear(); $('login').hidden=true; $('app').hidden=false; showPage(); });
-$('logout').addEventListener('click', () => { generation++; clearCommandTickets(); token=''; loading=false; sessionStorage.removeItem('agentdrive-token'); snapshot=null; settingsPage.clear(); historyList.clear(); revisionViewer.clear(); branchFileViewer.clear(); archivePage.clear(); relationshipsView.clear(); mountsPage.clear(); branchesPage.clear(); mergesView.clear(); showLogin(); });
-$('workspace').addEventListener('change', () => {
-  const url = new URL(location.href); url.searchParams.set('workspace',$('workspace').value); url.searchParams.delete('branch'); url.searchParams.delete('path'); history.replaceState(null,'',url.pathname+url.search);
-  selectedBranch=null; snapshot=null; historyList.clear(); revisionViewer.clear(); branchFileViewer.clear(); archivePage.clear(); relationshipsView.clear(); mountsPage.clear(); branchesPage.clear(); mergesView.clear(true); refresh(true);
-});
 $('versions-tab').onclick = () => chooseHistoryTab(false);
 $('merges-tab').onclick = () => chooseHistoryTab(true);
 for (const id of ['versions-tab','merges-tab']) $(id).addEventListener('keydown',event => {
@@ -251,5 +222,4 @@ for (const id of ['versions-tab','merges-tab']) $(id).addEventListener('keydown'
 $('refresh').addEventListener('click', async () => { await refreshPage(); if (isArchive()) archivePage.refresh(); });
 if (location.pathname === '/') history.replaceState(null,'','/archive'+location.search);
 showPage();
-if (token) { $('login').hidden=true; $('app').hidden=false; } else showLogin();
 setInterval(() => { if (!document.hidden) refreshPage(); },15000);

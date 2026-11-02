@@ -29,7 +29,6 @@ dependencies = [
  "sha2",
  "tempfile",
  "url",
- "uuid",
 ]
 
 [[package]]
@@ -90,7 +89,6 @@ dependencies = [
  "schemars",
  "serde",
  "serde_json",
- "sha2",
  "tempfile",
  "tokio",
  "tokio-util",

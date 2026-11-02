@@ -72,7 +72,6 @@ async function open(t, data = fixture(), target = '/dashboard') {
   const errors = [], requests = [], commands = [], configurations = [];
   page.on('pageerror', error => errors.push(error.message));
   t.after(async () => { await page.close(); assert.deepEqual(errors, []); });
-  await page.addInitScript(() => sessionStorage.setItem('agentdrive-token', 'test-token'));
   await page.route('**/api/**', async route => {
     const url = new URL(route.request().url());
     requests.push(url);
@@ -144,10 +143,9 @@ test('settings persist global collaboration and remote credentials and load exte
   const errors = [], updates = [];
   page.on('pageerror', error => errors.push(error.message));
   t.after(async () => { await page.close(); assert.deepEqual(errors, []); });
-  await page.addInitScript(() => sessionStorage.setItem('agentdrive-token', 'test-token'));
   let settings = {revision:'initial-settings', config_path:'/private/agentdrive.json', reload_error:null,
     runtime:{remote:null, cache:{max_bytes:2147483648}, allowed_origins:[]},
-    startup:{listen:'127.0.0.1:7421',data_dir:'/private/data',mount_roots:[],directory_roots:[],credentials:[],administrators:['owner']}};
+    startup:{listen:'127.0.0.1:7421',data_dir:'/private/data',mount_roots:[],directory_roots:[]}};
   await page.route('**/api/**', async route => {
     const url = new URL(route.request().url());
     if (url.pathname === '/api/workspaces') return route.fulfill({json:[]});
@@ -467,8 +465,8 @@ test('archive clears stale content when switching projects and shows empty and f
   await page.route('**/api/workspaces',route => route.fulfill({json:[{id:'workspace',name:'Review workspace'},{id:'second',name:'Second project'}]}));
   await page.route('**/api/workspaces/second/archive',route => route.fulfill({json:{workspace:{id:'second',name:'Second project'},branches:[],mounts:[],remote_branches:[],capabilities:{remote_configured:false}}}));
   await page.locator('#refresh').click();
-  await page.waitForFunction(()=>document.querySelector('#workspace').options.length === 2 && !document.querySelector('#refresh').disabled);
-  await page.locator('#workspace').selectOption('second');
+  await page.waitForFunction(()=>document.querySelector('#workspace-list').children.length === 2 && !document.querySelector('#refresh').disabled);
+  await page.locator('[data-workspace=second]').click();
   await page.getByText('还没有可以浏览的项目',{exact:true}).waitFor();
   assert.equal(await page.locator('#archive-page .branch-file-content').count(),0);
   await page.route('**/api/workspaces/second/archive',route => route.fulfill({status:503,json:{error:{message:'Storage unavailable'}}}));
@@ -848,8 +846,8 @@ test('unknown command outcomes survive reload and retry the original request', a
   await page.getByText('操作已完成',{exact:true}).waitFor();
   assert.deepEqual(commands[0],commands[1]);
   assert.equal(await page.evaluate(() => Object.keys(sessionStorage).filter(key => key.startsWith('agentdrive-action:')).length),1);
-  await page.locator('#logout').click();
-  assert.equal(await page.evaluate(() => Object.keys(sessionStorage).filter(key => key.startsWith('agentdrive-action:')).length),0);
+  await page.locator('#archive-nav').click();
+  assert.equal(await page.evaluate(() => Object.keys(sessionStorage).filter(key => key.startsWith('agentdrive-action:')).length),1);
 });
 
 test('busy branch switches report pending state and retain their request identity', async t => {

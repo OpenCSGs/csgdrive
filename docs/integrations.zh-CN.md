@@ -2,7 +2,7 @@
 
 [English](integrations.md) | [简体中文](integrations.zh-CN.md)
 
-启动 `agentdrived` 并配置 `AGENTDRIVE_TOKEN_FILE`。原生目录需要 FUSE、FUSE-T/macFUSE 或 WinFsp。挂载路径必须位于 daemon 配置的 `mount_roots` 中。Agent 的执行环境需要能够访问该目录。
+启动 `agentdrived`。原生目录需要 FUSE、FUSE-T/macFUSE 或 WinFsp。挂载路径必须位于 daemon 配置的 `mount_roots` 中。Agent 的执行环境需要能够访问该目录。
 
 ## MCP 与挂载目录
 
@@ -78,7 +78,7 @@ agentdrive integrate --protocol codex-app-server --workspace "$WORKSPACE" \
 
 分支切换和恢复可能更新 binding ID 或 generation，迟到的保存请求返回 `STALE_BINDING`。集成程序在下一次任务开始时重新查询当前 binding。daemon 重启后重新连接会恢复已保存内容并检查原生挂载，尚未达到保存时刻的修改可能丢失。
 
-自定义应用可以调用经过 Bearer 身份验证的 `POST /api/lifecycle`：
+自定义应用可以调用`POST /api/lifecycle`：
 
 | event | 参数 | 行为 |
 | --- | --- | --- |
@@ -114,7 +114,7 @@ agentdrive integrate --protocol codex-app-server \
 
 ACP 支持相同的 `--branch` 参数。集成程序读取 daemon 的协作配置并转发工作事件。可选的 `--automatic` 要求自动模式可用，无法绕过已经关闭的全局开关。此命令代理它启动的进程；其他桌面会话需要单独连接。普通文件修改自动申请权限。
 
-自定义集成通过现有 Bearer token 调用以下 HTTP 接口：
+自定义集成调用以下本地 HTTP 接口：
 
 | 接口 | 参数或结果 |
 | --- | --- |
@@ -145,13 +145,13 @@ ACP 支持相同的 `--branch` 参数。集成程序读取 daemon 的协作配�
 
 旧数据库保留已有分支和选择。没有选择且只有一个可写本机分支时自动复用；存在多个可写本机分支时，使用 `branch_switch` 明确选择。
 
-运行 `agentdrive dashboard --open` 打开 daemon 页面。浏览器从 URL fragment 读取令牌，随后移除 fragment，将令牌保存在 session storage 中。也可以直接打开地址并输入 daemon token。页面每 15 秒刷新，展示分支创建关系、版本历史和 commit 信息。点击分支只改变页面展示的历史。
+运行 `agentdrive dashboard --open` 或直接打开 daemon 地址。左侧面板展示全部工作区，支持搜索与收起。选择工作区后打开档案室，旁边的菜单提供档案室、分支与版本、挂载点管理和分支管理。根地址默认打开第一个工作区的档案室，指定工作区与文件的直接链接继续有效。全局设置位于左下角。页面每 15 秒刷新。
 
 **合并记录** 页签展示通过 MCP 执行的合并，包括准备、修改候选内容、应用、失败和挂载恢复。支持按照分支、来源、目标、location、状态和时间筛选，并继续加载后续记录。每条记录保留准备时的来源版本和目标版本；详情提供动作时间线，以及候选内容或应用结果与原目标、来源、共同基础、上一个候选版本的文件比较。版本历史中的合并版本可以跳转到对应记录。
 
 本地保存、远端确认和挂载就绪分别显示。其他 location 同步后可以查看已发布的记录和候选内容，挂载提示描述记录中的操作状态。旧记录会注明历史信息不完整；文件冲突已经解决不代表文章内容或业务决定已经复核。页面使用只读接口 `GET /api/workspaces/{workspace}/merges`、`GET /api/workspaces/{workspace}/merges/{record}` 和 `GET /api/workspaces/{workspace}/merges/{record}/events`，记录和动作独立分页，并遵守现有分支读取权限。
 
-只读 JSON 接口为 `GET /api/workspaces` 和 `GET /api/workspaces/{workspace}`。后者返回 `status`、`revisions`、`summary` 和 `origins`。`summary` 包含 `branch_count`、`mount_count`、`ready_mount_count`、`mounted_branch_count`；`status.mounts` 仅保留未释放记录，并按路径排序。`origins` 为每个 branch 提供来源 branch、准确的来源 revision、版本是否可读和工作区根分支标识。`selected_branch` 是当前 location 对此工作区的默认选择。管理员通过 `/settings` 编辑运行配置，详见[配置说明](configuration.zh-CN.md)。
+只读 JSON 接口为 `GET /api/workspaces` 和 `GET /api/workspaces/{workspace}`。后者返回 `status`、`revisions`、`summary` 和 `origins`。`summary` 包含 `branch_count`、`mount_count`、`ready_mount_count`、`mounted_branch_count`；`status.mounts` 仅保留未释放记录，并按路径排序。`origins` 为每个 branch 提供来源 branch、准确的来源 revision、版本是否可读和工作区根分支标识。`selected_branch` 是当前 location 对此工作区的默认选择。通过 `/settings` 编辑全局运行配置，详见[配置说明](configuration.zh-CN.md)。
 
 协议参考：[ACP 会话](https://agentclientprotocol.com/protocol/v1/session-setup)、[ACP 回合](https://agentclientprotocol.com/protocol/v1/prompt-turn)、[Codex app-server](https://developers.openai.com/codex/app-server/)。
 
@@ -163,7 +163,7 @@ ACP 支持相同的 `--branch` 参数。集成程序读取 daemon 的协作配�
 
 **分支管理**（`/branches`）支持选择来源分支、来源内容和名称创建分支。本机分支可通过 `source_branch` 捕获当前工作内容，包括尚未提交的修改；指定已保存版本时使用 `source`，其他 location 的分支也使用此方式。两个来源参数互斥。列表展示全部已知分支及其来源，本机可写分支提供切换和挂载入口。切换使用会更新本机默认分支，并切换原默认分支正在使用的挂载目录。
 
-页面通过 `POST /api/commands/{command}` 调用现有 MCP 服务。允许的操作为 `branch_create`、`branch_switch`、`mount_prepare`、`mount_save`、`mount_unmount`、`mount_release`、`operation_get` 和 `operation_by_request`，参数结构与对应 MCP 工具一致。请求需要 Bearer 认证，权限和 binding generation 校验由原有服务执行。操作进度分别显示 `local_saved`、`remote_confirmed` 和 `mount_ready`。页面为每次操作保存稳定的 `request_id`，刷新或请求中断后可查询结果、重试原请求。目录被占用时显示释放占用提示与继续操作按钮；退出登录会清除浏览器保存的操作记录。
+页面通过 `POST /api/commands/{command}` 调用现有 MCP 服务。允许的操作为 `branch_create`、`branch_switch`、`mount_prepare`、`mount_save`、`mount_unmount`、`mount_release`、`operation_get` 和 `operation_by_request`，参数结构与对应 MCP 工具一致。请求使用本地 daemon 身份，原有服务执行 binding generation 校验。操作进度分别显示 `local_saved`、`remote_confirmed` 和 `mount_ready`。页面为每次操作保存稳定的 `request_id`，刷新或请求中断后可查询结果、重试原请求。目录被占用时显示释放占用提示与继续操作按钮。
 
 分支提示分为“有未保存修改”（`mutation_seq != saved_seq`）、“已自动保存 · 有未提交修改”（序号相同且 `dirty` 为真）和“已提交”（序号相同且 `dirty` 为假）。已保存表示内容已有本地持久化检查点；检查点已保存、自动保存版本尚未生成时，悬浮说明会解释此状态。远程确认通过同步卡片展示，停止写入的状态单独显示。
 
@@ -171,11 +171,11 @@ ACP 支持相同的 `--branch` 参数。集成程序读取 daemon 的协作配�
 
 双击版本条目，或聚焦条目后按 Enter／空格，打开 **版本详情** 弹框。上方展示版本信息，下方展示分页修改文件列表，默认选中第一项并在右侧展示详情与文本差异。分支图中的来源版本使用相同弹框。加载更多时保留当前选择。自动刷新会更新弹框中的当前正式提交 标记，并保留已选文件和已读取的差异。可以通过关闭按钮、Escape 或点击弹框外部关闭。自动与父版本比较；合并版本使用第一父版本，初始版本与空目录比较。“上一版本”按父子关系确定。内容完全相同且来源、目标唯一的移动显示为重命名；存在多个匹配或同时修改内容的移动显示为新增、删除。新增、删除的空文件明确显示为空文件（0 字节）；重命名或属性修改中的相同内容单独说明。二进制和超出预览上限的文件显示元数据。浏览版本保持现有挂载和工作分支。
 
-版本查询接口为 `GET /api/workspaces/{workspace}/revisions/{revision}/changes` 和 `GET /api/workspaces/{workspace}/revisions/{revision}/diff`，均要求 bearer 认证与工作区读取权限。`changes` 接受 `before`、`cursor`、`limit`；`diff` 接受 `before`、`path`、`previous_path`。省略 `before` 表示与空目录比较。参数及返回字段见 [MCP 文档](mcp.zh-CN.md)。
+版本查询接口为 `GET /api/workspaces/{workspace}/revisions/{revision}/changes` 和 `GET /api/workspaces/{workspace}/revisions/{revision}/diff`，均通过本地 daemon 身份检查工作区读取权限。`changes` 接受 `before`、`cursor`、`limit`；`diff` 接受 `before`、`path`、`previous_path`。省略 `before` 表示与空目录比较。参数及返回字段见 [MCP 文档](mcp.zh-CN.md)。
 
 双击分支，或聚焦分支后按 Enter／空格，打开 **分支文件** 弹框。左侧按目录浏览全部文件（包含隐藏文件），右侧默认预览首个普通文件。预览读取当前工作内容，包括尚未保存或提交的修改；未挂载的本机分支同样可以浏览。文本按 64 KiB 分段显示，通过“上一段／下一段”继续读取；二进制和非 UTF-8 内容显示十六进制。目录每页最多 200 项，通过“加载更多文件”继续浏览。进入子目录后可以返回上级或根目录。
 
-预览期间分支发生变化时，页面提示“刷新文件”，随后读取最新内容。读取功能不会切换挂载、生成版本或触发检查点。目录接口 `GET /api/workspaces/{workspace}/branches/{branch}/files` 接受 `path`、可选 `after` 和 `version`，返回 `entries`、`next`、`version`。后续目录页和文件读取使用同一个 `version`；分支变化返回 HTTP 409。文件接口 `GET /api/workspaces/{workspace}/branches/{branch}/file` 接受 `path`、`version`、`offset` 和 `size`，返回原始字节，每次读取范围为 1–262144 字节。两个接口均验证 Bearer 身份、工作区归属和分支读取权限，并禁止缓存响应。
+预览期间分支发生变化时，页面提示“刷新文件”，随后读取最新内容。读取功能不会切换挂载、生成版本或触发检查点。目录接口 `GET /api/workspaces/{workspace}/branches/{branch}/files` 接受 `path`、可选 `after` 和 `version`，返回 `entries`、`next`、`version`。后续目录页和文件读取使用同一个 `version`；分支变化返回 HTTP 409。文件接口 `GET /api/workspaces/{workspace}/branches/{branch}/file` 接受 `path`、`version`、`offset` 和 `size`，返回原始字节，每次读取范围为 1–262144 字节。两个接口均验证工作区归属和分支读取权限，并禁止缓存响应。
 
 ## 档案室
 

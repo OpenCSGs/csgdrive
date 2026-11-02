@@ -30,26 +30,29 @@ pub struct StartupConfig {
     pub mount_roots: Vec<PathBuf>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub directory_roots: Vec<PathBuf>,
-    pub credentials: Vec<TokenFile>,
     #[serde(
-        default = "administrators",
-        skip_serializing_if = "is_default_administrators"
+        default = "local_principal",
+        skip_serializing_if = "is_default_principal"
     )]
-    pub administrators: Vec<Principal>,
+    pub principal: Principal,
 }
 fn is_default_cache(cache: &CacheConfig) -> bool {
     cache == &CacheConfig::default()
-}
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct TokenFile {
-    pub principal: Principal,
-    pub token_file: PathBuf,
 }
 impl Config {
     pub(crate) fn decode(bytes: &[u8]) -> Result<Self> {
         let mut value: serde_json::Value =
             serde_json::from_slice(bytes).map_err(|error| Error::invalid(error.to_string()))?;
+        // 保留已有工作区使用的身份，旧令牌文件不再参与启动。
+        if let Some(object) = value.as_object_mut() {
+            if let Some(credentials) = object.remove("credentials")
+                && !object.contains_key("principal")
+                && let Some(principal) = credentials.get(0).and_then(|entry| entry.get("principal"))
+            {
+                object.insert("principal".into(), principal.clone());
+            }
+            object.remove("administrators");
+        }
         // 已保存的配置继续使用容量设置，清理阈值由程序管理。
         if let Some(cache) = value
             .get_mut("cache")
@@ -89,12 +92,6 @@ impl Config {
         for path in std::iter::once(&self.startup.data_dir)
             .chain(self.startup.mount_roots.iter())
             .chain(self.startup.directory_roots.iter())
-            .chain(
-                self.startup
-                    .credentials
-                    .iter()
-                    .map(|entry| &entry.token_file),
-            )
         {
             if !path.is_absolute() {
                 return Err(Error::invalid(
@@ -102,41 +99,7 @@ impl Config {
                 ));
             }
         }
-        if self.startup.credentials.is_empty() {
-            return Err(Error::invalid("at least one credential is required"));
-        }
         self.runtime().validate()
-    }
-}
-impl StartupConfig {
-    pub fn credentials(&self) -> Result<Vec<Credential>> {
-        self.credentials
-            .iter()
-            .map(|entry| {
-                let metadata = fs::symlink_metadata(&entry.token_file)?;
-                if !metadata.is_file() {
-                    return Err(Error::invalid("token must be a regular file"));
-                }
-                #[cfg(unix)]
-                {
-                    use std::os::unix::fs::PermissionsExt;
-                    if metadata.permissions().mode() & 0o077 != 0 {
-                        return Err(Error::new(
-                            ErrorCode::PermissionDenied,
-                            "token file must be accessible only to its owner",
-                        ));
-                    }
-                }
-                if metadata.len() > 4096 {
-                    return Err(Error::invalid("token file is too large"));
-                }
-                let token = fs::read_to_string(&entry.token_file)?.trim().to_owned();
-                Ok(Credential {
-                    principal: entry.principal.clone(),
-                    token,
-                })
-            })
-            .collect()
     }
 }
 fn create_file(path: &Path, bytes: &[u8]) -> Result<()> {
@@ -161,23 +124,16 @@ pub fn initialize(directory: &Path, listen: SocketAddr) -> Result<PathBuf> {
         fs::set_permissions(&directory, fs::Permissions::from_mode(0o700))?;
     }
     let config_path = directory.join("agentdrive.json");
-    if config_path.exists() || directory.join("token").exists() {
+    if config_path.exists() {
         return Err(Error::new(
             ErrorCode::AlreadyExists,
-            "configuration or token already exists",
+            "configuration already exists",
         ));
     }
     let mounts = directory.join("mounts");
     fs::create_dir_all(&mounts)?;
     let exchange = directory.join("exchange");
     fs::create_dir_all(&exchange)?;
-    let token_file = directory.join("token");
-    let token = format!(
-        "{}{}",
-        uuid::Uuid::new_v4().simple(),
-        uuid::Uuid::new_v4().simple()
-    );
-    create_file(&token_file, token.as_bytes())?;
     let config = Config {
         remote: None,
         startup: StartupConfig {
@@ -185,11 +141,7 @@ pub fn initialize(directory: &Path, listen: SocketAddr) -> Result<PathBuf> {
             listen,
             mount_roots: vec![mounts],
             directory_roots: vec![exchange],
-            credentials: vec![TokenFile {
-                principal: "owner".to_owned().try_into()?,
-                token_file,
-            }],
-            administrators: administrators(),
+            principal: local_principal(),
         },
         allowed_origins: vec![],
         cache: CacheConfig::default(),
@@ -199,26 +151,12 @@ pub fn initialize(directory: &Path, listen: SocketAddr) -> Result<PathBuf> {
     Ok(config_path)
 }
 
-fn administrators() -> Vec<Principal> {
-    vec![
-        "owner"
-            .to_owned()
-            .try_into()
-            .expect("valid built-in principal"),
-    ]
+fn local_principal() -> Principal {
+    "owner"
+        .to_owned()
+        .try_into()
+        .expect("valid local principal")
 }
-fn is_default_administrators(value: &[Principal]) -> bool {
-    value == administrators()
-}
-
-pub struct Credential {
-    pub principal: Principal,
-    pub token: String,
-}
-impl std::fmt::Debug for Credential {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("Credential")
-            .field("principal", &self.principal)
-            .finish_non_exhaustive()
-    }
+fn is_default_principal(value: &Principal) -> bool {
+    value == &local_principal()
 }

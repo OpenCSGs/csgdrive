@@ -13,7 +13,7 @@ agentdrived init --directory "$AGENTDRIVE_DIRECTORY"
 agentdrived serve --config "$AGENTDRIVE_DIRECTORY/agentdrive.json"
 ```
 
-Run `init` once for a new directory. It prints the generated configuration path and rejects an existing configuration or token. `serve` runs in the foreground; Ctrl+C requests shutdown. S3 credentials can be saved through Dashboard Settings. When using environment credentials, set them in this terminal before `serve`; see [remote configuration](configuration.md).
+Run `init` once for a new directory. It prints the generated configuration path and rejects an existing configuration. `serve` runs in the foreground; Ctrl+C requests shutdown. S3 credentials can be saved through Dashboard Settings. When using environment credentials, set them in this terminal before `serve`; see [remote configuration](configuration.md).
 
 | Command | Arguments |
 | --- | --- |
@@ -31,21 +31,19 @@ Both binaries provide `--help` and `--version`; subcommands provide `--help`.
 Place connection options **before the subcommand**:
 
 ```sh
-agentdrive --endpoint http://127.0.0.1:7421/mcp --token-file "$AGENTDRIVE_DIRECTORY/token" tools
+agentdrive --endpoint http://127.0.0.1:7421/mcp tools
 ```
 
 | Option / environment | Behavior |
 | --- | --- |
 | `--endpoint` / `AGENTDRIVE_ENDPOINT` | Full MCP URL, including `/mcp`; default `http://127.0.0.1:7421/mcp`. The option overrides the environment. |
-| `--token-file` / `AGENTDRIVE_TOKEN_FILE` | Reads a token file and trims surrounding whitespace. The option overrides the environment. |
-| `AGENTDRIVE_TOKEN` | Token fallback when no token file is selected. A selected but unreadable token file causes an error. |
 | `RUST_LOG` | Log filter; the client defaults to `warn`. Logs use stderr. |
 
-The daemon must already be running. Host paths in tool arguments, such as import sources and mount paths, refer to the daemon machine. `--token-file` and standard input refer to the client machine.
+The daemon must already be running. Host paths in tool arguments, such as import sources and mount paths, refer to the daemon machine. Standard input refers to the client machine.
 
 `tools` prints the MCP catalog object with a `tools` array. `call` prints the tool's `structuredContent` as JSON. Errors have `error.code`, `error.message`, and `error.retryable`; an operation receipt can contain both a saved result and an error. For operations, inspect `phase`, `local_saved`, `remote_confirmed`, and `mount_ready` independently.
 
-The client exits with 0 when the tool response has no error, 2 for a tool error, and 1 for transport, authentication, token-reading, or JSON input errors. Command-line parsing errors also use exit code 2. Exit code 0 can accompany `waiting_for_quiesce`; inspect the receipt before continuing dependent work.
+The client exits with 0 when the tool response has no error, 2 for a tool error, and 1 for transport, or JSON input errors. Command-line parsing errors also use exit code 2. Exit code 0 can accompany `waiting_for_quiesce`; inspect the receipt before continuing dependent work.
 
 `--json -` reads standard input, with an 8 MiB input limit. The HTTP request body also has an 8 MiB limit, including its MCP envelope. `--request-id` wraps the supplied JSON as `{ "request_id": "...", "request": { ... } }`. Use it for the command tools listed in the [MCP reference](mcp.md). Queries and `operation_cancel` receive direct arguments. Keep the same request ID and arguments for retries; a new intended operation needs a new request ID.
 
@@ -54,7 +52,6 @@ The client exits with 0 when the tool response has no error, 2 for a tool error,
 In another terminal, set the same `PATH` and `AGENTDRIVE_DIRECTORY` as above. Use a fresh `RUN_ID` and source/export paths for a separate demonstration. This example works with the default macOS build and does not require a native mount.
 
 ```sh
-export AGENTDRIVE_TOKEN_FILE="$AGENTDRIVE_DIRECTORY/token"
 RUN_ID=readme-demo-1
 agentdrive tools > "$AGENTDRIVE_DIRECTORY/tools.json"
 agentdrive call workspace_create --request-id "$RUN_ID-create" --json '{"name":"demo"}' > "$AGENTDRIVE_DIRECTORY/demo-create.json"
@@ -95,7 +92,7 @@ agentdrive dashboard --open
 
 `mount` takes a workspace ID and directory; repeated calls reuse the mount. The same location uses its selected branch. A new location creates its branch from the root branch's latest published revision. With S3 configured, a remote workspace ID can be mounted directly. A branch permits one writable mount; unmount it before moving directories. Agent disconnection preserves the directory. See [agent integrations](integrations.md) for MCP setup and task saving.
 
-`dashboard` prints the browser URL without reading credentials or connecting to the daemon. `dashboard --open` requires credentials and opens the URL with the selected token in a URL fragment; the page removes the fragment immediately and keeps the token in session storage. Data requests use bearer authentication. The dashboard provides branch trees and revision details, with refresh every 15 seconds. Administrators can open **Settings** at `/settings` to edit runtime configuration and inspect startup settings; see [configuration](configuration.md).
+`dashboard` prints the browser URL and `dashboard --open` opens it directly. No token is needed for Dashboard, CLI or MCP. Existing `--token-file` arguments are accepted and ignored. The workspace panel lists all workspaces, with a separate menu for the selected workspace. Global settings are at the bottom left; see [configuration](configuration.md).
 
 The cards show active branches, local mount bindings, distinct branches used by ready mounts, and remote synchronization for the selected workspace. Released bindings are excluded; preparing, paused and recovery-required bindings remain visible with their state. The branch graph connects each branch to its exact creation revision using `source_branch` and `base_revision`; source revisions can be commits, autosaves or checkpoints. Click a source revision to inspect it. **Default** marks the local selection for requests that omit a branch; mounted badges count ready directories. The **Branch and mount relationships** panel queries the relationships API. It shows branch ownership, local mount paths and principals, access modes, mount states and creation origins. Filter by branch, mount state, mount ID, owner location or mount location. Expand record details for the observed storage version/time and creation details for the captured content root. Remote mounts, selections and machine availability remain unknown. Pages contain at most 50 rows; **Load more** continues the current view. Automatic or manual refresh starts from the first page and retains the filters.
 
@@ -116,7 +113,6 @@ agentdrive call workspace_create --request-id create-from-file --json - < create
 In PowerShell:
 
 ```powershell
-$env:AGENTDRIVE_TOKEN_FILE = 'C:\Users\alice\agentdrive\token'
 Get-Content -Raw .\create-request.json | .\target\debug\agentdrive.exe call workspace_create --request-id create-from-file --json -
 ```
 

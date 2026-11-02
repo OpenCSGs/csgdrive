@@ -1,4 +1,4 @@
-use agentdrive_config::{ConfigStore, Credential, initialize};
+use agentdrive_config::{ConfigStore, initialize};
 use agentdrive_engine::{Adapters, Engine, EngineConfig};
 use agentdrive_local::LocalBackend;
 use agentdrive_mcp::{GatewayConfig, router};
@@ -8,10 +8,6 @@ use agentdrive_test_support::*;
 use serde_json::{Value, json};
 use std::sync::{Arc, atomic::Ordering};
 use tokio_util::sync::CancellationToken;
-
-const OWNER: &str = "collaboration-owner-token-with-at-least-32-bytes";
-const VISITOR: &str = "collaboration-visitor-token-with-at-least-32-bytes";
-const WORKER: &str = "collaboration-worker-token-with-at-least-32-bytes";
 
 struct Server {
     directory: tempfile::TempDir,
@@ -102,20 +98,6 @@ impl Server {
         let address = listener.local_addr().unwrap();
         let app = router(
             engine.services.clone(),
-            vec![
-                Credential {
-                    principal: actor,
-                    token: OWNER.into(),
-                },
-                Credential {
-                    principal: "visitor".to_owned().try_into().unwrap(),
-                    token: VISITOR.into(),
-                },
-                Credential {
-                    principal: "worker".to_owned().try_into().unwrap(),
-                    token: WORKER.into(),
-                },
-            ],
             GatewayConfig {
                 allowed_hosts: vec![address.to_string()],
                 settings,
@@ -146,7 +128,6 @@ impl Server {
         let response = self
             .http
             .post(format!("{}/api/lifecycle", self.base))
-            .bearer_auth(OWNER)
             .json(&json!({
                 "event":"attach","request_id":format!("attach-{automatic}"),"workspace":self.workspace,
                 "branch":self.branch,"automatic":automatic,
@@ -165,7 +146,6 @@ impl Server {
         let mut settings: Value = self
             .http
             .get(format!("{}/api/settings", self.base))
-            .bearer_auth(OWNER)
             .send()
             .await
             .unwrap()
@@ -176,7 +156,6 @@ impl Server {
         let response = self
             .http
             .put(format!("{}/api/settings", self.base))
-            .bearer_auth(OWNER)
             .json(&json!({"revision":settings["revision"],"runtime":settings["runtime"]}))
             .send()
             .await
@@ -189,29 +168,17 @@ impl Server {
 }
 
 #[tokio::test]
-async fn collaboration_routes_enforce_authentication_and_binding_generation() {
+async fn collaboration_routes_enforce_binding_generation() {
     let server = Server::new().await;
     let mount = server.attach_with_automatic(false).await;
     let path = format!(
         "{}/api/workspaces/{}/collaboration",
         server.base, server.workspace
     );
-    assert_eq!(server.http.get(&path).send().await.unwrap().status(), 401);
-    assert_eq!(
-        server
-            .http
-            .get(&path)
-            .bearer_auth(VISITOR)
-            .send()
-            .await
-            .unwrap()
-            .status(),
-        403
-    );
+
     let status: Value = server
         .http
         .get(&path)
-        .bearer_auth(OWNER)
         .send()
         .await
         .unwrap()
@@ -230,21 +197,11 @@ async fn collaboration_routes_enforce_authentication_and_binding_generation() {
     let stale = server
         .http
         .put(format!("{}/api/collaboration", server.base))
-        .bearer_auth(OWNER)
         .json(&input)
         .send()
         .await
         .unwrap();
     assert_eq!(stale.status(), 409);
-    let denied = server
-        .http
-        .put(format!("{}/api/collaboration", server.base))
-        .bearer_auth(VISITOR)
-        .json(&input)
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(denied.status(), 403);
 }
 
 #[tokio::test]
@@ -254,26 +211,12 @@ async fn codex_events_require_registration_and_replay_terminal_outcomes() {
     let url = format!("{}/api/collaboration/codex", server.base);
     let mut event = json!({"mount":mount["id"],"source":"codex-test","method":"turn/completed",
         "params":{"threadId":"thread-123","turn":{"id":"turn-456","status":"completed"}}});
-    let unknown = server
-        .http
-        .post(&url)
-        .bearer_auth(OWNER)
-        .json(&event)
-        .send()
-        .await
-        .unwrap();
+    let unknown = server.http.post(&url).json(&event).send().await.unwrap();
     assert!(unknown.status().is_client_error());
     event["method"] = json!("turn/started");
     event["params"]["turn"]["status"] = json!("inProgress");
     for _ in 0..2 {
-        let response = server
-            .http
-            .post(&url)
-            .bearer_auth(OWNER)
-            .json(&event)
-            .send()
-            .await
-            .unwrap();
+        let response = server.http.post(&url).json(&event).send().await.unwrap();
         let status = response.status();
         let body: Value = response.json().await.unwrap();
         assert!(status.is_success(), "{body}");
@@ -282,14 +225,7 @@ async fn codex_events_require_registration_and_replay_terminal_outcomes() {
     event["method"] = json!("turn/completed");
     event["params"]["turn"]["status"] = json!("interrupted");
     for _ in 0..2 {
-        let response = server
-            .http
-            .post(&url)
-            .bearer_auth(OWNER)
-            .json(&event)
-            .send()
-            .await
-            .unwrap();
+        let response = server.http.post(&url).json(&event).send().await.unwrap();
         let status = response.status();
         let body: Value = response.json().await.unwrap();
         assert!(status.is_success(), "{body}");
@@ -300,74 +236,12 @@ async fn codex_events_require_registration_and_replay_terminal_outcomes() {
         server
             .http
             .post(&url)
-            .bearer_auth(OWNER)
             .json(&event)
             .send()
             .await
             .unwrap()
             .status(),
         400
-    );
-}
-
-#[tokio::test]
-async fn another_writer_cannot_complete_an_execution_registered_by_the_owner() {
-    let server = Server::new().await;
-    let mount = server.attach().await;
-    let url = format!("{}/api/collaboration/events", server.base);
-    let mut event = json!({"mount":mount["id"],"source":"worker-test",
-        "thread_id":"shared-thread","turn_id":"shared-turn","phase":"started"});
-    let started = server
-        .http
-        .post(&url)
-        .bearer_auth(OWNER)
-        .json(&event)
-        .send()
-        .await
-        .unwrap();
-    assert!(started.status().is_success());
-    event["phase"] = json!("completed");
-    let denied = server
-        .http
-        .post(&url)
-        .bearer_auth(WORKER)
-        .json(&event)
-        .send()
-        .await
-        .unwrap();
-    assert!(denied.status().is_client_error());
-    let status: Value = server
-        .http
-        .get(format!(
-            "{}/api/workspaces/{}/collaboration",
-            server.base, server.workspace
-        ))
-        .bearer_auth(OWNER)
-        .send()
-        .await
-        .unwrap()
-        .json()
-        .await
-        .unwrap();
-    let branch = status
-        .as_array()
-        .unwrap()
-        .iter()
-        .find(|entry| entry["branch"] == json!(server.branch))
-        .unwrap();
-    assert_eq!(branch["active_executions"], 1);
-    let completed = server
-        .http
-        .post(&url)
-        .bearer_auth(OWNER)
-        .json(&event)
-        .send()
-        .await
-        .unwrap();
-    assert!(completed.status().is_success());
-    assert_eq!(
-        completed.json::<Value>().await.unwrap()["active_executions"],
-        0
     );
 }
 
@@ -379,7 +253,7 @@ async fn unsupported_drivers_reject_automatic_mounts_and_configuration() {
         .mounts
         .automatic_collaboration_disabled
         .store(true, Ordering::SeqCst);
-    let response = server.http.post(format!("{}/api/lifecycle", server.base)).bearer_auth(OWNER)
+    let response = server.http.post(format!("{}/api/lifecycle", server.base))
         .json(&json!({"event":"attach","request_id":"unsupported-automatic","workspace":server.workspace,
             "branch":server.branch,"automatic":true,
             "mount_path":server.directory.path().join("config").join("mounts").join("unsupported")}))
@@ -392,7 +266,6 @@ async fn unsupported_drivers_reject_automatic_mounts_and_configuration() {
     let response = server
         .http
         .put(format!("{}/api/collaboration", server.base))
-        .bearer_auth(OWNER)
         .json(
             &json!({"mount":mount["id"],"expected_binding_generation":mount["generation"],
             "enabled":true,"idle_timeout_secs":60,"release_on_event":true}),
@@ -415,7 +288,6 @@ async fn global_settings_control_collaboration_and_branch_configuration_cannot_o
     let response = server
         .http
         .put(format!("{}/api/collaboration", server.base))
-        .bearer_auth(OWNER)
         .json(
             &json!({"mount":mount["id"],"expected_binding_generation":mount["generation"],
             "enabled":true,"idle_timeout_secs":60,"release_on_event":true}),
@@ -427,7 +299,6 @@ async fn global_settings_control_collaboration_and_branch_configuration_cannot_o
     let response = server
         .http
         .put(format!("{}/api/collaboration", server.base))
-        .bearer_auth(OWNER)
         .json(
             &json!({"mount":mount["id"],"expected_binding_generation":mount["generation"],
             "enabled":false,"idle_timeout_secs":60,"release_on_event":true}),
@@ -446,7 +317,6 @@ async fn global_settings_control_collaboration_and_branch_configuration_cannot_o
             "{}/api/workspaces/{}/archive",
             server.base, server.workspace
         ))
-        .bearer_auth(OWNER)
         .send()
         .await
         .unwrap()
@@ -462,7 +332,6 @@ async fn global_settings_control_collaboration_and_branch_configuration_cannot_o
             "{}/api/workspaces/{}/collaboration",
             server.base, server.workspace
         ))
-        .bearer_auth(OWNER)
         .send()
         .await
         .unwrap()

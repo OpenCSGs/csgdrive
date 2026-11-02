@@ -53,17 +53,14 @@ async fn configurable(remote: Arc<MemoryRemote>, enabled: bool) -> (Harness, Arc
 }
 
 fn set_enabled(config: &ConfigStore, enabled: bool) {
-    let current = config.settings(&actor()).unwrap();
+    let current = config.settings();
     let mut runtime = current.runtime;
     runtime.collaboration.enabled = enabled;
     config
-        .update(
-            &actor(),
-            SettingsUpdate {
-                revision: current.revision,
-                runtime,
-            },
-        )
+        .update(SettingsUpdate {
+            revision: current.revision,
+            runtime,
+        })
         .unwrap();
 }
 
