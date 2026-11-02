@@ -58,6 +58,54 @@ impl MergeService {
         Ok(candidate)
     }
 
+    async fn history(
+        &self,
+        request: &PrepareMerge,
+        merge: Option<MergeId>,
+        candidate_before: Option<RevisionId>,
+        resolutions: &[Resolution],
+    ) -> Result<MergeOperationHistory> {
+        let source_branch = self
+            .runtime
+            .state
+            .revision(request.source)
+            .await?
+            .filter(|revision| revision.workspace == request.workspace)
+            .and_then(|revision| revision.branch);
+        Ok(MergeOperationHistory {
+            merge,
+            source: request.source,
+            source_branch,
+            target: request.target,
+            base: request.base,
+            location: self.runtime.location,
+            candidate_before,
+            resolutions: resolutions
+                .iter()
+                .map(|resolution| {
+                    let (choice, revision, source_path) = match resolution {
+                        Resolution::Source { .. } => ("source", None, None),
+                        Resolution::Target { .. } => ("target", None, None),
+                        Resolution::Delete { .. } => ("delete", None, None),
+                        Resolution::Copy {
+                            revision,
+                            source_path,
+                            ..
+                        } => ("copy", Some(*revision), Some(source_path.clone())),
+                        Resolution::Replace { .. } => ("replace", None, None),
+                    };
+                    MergeResolutionSummary {
+                        path: resolution.path().clone(),
+                        choice: choice.into(),
+                        revision,
+                        source_path,
+                    }
+                })
+                .collect(),
+            events: Vec::new(),
+        })
+    }
+
     async fn common_base(
         &self,
         workspace: WorkspaceId,
@@ -425,12 +473,12 @@ impl MergeApi for MergeService {
             .await?;
         let operation = match self
             .operations
-            .start(
+            .start_merge(
                 context,
                 "merge_prepare",
                 &request,
-                Some(request.workspace),
-                Some(request.target.branch),
+                request.workspace,
+                self.history(&request, None, None, &[]).await?,
             )
             .await?
         {
@@ -456,12 +504,23 @@ impl MergeApi for MergeService {
         let mut candidate = self.candidate(&context.principal, request.merge).await?;
         let operation = match self
             .operations
-            .start(
+            .start_merge(
                 context,
                 "merge_resolve",
                 &request,
-                Some(candidate.workspace),
-                Some(candidate.target.branch),
+                candidate.workspace,
+                self.history(
+                    &PrepareMerge {
+                        workspace: candidate.workspace,
+                        source: candidate.source,
+                        target: candidate.target,
+                        base: Some(candidate.base),
+                    },
+                    Some(candidate.id),
+                    Some(request.candidate),
+                    &request.resolutions,
+                )
+                .await?,
             )
             .await?
         {
@@ -660,12 +719,23 @@ impl MergeApi for MergeService {
         let candidate = self.candidate(&context.principal, request.merge).await?;
         let operation = match self
             .operations
-            .start(
+            .start_merge(
                 context,
                 "merge_apply",
                 &request,
-                Some(candidate.workspace),
-                Some(candidate.target.branch),
+                candidate.workspace,
+                self.history(
+                    &PrepareMerge {
+                        workspace: candidate.workspace,
+                        source: candidate.source,
+                        target: candidate.target,
+                        base: Some(candidate.base),
+                    },
+                    Some(candidate.id),
+                    Some(request.candidate),
+                    &[],
+                )
+                .await?,
             )
             .await?
         {

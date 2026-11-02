@@ -1,6 +1,6 @@
 import { createRevisionChanges } from './changes.js';
 
-export function createRevisionViewer({api, element}) {
+export function createRevisionViewer({api, element, onMerge}) {
   const dialog = element('dialog', 'revision-dialog');
   dialog.id = 'revision-dialog'; dialog.setAttribute('aria-labelledby', 'revision-dialog-title');
   const heading = element('div', 'revision-dialog-heading');
@@ -43,6 +43,11 @@ export function createRevisionViewer({api, element}) {
     }
     const heading = element('h3', 'revision-section-title', '版本信息');
     if (isHead) heading.append(element('span', 'pill', '当前正式提交'));
+    if (onMerge && revision.kind === 'commit' && revision.parents.length > 1) {
+      const merge = element('button', 'secondary', '查看合并记录'); merge.type = 'button';
+      merge.onclick = () => { closeDialog(false); onMerge(revision); };
+      heading.append(merge);
+    }
     detail.replaceChildren(heading, grid);
   }
   function show(context) {

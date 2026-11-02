@@ -7,6 +7,7 @@ import { createWorkspaceView } from './workspace.js';
 import { createRelationshipsView } from './relationships.js';
 import { createHistoryList } from './history.js';
 import { workspaceSyncStatus } from './sync-status.js';
+import { createMergesView } from './merges.js';
 const $ = (id) => document.getElementById(id);
 function clearCommandTickets() {
   for (const key of Object.keys(sessionStorage)) if (key.startsWith('agentdrive-action:')) sessionStorage.removeItem(key);
@@ -40,7 +41,7 @@ async function api(path, options = {}) {
   const response = await fetch(path, {...fetchOptions, headers:{...options.headers, Authorization:`Bearer ${token}`}, cache:'no-store'});
   if (response.status === 401) {
     clearCommandTickets();
-    sessionStorage.removeItem('agentdrive-token'); token = ''; historyList.clear(); revisionViewer.clear(); branchFileViewer.clear(); archivePage.clear(); relationshipsView.clear(); mountsPage.clear(); branchesPage.clear(); showLogin();
+    sessionStorage.removeItem('agentdrive-token'); token = ''; historyList.clear(); revisionViewer.clear(); branchFileViewer.clear(); archivePage.clear(); relationshipsView.clear(); mountsPage.clear(); branchesPage.clear(); mergesView.clear(); showLogin();
     throw new Error('访问令牌无效，请重新连接。');
   }
   if (!response.ok) {
@@ -88,6 +89,8 @@ async function render(updateTree = true) {
   const sync = workspaceSyncStatus(status);
   $('sync-status').textContent = sync.text;
   $('sync-detail').textContent = sync.detail;
+  showHistoryTab();
+  if (isMerges()) { await mergesView.show(snapshot, selectedBranch); return; }
   if (updateTree) workspaceView.render(snapshot, selectedBranch);
   else workspaceView.select(selectedBranch);
   branchFileViewer.update(status.workspace.id, status.branches);
@@ -125,8 +128,8 @@ async function refresh(force=false) {
     for (const workspace of workspaces) { const option = element('option','',workspace.name); option.value = workspace.id; $('workspace').append(option); }
     if (workspaces.some(workspace => workspace.id === selection)) $('workspace').value = selection;
     if ($('workspace').value) sessionStorage.setItem('agentdrive-workspace', $('workspace').value);
-    $('empty').hidden = workspaces.length > 0; $('panels').hidden = !workspaces.length;
-    if (!workspaces.length) { snapshot = null; historyList.clear(); revisionViewer.clear(); branchFileViewer.clear(); relationshipsView.clear(); mountsPage.show(null); branchesPage.show(null); archivePage.show(null); $('workspace-name').textContent='暂无工作区'; ['branch-count','mount-count','mounted-branch-count'].forEach(id => $(id).textContent='0'); $('mount-detail').textContent='暂无挂载点'; $('sync-status').textContent='—'; $('sync-detail').textContent='暂无工作区'; }
+    $('empty').hidden = workspaces.length > 0; $('panels').hidden = !workspaces.length || isMerges(); $('merges-panel').hidden = !workspaces.length || !isMerges();
+    if (!workspaces.length) { snapshot = null; historyList.clear(); revisionViewer.clear(); branchFileViewer.clear(); relationshipsView.clear(); mountsPage.show(null); branchesPage.show(null); archivePage.show(null); mergesView.clear(); $('workspace-name').textContent='暂无工作区'; ['branch-count','mount-count','mounted-branch-count'].forEach(id => $(id).textContent='0'); $('mount-detail').textContent='暂无挂载点'; $('sync-status').textContent='—'; $('sync-detail').textContent='暂无工作区'; }
     else {
       const archive = isArchive();
       const data = await api(`/api/workspaces/${encodeURIComponent($('workspace').value)}${archive ? '/archive' : ''}`);
@@ -155,13 +158,32 @@ async function refresh(force=false) {
   } finally { if (request === generation) { loading = false; $('refresh').disabled = false; } }
 }
 const settingsPage = createSettingsPage({api, element, $});
-const revisionViewer = createRevisionViewer({api, element});
+const revisionViewer = createRevisionViewer({api, element, onMerge:openMergeRevision});
 const historyList = createHistoryList({api, element, list:$('revision-list'), count:$('history-count'), viewer:revisionViewer});
 const branchFileViewer = createBranchFileViewer({api, element});
 const mountsPage = createManagementPage({api, element, container:$('mounts-management'), kind:'mounts', changed:() => refresh(true), onBusy:value => relationshipsView.setBusy(value)});
 const branchesPage = createManagementPage({api, element, container:$('branches-page'), kind:'branches', changed:() => refresh(true)});
 const relationshipsView = createRelationshipsView({api, element, container:$('relationships-panel'), onSave:mount => mountsPage.saveMount(mount), onUnmount:mount => mountsPage.unmountMount(mount)});
 const archivePage = createArchivePage({api, element, container:$('archive-page')});
+const mergesView = createMergesView({api, element, container:$('merges-panel'), viewRevision:context => revisionViewer.show(context)});
+function isMerges() { return new URLSearchParams(location.search).get('view') === 'merges'; }
+function showHistoryTab() {
+  const merges = isMerges();
+  for (const [id,active] of [['versions-tab',!merges],['merges-tab',merges]]) {
+    $(id).setAttribute('aria-selected',String(active)); $(id).tabIndex = active ? 0 : -1;
+  }
+  $('panels').hidden = merges || !snapshot; $('merges-panel').hidden = !merges || !snapshot;
+}
+function chooseHistoryTab(merges) {
+  const url = new URL(location.href);
+  if (merges) url.searchParams.set('view','merges'); else { url.searchParams.delete('view'); url.searchParams.delete('merge'); mergesView.clear(); }
+  history.pushState(null,'',url.pathname+url.search); showHistoryTab(); render(!merges);
+}
+function openMergeRevision(revision) {
+  const url = new URL(location.href); url.searchParams.set('view','merges'); url.searchParams.set('revision',revision.id); url.searchParams.delete('merge');
+  for (const key of [...url.searchParams.keys()]) if (key.startsWith('merge_')) url.searchParams.delete(key);
+  history.pushState(null,'',url.pathname+url.search); mergesView.clear(); showHistoryTab(); render(false);
+}
 function showBranch(branch) {
   if (branch.local) { branchFileViewer.show(snapshot.status.workspace.id, branch); return; }
   const revision = snapshot.revisions.find(value => value.id === (branch.autosave_head || branch.formal_head));
@@ -186,7 +208,7 @@ function showPage() {
   clearTimeout(remoteTimer);
   generation++; loading = false; $('refresh').disabled = false;
   historyList.clear();
-  revisionViewer.clear(); branchFileViewer.clear(); archivePage.clear(); relationshipsView.clear(); mountsPage.clear(); branchesPage.clear();
+  revisionViewer.clear(); branchFileViewer.clear(); archivePage.clear(); relationshipsView.clear(); mountsPage.clear(); branchesPage.clear(); mergesView.clear();
   selectedBranch = new URLSearchParams(location.search).get('branch');
   const settings = isSettings(), archive = isArchive(), mounts = location.pathname === '/mounts', branches = location.pathname === '/branches';
   $('archive-page').hidden = !archive;
@@ -203,6 +225,7 @@ function showPage() {
   $('view-mode').textContent = settings ? '全局配置' : mounts || branches ? '工作区管理' : '只读浏览';
   $('workspace').closest('.workspace-picker').hidden = settings;
   document.title = settings ? 'AgentDrive · 设置' : archive ? 'AgentDrive · 档案室' : mounts ? 'AgentDrive · 挂载点管理' : branches ? 'AgentDrive · 分支管理' : 'AgentDrive · 分支与版本';
+  showHistoryTab();
   refreshPage();
 }
 for (const id of ['archive-nav', 'history-nav', 'mounts-nav', 'branches-nav', 'settings-nav']) $(id).addEventListener('click', event => {
@@ -213,10 +236,17 @@ for (const id of ['archive-nav', 'history-nav', 'mounts-nav', 'branches-nav', 's
 });
 window.addEventListener('popstate', showPage);
 $('login-form').addEventListener('submit', event => { event.preventDefault(); clearCommandTickets(); token=$('token').value.trim(); sessionStorage.setItem('agentdrive-token',token); $('token').value=''; settingsPage.clear(); $('login').hidden=true; $('app').hidden=false; showPage(); });
-$('logout').addEventListener('click', () => { generation++; clearCommandTickets(); token=''; loading=false; sessionStorage.removeItem('agentdrive-token'); snapshot=null; settingsPage.clear(); historyList.clear(); revisionViewer.clear(); branchFileViewer.clear(); archivePage.clear(); relationshipsView.clear(); mountsPage.clear(); branchesPage.clear(); showLogin(); });
+$('logout').addEventListener('click', () => { generation++; clearCommandTickets(); token=''; loading=false; sessionStorage.removeItem('agentdrive-token'); snapshot=null; settingsPage.clear(); historyList.clear(); revisionViewer.clear(); branchFileViewer.clear(); archivePage.clear(); relationshipsView.clear(); mountsPage.clear(); branchesPage.clear(); mergesView.clear(); showLogin(); });
 $('workspace').addEventListener('change', () => {
   const url = new URL(location.href); url.searchParams.set('workspace',$('workspace').value); url.searchParams.delete('branch'); url.searchParams.delete('path'); history.replaceState(null,'',url.pathname+url.search);
-  selectedBranch=null; snapshot=null; historyList.clear(); revisionViewer.clear(); branchFileViewer.clear(); archivePage.clear(); relationshipsView.clear(); mountsPage.clear(); branchesPage.clear(); refresh(true);
+  selectedBranch=null; snapshot=null; historyList.clear(); revisionViewer.clear(); branchFileViewer.clear(); archivePage.clear(); relationshipsView.clear(); mountsPage.clear(); branchesPage.clear(); mergesView.clear(true); refresh(true);
+});
+$('versions-tab').onclick = () => chooseHistoryTab(false);
+$('merges-tab').onclick = () => chooseHistoryTab(true);
+for (const id of ['versions-tab','merges-tab']) $(id).addEventListener('keydown',event => {
+  if (!['ArrowLeft','ArrowRight','Home','End'].includes(event.key)) return;
+  event.preventDefault(); const merges = event.key === 'End' || (event.key !== 'Home' && id === 'versions-tab');
+  chooseHistoryTab(merges); $(merges ? 'merges-tab' : 'versions-tab').focus();
 });
 $('refresh').addEventListener('click', async () => { await refreshPage(); if (isArchive()) archivePage.refresh(); });
 if (location.pathname === '/') history.replaceState(null,'','/archive'+location.search);

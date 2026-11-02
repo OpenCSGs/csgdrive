@@ -37,6 +37,7 @@ impl OperationService {
                     .ok_or_else(|| Error::integrity("operation receipt is missing"))?;
                 commit.operation_guards.push(record.clone());
                 update(&mut record);
+                record.record_merge_event(self.runtime.clock.now_ns());
                 records.push(record);
             }
             commit.operations.extend(records.iter().cloned());
@@ -93,35 +94,39 @@ impl OperationService {
             .await
     }
 
-    pub async fn finish(
+    pub(crate) async fn start_merge<T: Serialize + Sync>(
         &self,
-        context: OperationContext,
-        result: CommandResult,
-        mut commit: LocalCommit,
-    ) -> Result<OperationRecord> {
-        let mut operation = context.operation;
-        operation.phase = OperationPhase::Complete;
-        operation.local_saved = true;
-        operation.result = Some(result);
-        operation.error = None;
-        commit.operations.push(operation.clone());
-        self.runtime.state.commit(commit).await?;
-        self.progress(operation).await
+        context: RequestContext,
+        name: &str,
+        request: &T,
+        workspace: WorkspaceId,
+        history: MergeOperationHistory,
+    ) -> Result<OperationStart> {
+        let fingerprint = object_ref(ObjectKind::RecordIndex, &encode(&(name, request))?).id;
+        let branch = history.target.branch;
+        self.reserve(
+            context,
+            name,
+            fingerprint,
+            Some(workspace),
+            Some(branch),
+            Some(history),
+        )
+        .await
     }
-}
 
-#[async_trait]
-impl OperationCoordinator for OperationService {
-    async fn begin(
+    async fn reserve(
         &self,
         context: RequestContext,
         name: &str,
         fingerprint: ObjectId,
         workspace: Option<WorkspaceId>,
         branch: Option<BranchId>,
+        merge_history: Option<MergeOperationHistory>,
     ) -> Result<OperationStart> {
         context.validate()?;
-        let record = OperationRecord {
+        let mut record = OperationRecord {
+            merge_history,
             id: OperationId::new(),
             request_id: context.request_id,
             principal: context.principal,
@@ -139,6 +144,7 @@ impl OperationCoordinator for OperationService {
             created_ns: self.runtime.clock.now_ns(),
             sync_progress: None,
         };
+        record.record_merge_event(record.created_ns);
         let reserved = self.runtime.state.reserve_operation(record).await?;
         Ok(if reserved.created {
             OperationStart::New(OperationContext {
@@ -147,6 +153,38 @@ impl OperationCoordinator for OperationService {
         } else {
             OperationStart::Existing(reserved.record)
         })
+    }
+
+    pub async fn finish(
+        &self,
+        context: OperationContext,
+        result: CommandResult,
+        mut commit: LocalCommit,
+    ) -> Result<OperationRecord> {
+        let mut operation = context.operation;
+        operation.phase = OperationPhase::Complete;
+        operation.local_saved = true;
+        operation.result = Some(result);
+        operation.error = None;
+        operation.record_merge_event(self.runtime.clock.now_ns());
+        commit.operations.push(operation.clone());
+        self.runtime.state.commit(commit).await?;
+        self.progress(operation).await
+    }
+}
+
+#[async_trait]
+impl OperationCoordinator for OperationService {
+    async fn begin(
+        &self,
+        context: RequestContext,
+        name: &str,
+        fingerprint: ObjectId,
+        workspace: Option<WorkspaceId>,
+        branch: Option<BranchId>,
+    ) -> Result<OperationStart> {
+        self.reserve(context, name, fingerprint, workspace, branch, None)
+            .await
     }
 
     async fn fail(&self, context: &OperationContext, error: Error) -> Result<OperationRecord> {
@@ -159,6 +197,7 @@ impl OperationCoordinator for OperationService {
         if !operation.local_saved {
             operation.phase = OperationPhase::Failed;
             operation.error = Some(error);
+            operation.record_merge_event(self.runtime.clock.now_ns());
             self.runtime
                 .state
                 .commit(LocalCommit {
@@ -236,6 +275,7 @@ impl OperationApi for OperationService {
         }
         operation.phase = OperationPhase::Cancelled;
         operation.pending = None;
+        operation.record_merge_event(self.runtime.clock.now_ns());
         self.runtime
             .state
             .commit(LocalCommit {

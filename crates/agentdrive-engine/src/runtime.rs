@@ -52,18 +52,23 @@ impl Runtime {
     }
 
     pub async fn lock_branch(&self, branch: BranchId) -> OwnedMutexGuard<()> {
-        let gate = {
-            let mut branches = self.branches.lock();
-            if let Some(gate) = branches.get(&branch).and_then(Weak::upgrade) {
-                gate
-            } else {
-                branches.retain(|_, gate| gate.strong_count() != 0);
-                let gate = Arc::new(AsyncMutex::new(()));
-                branches.insert(branch, Arc::downgrade(&gate));
-                gate
-            }
-        };
-        gate.lock_owned().await
+        self.branch_gate(branch).lock_owned().await
+    }
+
+    pub(crate) fn try_lock_branch(&self, branch: BranchId) -> Option<OwnedMutexGuard<()>> {
+        self.branch_gate(branch).try_lock_owned().ok()
+    }
+
+    fn branch_gate(&self, branch: BranchId) -> Arc<AsyncMutex<()>> {
+        let mut branches = self.branches.lock();
+        if let Some(gate) = branches.get(&branch).and_then(Weak::upgrade) {
+            gate
+        } else {
+            branches.retain(|_, gate| gate.strong_count() != 0);
+            let gate = Arc::new(AsyncMutex::new(()));
+            branches.insert(branch, Arc::downgrade(&gate));
+            gate
+        }
     }
 
     pub async fn branch(&self, id: BranchId) -> Result<Branch> {

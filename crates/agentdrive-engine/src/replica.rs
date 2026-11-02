@@ -1,4 +1,4 @@
-use crate::{ContentService, OperationService, Runtime, TreeService};
+use crate::{ContentService, OperationService, Runtime, TreeService, runtime::increment};
 use agentdrive_model::*;
 use agentdrive_ports::*;
 use async_trait::async_trait;
@@ -266,6 +266,10 @@ impl ReplicaService {
                 &ids,
                 LocalCommit {
                     completed_jobs: ids.clone(),
+                    published_merge_history: jobs
+                        .iter()
+                        .flat_map(|job| job.merge_history.clone())
+                        .collect(),
                     remote_refs: vec![ObservedBranchRef::new(
                         remote.clone(),
                         storage_version,
@@ -433,9 +437,7 @@ impl ReplicaService {
                     if operation.workspace != Some(reference.workspace) {
                         return Err(Error::integrity("operation belongs to another workspace"));
                     }
-                    if self.runtime.state.operation(operation.id).await?.is_none() {
-                        commit.replicated_operations.push(*operation);
-                    }
+                    commit.replicated_operations.push(*operation);
                 }
             }
         }
@@ -606,6 +608,7 @@ impl ReplicaPublisher for ReplicaService {
         };
         let _workspace = gate.lock().await;
         self.publish_workspace(workspace).await?;
+        self.prepare_merge_history_job(workspace).await?;
         let jobs = self.runtime.state.sync_jobs(workspace).await?;
         let mut batches: Vec<Vec<SyncJob>> = Vec::new();
         for job in jobs {
@@ -716,6 +719,67 @@ impl ReplicaPublisher for ReplicaService {
                 HistoryRecord::Revision(revision.clone()),
             );
         }
+        let mut histories: BTreeMap<_, _> = self
+            .runtime
+            .state
+            .pending_merge_history(branch.workspace)
+            .await?
+            .into_iter()
+            .map(|record| (record.id, record))
+            .collect();
+        if operation.merge_history.is_some() {
+            histories.insert(operation.id, operation.clone());
+        }
+        let merge_history = histories
+            .values()
+            .filter_map(|record| {
+                record
+                    .merge_history
+                    .as_ref()
+                    .map(|history| MergeHistoryVersion {
+                        operation: record.id,
+                        sequence: history.events.len() as u64,
+                    })
+            })
+            .collect();
+        let mut referenced: Vec<_> = histories
+            .values()
+            .filter_map(|record| record.merge_history.as_ref())
+            .flat_map(MergeOperationHistory::referenced_revisions)
+            .collect();
+        let mut visited = std::collections::BTreeSet::new();
+        while let Some(id) = referenced.pop() {
+            if !visited.insert(id) {
+                continue;
+            }
+            let key = format!("revision/{id}");
+            if records.contains_key(&key) {
+                continue;
+            }
+            if let Some(base) = &base
+                && self
+                    .trees
+                    .index_entry::<HistoryRecord>(branch.workspace, base, &key)
+                    .await?
+                    .is_some()
+            {
+                continue;
+            }
+            // Failed preparations can reference a revision that was never present.
+            if let Some(revision) = self.runtime.state.revision(id).await?
+                && revision.workspace == branch.workspace
+            {
+                referenced.extend(revision.parents.iter().copied());
+                records.insert(key, HistoryRecord::Revision(revision));
+            }
+        }
+        for mut record in histories.into_values() {
+            record.sync_progress = None;
+            records.insert(
+                format!("operation/{}", record.id),
+                HistoryRecord::Operation(Box::new(record)),
+            );
+        }
         let mut record = operation.clone();
         record.sync_progress = None;
         records.insert(
@@ -746,6 +810,7 @@ impl ReplicaPublisher for ReplicaService {
                 .await?
         };
         Ok(SyncJob {
+            merge_history,
             operation: operation.id,
             reference: BranchRef {
                 workspace: branch.workspace,
@@ -786,6 +851,96 @@ impl ReplicaPublisher for ReplicaService {
 }
 
 impl ReplicaService {
+    async fn prepare_merge_history_job(&self, workspace: WorkspaceId) -> Result<()> {
+        let pending = self.runtime.state.pending_merge_history(workspace).await?;
+        if pending.is_empty() {
+            return Ok(());
+        }
+        let mut scheduled = BTreeMap::<OperationId, u64>::new();
+        for job in self.runtime.state.sync_jobs(workspace).await? {
+            for version in job.merge_history {
+                scheduled
+                    .entry(version.operation)
+                    .and_modify(|sequence| *sequence = (*sequence).max(version.sequence))
+                    .or_insert(version.sequence);
+            }
+        }
+        if pending.iter().all(|record| {
+            record.merge_history.as_ref().is_none_or(|history| {
+                scheduled.get(&record.id).copied().unwrap_or(0) >= history.events.len() as u64
+            })
+        }) {
+            return Ok(());
+        }
+        let branches = self.runtime.state.branches(workspace).await?;
+        let Some(carrier) = branches
+            .iter()
+            .filter(|branch| {
+                branch.owner == self.runtime.location && branch.state == BranchState::Writable
+            })
+            .min_by_key(|branch| {
+                (
+                    !pending
+                        .iter()
+                        .any(|record| record.branch == Some(branch.id)),
+                    branch.id,
+                )
+            })
+        else {
+            return Ok(());
+        };
+        // Publishing ordinary data may already hold this branch's lock.
+        // The next background pass will publish its pending history.
+        let Some(_gate) = self.runtime.try_lock_branch(carrier.id) else {
+            return Ok(());
+        };
+        let _protection = self.runtime.objects.read().await;
+        let mut branch = self.runtime.branch(carrier.id).await?;
+        if branch.owner != self.runtime.location || branch.state != BranchState::Writable {
+            return Ok(());
+        }
+        let guard = BranchGuard::from(&branch);
+        let owner = self
+            .runtime
+            .state
+            .workspace(workspace)
+            .await?
+            .ok_or_else(|| Error::integrity("merge history workspace is missing"))?
+            .owner;
+        let start = self
+            .operations
+            .start(
+                RequestContext {
+                    principal: owner,
+                    request_id: format!("merge-history-{}", OperationId::new()),
+                },
+                "merge_history_publish",
+                &guard,
+                Some(workspace),
+                Some(branch.id),
+            )
+            .await?;
+        let OperationStart::New(context) = start else {
+            return Err(Error::integrity("generated history request already exists"));
+        };
+        branch.source_generation = increment(branch.source_generation)?;
+        let mut operation = context.operation;
+        operation.phase = OperationPhase::LocalSaved;
+        operation.local_saved = true;
+        operation.result = Some(CommandResult::Updated);
+        let job = self.build_job(&branch, None, &operation).await?;
+        self.runtime
+            .state
+            .commit(LocalCommit {
+                guards: vec![guard],
+                branches: vec![branch],
+                operations: vec![operation],
+                sync_jobs: vec![job],
+                ..Default::default()
+            })
+            .await
+    }
+
     pub(crate) async fn refresh_requested_history(&self) {
         let attempts = self.history_refresh.begin(
             self.content.storage.load_full().as_ref(),

@@ -1,5 +1,6 @@
 const labels = {commit:'Commit', autosave:'自动保存', checkpoint:'检查点', candidate:'合并候选'};
 const title = revision => revision.message || labels[revision.kind] || '保存工作内容';
+const isMerge = revision => revision.kind === 'commit' && revision.parents.length > 1;
 const endpoint = (workspace, branch) => `/api/workspaces/${encodeURIComponent(workspace)}/branches/${encodeURIComponent(branch)}/history`;
 
 export function createHistoryList({api, element, list, count, viewer}) {
@@ -30,7 +31,7 @@ export function createHistoryList({api, element, list, count, viewer}) {
       if (isHead) sub.append(element('span', '', 'HEAD'));
       copy.append(sub); row.append(copy);
       const time = element('span', 'revision-time', new Date(revision.created_ns / 1e6).toLocaleString('zh-CN', {month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit',hour12:false}));
-      time.append(element('span', 'revision-type', labels[revision.kind] || revision.kind)); row.append(time);
+      time.append(element('span', `revision-type${isMerge(revision) ? ' merge-revision-mark' : ''}`, isMerge(revision) ? '合并' : labels[revision.kind] || revision.kind)); row.append(time);
       viewer.bind(row, {workspace:snapshot.status.workspace.id, revision, message:title(revision), sourceBranch:branch.name, isHead});
     }
     if (!entries.length && !busy && !list.children.length) list.append(element('div', 'no-revisions', '此分支尚未生成新版本。'));

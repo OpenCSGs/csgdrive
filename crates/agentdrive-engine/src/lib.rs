@@ -8,6 +8,7 @@ mod history_refresh;
 mod index_reader;
 mod indexes;
 mod merge;
+mod merge_history;
 mod mounts;
 mod operations;
 mod ownership;
