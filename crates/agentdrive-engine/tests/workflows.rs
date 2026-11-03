@@ -618,15 +618,16 @@ async fn restart_restores_saved_bytes_and_reuses_mount() {
 }
 
 #[tokio::test]
-async fn autosave_uses_quiet_and_continuous_write_deadlines() {
+async fn autosave_saves_idle_and_continuous_changes_every_two_seconds() {
     let harness = Harness::new(None).await;
     let workspace = harness.workspace().await;
     let (_, fs) = harness.branch_mount(workspace.id, "autosave", None).await;
     let file = harness.write_new(&fs, "file", b"first").await;
-    harness.clock.advance(4_999);
+    harness.clock.advance(1_999);
     assert_eq!(harness.engine.autosave_due().await.unwrap(), 0);
     harness.clock.advance(1);
     assert_eq!(harness.engine.autosave_due().await.unwrap(), 1);
+    assert_eq!(harness.engine.autosave_due().await.unwrap(), 0);
     let handle = harness
         .engine
         .services
@@ -642,7 +643,7 @@ async fn autosave_uses_quiet_and_continuous_write_deadlines() {
         )
         .await
         .unwrap();
-    for _ in 0..8 {
+    for index in 0..8 {
         harness
             .engine
             .services
@@ -650,9 +651,13 @@ async fn autosave_uses_quiet_and_continuous_write_deadlines() {
             .write(&fs, handle.id, 0, Bytes::from_static(b"x"))
             .await
             .unwrap();
-        harness.clock.advance(4_000);
+        harness.clock.advance(500);
+        assert_eq!(
+            harness.engine.autosave_due().await.unwrap(),
+            usize::from(index % 4 == 3)
+        );
     }
-    assert_eq!(harness.engine.autosave_due().await.unwrap(), 1);
+    assert_eq!(harness.engine.autosave_due().await.unwrap(), 0);
 }
 
 #[tokio::test]

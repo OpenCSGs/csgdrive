@@ -234,4 +234,4 @@ for (const id of ['versions-tab','merges-tab']) $(id).addEventListener('keydown'
 $('refresh').addEventListener('click', async () => { discoverWorkspaces = true; await refreshPage(); if (isArchive()) archivePage.refresh(); });
 if (location.pathname === '/') history.replaceState(null,'','/archive'+location.search);
 showPage();
-setInterval(() => { if (!document.hidden) refreshPage(); },15000);
+setInterval(() => { if (!document.hidden) refreshPage(); },2000);

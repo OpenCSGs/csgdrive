@@ -418,7 +418,7 @@ impl CollaborationService {
             if record.release.is_some() {
                 return self.release_authority(record).await;
             }
-            if now.saturating_sub(activity.last_refresh) >= 5_000
+            if now.saturating_sub(activity.last_refresh) >= 2_000
                 || record.phase != CollaborationPhase::Writing
             {
                 self.activity
@@ -427,7 +427,7 @@ impl CollaborationService {
                     .and_modify(|value| value.last_refresh = now);
                 self.check_writer(record, &branch).await?;
             }
-        } else if now.saturating_sub(activity.last_refresh) >= 5_000
+        } else if now.saturating_sub(activity.last_refresh) >= 2_000
             || record.phase != CollaborationPhase::Following
         {
             self.activity

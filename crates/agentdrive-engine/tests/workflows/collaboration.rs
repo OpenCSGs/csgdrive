@@ -324,7 +324,7 @@ async fn mount_save_rejects_an_outdated_view_and_binding_before_committing() {
     assert_eq!(failed.error.as_ref().unwrap().code, ErrorCode::TargetMoved);
     assert_eq!(failed.recovery(), Some(OperationRecovery::RetryRequest));
     assert!(!failed.local_saved);
-    second.clock.advance(5_001);
+    second.clock.advance(2_001);
     second.engine.collaborate_due().await.unwrap();
     let current = second.local.mount(b.id).await.unwrap().unwrap();
     assert!(current.generation > b.generation);
@@ -703,7 +703,7 @@ async fn foreign_turn_registration_binds_once_to_the_first_local_grant() {
             .executions
             .is_empty()
     );
-    first.clock.advance(5_001);
+    first.clock.advance(2_001);
     first.engine.collaborate_due().await.unwrap();
     let fs_a = current_context(&first, a.id).await;
     first
@@ -1075,7 +1075,7 @@ async fn stale_first_write_waits_for_the_latest_view_before_retrying() {
             .unwrap()
             .is_none()
     );
-    second.clock.advance(5_001);
+    second.clock.advance(2_001);
     second.engine.collaborate_due().await.unwrap();
     let fs = current_context(&second, b.id).await;
     assert!(fs.generation > fs_b.generation);
@@ -1121,7 +1121,7 @@ async fn confirmed_contents_follow_authority_changes_without_a_recovery_branch()
         })
         .await
         .unwrap();
-    first.clock.advance(5_001);
+    first.clock.advance(2_001);
     first.engine.collaborate_due().await.unwrap();
     let record = first
         .local
@@ -1135,7 +1135,7 @@ async fn confirmed_contents_follow_authority_changes_without_a_recovery_branch()
         first.local.branches(workspace.id).await.unwrap().len(),
         count
     );
-    first.clock.advance(5_001);
+    first.clock.advance(2_001);
     first.engine.collaborate_due().await.unwrap();
     assert_eq!(
         first

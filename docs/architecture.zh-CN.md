@@ -51,11 +51,11 @@
 
 两种远程后端均实现 `RemoteObjectStore` 和 `RemoteRefStore`。engine 复用已有的发布顺序、持久化重试、历史导入、所有权和存储切换流程。OpenCSG HTTP 路径、Bearer 认证、响应解析、数据块编码及 Git 分支版本检查由 `agentdrive-opencsg` 管理，领域对象和 MCP 工具继续使用原有版本含义。
 
-工作区发现通过 `RemoteRefStore` 枚举 ID，校验控制记录并缓存有权访问的元数据，不创建挂载。工作区服务为手动刷新和 daemon 每 15 秒执行的刷新提供同一套流程。全局删除通过条件更新修改已有控制记录并关闭发布入口，随后持久化本机删除标记；已删除状态不能被旧元数据覆盖。删除记录发布后禁止新增发布和历史保留操作。其他 location 复用检查句柄的正常卸载流程清理挂载。内容对象与 Git 历史继续保留，Dashboard 负责选择、确认和错误展示。
+工作区发现通过 `RemoteRefStore` 枚举 ID，校验控制记录并缓存有权访问的元数据，不创建挂载。工作区服务为手动刷新和 daemon 每 2 秒执行的刷新提供同一套流程。全局删除通过条件更新修改已有控制记录并关闭发布入口，随后持久化本机删除标记；已删除状态不能被旧元数据覆盖。删除记录发布后禁止新增发布和历史保留操作。其他 location 复用检查句柄的正常卸载流程清理挂载。内容对象与 Git 历史继续保留，Dashboard 负责选择、确认和错误展示。
 
 HTTP 工作区展示模块 `mcp/workspace_view` 通过 `WorkspaceApi::status` 和 `RevisionApi::metadata` 查询分支版本与创建来源，生成页面统计。全局视图和关系查询共用 model 中的分支观察选择规则。`local` 表示当前 owner 在本机的工作内容，`local_available` 单独表示本机保留了副本。其他 location 分支的只读挂载明确指定已发布版本。
 
-工作区查询提交后台刷新请求，立即返回已有本地观察。engine 在 15 秒内合并同一 workspace 的请求，最多同时刷新两个 workspace；daemon 管理可取消的后台任务。历史观察持有对象保留保护，导入不可变记录并通过条件提交更新观察，不取得文件修改使用的分支锁。显式 pull 继续使用工作树接管所需的保护。响应提供刷新进度、最近尝试时间、成功时间和错误。
+工作区查询提交后台刷新请求，立即返回已有本地观察。engine 在 2 秒内合并同一 workspace 的请求，最多同时刷新两个 workspace；daemon 管理可取消的后台任务。历史观察持有对象保留保护，导入不可变记录并通过条件提交更新观察，不取得文件修改使用的分支锁。显式 pull 继续使用工作树接管所需的保护。响应提供刷新进度、最近尝试时间、成功时间和错误。
 
 `GET /api/workspaces/{workspace}/branches/{branch}/history` 按分支分页，每页默认 50 项、最多 200 项，支持说明与 ID 搜索，游标关联用户和查询条件。本地适配器使用 workspace、branch、时间索引及记录位置分页。历史和来源版本选择按需读取页面，无变化刷新保留已加载记录及选中的不可变版本。关系刷新保留已加载范围、展开详情和滚动位置，游标过期时保留现有内容并提示重新读取。
 
@@ -144,7 +144,7 @@ object ID 使用 SHA-256 对域分隔标记、格式版本、对象类型和内�
 
 主动命令的权限申请由 `CollaborationService` 通过 `WriteAccess` 统一提供。`VersionService` 在正式提交和 checkpoint 前申请权限，`MountService` 在版本替换和继续挂载操作前申请权限。申请期间不持有 lifecycle 锁或分支修改锁；保存时通过 BranchGuard 检查取得的权限 epoch 和预期内容。`RevisionService` 负责内容保存及持久性确认，后台自动保存和发布保留现有权限检查。失败记录通过 operation coordinator 的 compare-and-swap 更新，保护并发完成的保存结果。
 
-文件系统 `fsync` 保存工作检查点，不创建 revision。本地检查点无需创建 operation 或同步任务；没有变化时，本地 fsync 直接返回。远端 fsync 额外发布工作根对象并等待远端确认，它拥有 operation 记录，中间检查点不会逐个保留为历史版本。自动保存仍按五秒无新写入、三十秒持续写入的期限创建 revision，daemon 每秒检查。显式 `mount_save`、`revision_commit`、创建 branch 和交接 branch 会按需要保存版本。检查点不会重置自动保存期限；重启恢复最新检查点后，尚未形成版本的内容会继续安排自动保存。
+文件系统 `fsync` 保存工作检查点，不创建 revision。本地检查点无需创建 operation 或同步任务；没有变化时，本地 fsync 直接返回。远端 fsync 额外发布工作根对象并等待远端确认，它拥有 operation 记录，中间检查点不会逐个保留为历史版本。未保存修改累计两秒后创建自动保存 revision，持续写入期间同样执行；daemon 每秒检查保存条件，每两秒检查待上传任务和跟随端更新。显式 `mount_save`、`revision_commit`、创建 branch 和交接 branch 会按需要保存版本。检查点不会重置自动保存期限；重启恢复最新检查点后，尚未形成版本的内容会继续安排自动保存。
 
 跟随状态下，所有已接收修改都已保存时，`fsync` 只核验持久性，不申请写权限或创建发布任务。远端持久性要求已有远端确认记录与本机内容匹配，且当前分支没有待发布任务，否则返回 `REMOTE_UNKNOWN`。
 

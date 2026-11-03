@@ -82,8 +82,9 @@ test('workspace selection resets the view and browser history restores workspace
   assert.equal(await page.locator('#history-nav').getAttribute('aria-current'),'page');
 });
 
-test('workspace search, collapse and refresh preserve navigation state', async t => {
+test('two-second refresh preserves workspace search, collapse and scroll state', async t => {
   const {page,data} = await setup(t);
+  await page.clock.install();
   data.workspaces.push(...Array.from({length:40},(_,i)=>({id:`extra-${i}`,name:`项目 ${i}`})));
   await page.goto(endpoint+'/'); await settled(page);
   await page.locator('#workspace-search').fill('Beta');
@@ -91,7 +92,8 @@ test('workspace search, collapse and refresh preserve navigation state', async t
   await page.locator('#workspace-search').fill('');
   await page.locator('#workspace-list').evaluate(list => list.scrollTop = 700);
   const scroll = await page.locator('#workspace-list').evaluate(list=>list.scrollTop);
-  await page.locator('#refresh').click(); await settled(page);
+  const refreshed = page.waitForResponse(response => new URL(response.url()).pathname === '/api/workspaces');
+  await page.clock.runFor(2000); await refreshed; await settled(page);
   assert.equal(await page.locator('#workspace-list').evaluate(list=>list.scrollTop),scroll);
   await page.locator('#workspace-toggle').click();
   assert.equal(await page.locator('#workspace-toggle').getAttribute('aria-expanded'),'false');

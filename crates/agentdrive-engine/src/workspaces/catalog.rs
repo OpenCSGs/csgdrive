@@ -9,7 +9,7 @@ impl WorkspaceService {
         if self
             .catalog_checked
             .lock()
-            .is_some_and(|last| now.saturating_sub(last) < 15_000)
+            .is_some_and(|last| now.saturating_sub(last) < 2_000)
         {
             return;
         }

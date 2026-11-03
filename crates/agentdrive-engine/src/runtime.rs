@@ -24,7 +24,6 @@ pub struct Runtime {
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct DirtyTime {
     pub first: u64,
-    pub last: u64,
     pub sequence: u64,
 }
 
@@ -125,10 +124,8 @@ impl Runtime {
         let mut dirty = self.dirty.lock();
         let value = dirty.entry(branch.id).or_insert(DirtyTime {
             first: now,
-            last: now,
             sequence: branch.mutation_seq,
         });
-        value.last = now;
         value.sequence = branch.mutation_seq;
     }
 

@@ -286,7 +286,9 @@ async fn history_refresh_coalesces_requests_without_blocking_local_file_writes()
         harness.remote.branch_gets.load(Ordering::SeqCst) - baseline_gets,
         1
     );
-    harness.clock.advance(15_000);
+    harness.clock.advance(1_999);
+    assert!(!harness.request().await.refreshing);
+    harness.clock.advance(1);
     assert!(harness.request().await.refreshing);
     harness.engine.refresh_requested_history().await;
     assert_eq!(
@@ -357,12 +359,12 @@ async fn refresh_status_reports_failures_retries_and_disabled_storage() {
     assert_eq!(status.error.unwrap().code, ErrorCode::Unavailable);
     assert!(status.last_success_ns.is_none());
     harness.remote.inner.set_available(true);
-    harness.clock.advance(15_000);
+    harness.clock.advance(2_000);
     assert!(harness.request().await.refreshing);
     harness.engine.refresh_requested_history().await;
     let status = harness.request().await;
     assert!(status.error.is_none() && status.last_success_ns.is_some());
-    harness.clock.advance(15_000);
+    harness.clock.advance(2_000);
     assert!(harness.request().await.refreshing);
     harness
         .engine

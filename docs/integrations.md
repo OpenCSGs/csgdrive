@@ -72,7 +72,7 @@ The bridge exchanges newline-delimited JSON-RPC, reuses the mount, and launches 
 
 ## Saving and recovery
 
-Autosave runs after approximately five seconds without changes or thirty seconds of continuous changes; the daemon checks once per second. A save captures the current files of the shared branch.
+Autosave runs once pending changes reach approximately two seconds of age, including during continuous writes; the daemon checks once per second. Pending uploads and follower updates are checked every two seconds. A save captures the current files of the shared branch.
 
 The bridge queries the current mount binding before each task. For a manually managed mount, it saves on completion, cancellation, failure, agent exit, or disconnection and forwards normal completion responses after a successful local save. For an automatic mount, it registers the execution before forwarding the task, then reports its terminal outcome to the daemon. The daemon completes saving and permission release asynchronously after the driver reports no tracked handles. Retried requests retain their identity, and duplicate protocol requests replay completed responses. Shared mounts remain available after disconnection.
 
@@ -147,7 +147,7 @@ The `failed` and `interrupted` outcomes preserve accepted filesystem changes. If
 
 Existing databases retain their branches and selections. With no selection, one writable local branch is reused automatically; multiple writable local branches require an explicit `branch_switch`.
 
-Run `agentdrive dashboard --open` or open the daemon URL directly. The left panel lists all workspaces and supports searching and collapsing. Selecting a workspace opens its archive and the adjacent menu provides Archive, Branches & Versions, Mount management and Branch management. The root URL opens the first workspace archive; explicit workspace and file links remain supported. Global settings are at the bottom left. Pages refresh every 15 seconds.
+Run `agentdrive dashboard --open` or open the daemon URL directly. The left panel lists all workspaces and supports searching and collapsing. Selecting a workspace opens its archive and the adjacent menu provides Archive, Branches & Versions, Mount management and Branch management. The root URL opens the first workspace archive; explicit workspace and file links remain supported. Global settings are at the bottom left. Pages refresh every 2 seconds.
 
 The **Merge records** tab shows merges performed through MCP, including preparation, candidate edits, application, failures and mount recovery. Filter by branch, source, target, location, status or time, and load further pages as needed. Each record retains its source revision and target revision at preparation time. Its detail view provides an action timeline and file comparisons against the original target, source, base or previous candidate. Applied merge revisions link back to their record from version history.
 
@@ -199,7 +199,7 @@ The 2026-10-18 FUSE-T 1.2.9 NFS probe compared `noattrcache`, default caching an
 
 ## Workspace discovery and deletion
 
-The Dashboard discovers accessible workspaces in the configured remote namespace on entry and on explicit refresh. Background catalog refreshes propagate new workspaces and deletion records every 15 seconds. Workspace selection loads branch metadata; mounting remains a separate action with a local directory. Remote failures preserve the last local catalog and display a refresh error. MCP clients can call `workspace_discover` without a workspace ID.
+The Dashboard discovers accessible workspaces in the configured remote namespace on entry and on explicit refresh. Background catalog refreshes propagate new workspaces and deletion records every 2 seconds. Workspace selection loads branch metadata; mounting remains a separate action with a local directory. Remote failures preserve the last local catalog and display a refresh error. MCP clients can call `workspace_discover` without a workspace ID.
 
 Each workspace row provides a deletion button and a confirmation dialog requiring its name. `workspace_delete` uses the standard request envelope with `request: {"workspace":"<workspace-id>"}`. It requires workspace management permission, released local mounts, and completed local saving/publication. A remote compare-and-swap records deletion while the publication barrier is idle. Retry an uncertain or rejected request with the same request ID after resolving the reported condition.
 

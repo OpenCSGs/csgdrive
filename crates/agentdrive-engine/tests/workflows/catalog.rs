@@ -81,7 +81,7 @@ async fn observed_deletion_waits_for_handles_and_retires_the_mount_after_close()
         .release(&fs, handle.id)
         .await
         .unwrap();
-    second.clock.advance(15_001);
+    second.clock.advance(2_001);
     second.engine.refresh_requested_history().await;
     assert_eq!(
         second.local.mount(mount.id).await.unwrap().unwrap().state,
@@ -153,7 +153,7 @@ async fn discovery_loads_remote_metadata_and_global_deletion_prevents_reimport()
             .unwrap()
             .is_empty()
     );
-    second.clock.advance(15_001);
+    second.clock.advance(2_001);
     second.engine.refresh_requested_history().await;
     assert!(
         second

@@ -144,7 +144,7 @@ async fn serve(settings: Arc<ConfigStore>) -> Result<()> {
         workers.spawn(async move {
             let period = match kind {
                 "autosave" | "collaboration" => 1,
-                "sync" => 3,
+                "sync" => 2,
                 _ => 30,
             };
             let mut interval = tokio::time::interval(Duration::from_secs(period));
