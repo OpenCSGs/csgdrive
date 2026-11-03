@@ -4,6 +4,8 @@ use agentdrive_config::{
 use agentdrive_engine::*;
 use agentdrive_local::LocalBackend;
 use agentdrive_model::*;
+#[path = "workflows/catalog.rs"]
+mod catalog;
 #[path = "workflows/collaboration.rs"]
 mod collaboration;
 #[path = "workflows/history.rs"]

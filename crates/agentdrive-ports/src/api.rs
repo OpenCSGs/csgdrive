@@ -314,6 +314,12 @@ pub struct ReleaseMount {
 
 #[async_trait]
 pub trait WorkspaceApi: Send + Sync {
+    async fn discover(&self, actor: &Principal) -> Result<Vec<Workspace>>;
+    async fn delete(
+        &self,
+        context: RequestContext,
+        workspace: WorkspaceId,
+    ) -> Result<OperationRecord>;
     async fn adopt_directory(
         &self,
         context: RequestContext,

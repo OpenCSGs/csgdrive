@@ -462,7 +462,7 @@ test('archive renders saved and remote confirmation states supplied by the daemo
 test('archive clears stale content when switching projects and shows empty and failed states', async t => {
   const {page} = await open(t, fixture(), '/archive');
   await page.locator('#archive-page .branch-file-content').waitFor();
-  await page.route('**/api/workspaces',route => route.fulfill({json:[{id:'workspace',name:'Review workspace'},{id:'second',name:'Second project'}]}));
+  await page.route(url => url.pathname === '/api/workspaces',route => route.fulfill({json:[{id:'workspace',name:'Review workspace'},{id:'second',name:'Second project'}]}));
   await page.route('**/api/workspaces/second/archive',route => route.fulfill({json:{workspace:{id:'second',name:'Second project'},branches:[],mounts:[],remote_branches:[],capabilities:{remote_configured:false}}}));
   await page.locator('#refresh').click();
   await page.waitForFunction(()=>document.querySelector('#workspace-list').children.length === 2 && !document.querySelector('#refresh').disabled);

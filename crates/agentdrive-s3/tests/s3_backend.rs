@@ -105,6 +105,7 @@ async fn s3_conditional_refs_and_streaming_objects() {
         backend.list_branches(workspace).await.unwrap(),
         vec![branch]
     );
+    assert_eq!(backend.list_workspaces().await.unwrap(), vec![workspace]);
     for size in [0, 1024, 20 * 1024 * 1024 + 17] {
         let bytes = Bytes::from(
             (0..size)

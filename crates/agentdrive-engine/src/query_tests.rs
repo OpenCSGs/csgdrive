@@ -130,6 +130,7 @@ async fn indexed_queries_skip_shared_pages_and_preserve_old_roots() {
     local
         .commit(LocalCommit {
             new_workspaces: vec![Workspace {
+                deleted: false,
                 id: workspace,
                 name: "indexed".into(),
                 owner: "owner".to_owned().try_into().unwrap(),

@@ -1,3 +1,4 @@
+import { createWorkspaceActions } from './workspace-actions.js';
 import { createNavigation } from './navigation.js';
 import { createManagementPage } from './management.js';
 import { createArchivePage } from './archive.js';
@@ -18,6 +19,7 @@ let selectedBranch = new URLSearchParams(location.search).get('branch');
 let loading = false;
 let generation = 0;
 let remoteTimer = null;
+let discoverWorkspaces = true;
 const labels = {commit:'Commit', autosave:'自动保存', checkpoint:'检查点', candidate:'合并候选'};
 const titles = {commit:'保存工作内容', autosave:'自动保存工作进度', checkpoint:'保存检查点', candidate:'准备合并内容'};
 function element(tag, className, text) {
@@ -109,12 +111,18 @@ async function refresh(force=false) {
   clearTimeout(remoteTimer);
   const request = ++generation; loading = true; $('refresh').disabled = true;
   try {
-    const [listed] = await Promise.allSettled([api('/api/workspaces'), isSettings() ? settingsPage.load() : null]);
+    let catalogError = null;
+    const listing = discoverWorkspaces ? api('/api/workspaces?discover=true').catch(error => {
+      catalogError = error; return api('/api/workspaces');
+    }) : api('/api/workspaces');
+    const [listed] = await Promise.allSettled([listing, isSettings() ? settingsPage.load() : null]);
     if (request !== generation) return;
     if (listed.status === 'rejected') throw listed.reason;
+    discoverWorkspaces = false;
     const workspaces = listed.value;
     const workspace = navigation.update(workspaces);
-    $('error').hidden = true;
+    $('error').hidden = !catalogError;
+    if (catalogError) $('error').textContent = `远端工作区发现失败，当前显示本机记录：${catalogError.message}`;
     if (isSettings()) return;
     if (currentWorkspace !== workspace) { clearWorkspace(); currentWorkspace = workspace; }
     $('empty').hidden = workspaces.length > 0; $('panels').hidden = !workspaces.length || isMerges(); $('merges-panel').hidden = !workspaces.length || !isMerges();
@@ -132,7 +140,7 @@ async function refresh(force=false) {
         if (request !== generation) return;
       }
     }
-    const remoteError = !isArchive() && snapshot?.remote_error;
+    const remoteError = catalogError || (!isArchive() && snapshot?.remote_error);
     $('error').hidden = !remoteError;
     if (remoteError) $('error').textContent = `远端信息刷新失败，当前显示上次同步结果：${remoteError.message}`;
     $('updated').textContent = `${new Date().toLocaleTimeString('zh-CN',{hour12:false})} 已刷新`;
@@ -146,7 +154,11 @@ async function refresh(force=false) {
     $('error').textContent = error.message; $('error').hidden = false; $('connection').textContent = '连接需要检查';
   } finally { if (request === generation) { loading = false; $('refresh').disabled = false; } }
 }
-const navigation = createNavigation({element, $, navigate:showPage});
+const workspaceActions = createWorkspaceActions({api, element, changed: async id => {
+  if (!isSettings() && currentWorkspace === id) history.replaceState(null, '', '/archive');
+  showPage();
+}});
+const navigation = createNavigation({element, $, navigate:showPage, deleteWorkspace:workspaceActions.show});
 const settingsPage = createSettingsPage({api, element, $});
 const revisionViewer = createRevisionViewer({api, element, onMerge:openMergeRevision});
 const historyList = createHistoryList({api, element, list:$('revision-list'), count:$('history-count'), viewer:revisionViewer});
@@ -219,7 +231,7 @@ for (const id of ['versions-tab','merges-tab']) $(id).addEventListener('keydown'
   event.preventDefault(); const merges = event.key === 'End' || (event.key !== 'Home' && id === 'versions-tab');
   chooseHistoryTab(merges); $(merges ? 'merges-tab' : 'versions-tab').focus();
 });
-$('refresh').addEventListener('click', async () => { await refreshPage(); if (isArchive()) archivePage.refresh(); });
+$('refresh').addEventListener('click', async () => { discoverWorkspaces = true; await refreshPage(); if (isArchive()) archivePage.refresh(); });
 if (location.pathname === '/') history.replaceState(null,'','/archive'+location.search);
 showPage();
 setInterval(() => { if (!document.hidden) refreshPage(); },15000);

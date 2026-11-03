@@ -31,6 +31,7 @@
 | `local/batch`、`local/queries` | 批量持久化对象，以及读取一致的 SQLite 数据 |
 | `engine/snapshots`、`engine/revisions` | 捕获工作内容、保存版本、创建分支与恢复内容 |
 | `engine/workspaces` | 创建工作区、查询状态，以及主机目录的导入导出 |
+| `engine/workspaces/catalog` | 发现远端工作区、持久化删除状态，以及通过现有挂载流程清理目录 |
 | `engine/mounts` | 选择工作区在本机使用的分支、复用挂载关联、保存挂载文件、协调挂载切换 |
 | `engine/replica`、`engine/ownership` | 同步任务、远程条件写入与写入所有权交接 |
 | `engine/collaboration` | 按分支跟随更新、自动申请与交还写权限、登记执行事件及协调恢复 |
@@ -49,6 +50,8 @@
 `agentdrive-ports` 定义 engine 使用的接口，存储和平台适配器负责实现接口。配置模块依赖 model 中的数据类型，数据库、挂载和网络服务由 daemon 创建。daemon 将同一个 `LiveConfig` 传给 engine 和 HTTP 入口；`ConfigStore` 统一发布配置，使用配置的模块为每次操作取得完整快照。启动和运行期间修改均通过 `apps/agentdrived/settings::remote_storage` 选择远程适配器。
 
 两种远程后端均实现 `RemoteObjectStore` 和 `RemoteRefStore`。engine 复用已有的发布顺序、持久化重试、历史导入、所有权和存储切换流程。OpenCSG HTTP 路径、Bearer 认证、响应解析、数据块编码及 Git 分支版本检查由 `agentdrive-opencsg` 管理，领域对象和 MCP 工具继续使用原有版本含义。
+
+工作区发现通过 `RemoteRefStore` 枚举 ID，校验控制记录并缓存有权访问的元数据，不创建挂载。工作区服务为手动刷新和 daemon 每 15 秒执行的刷新提供同一套流程。全局删除通过条件更新修改已有控制记录并关闭发布入口，随后持久化本机删除标记；已删除状态不能被旧元数据覆盖。删除记录发布后禁止新增发布和历史保留操作。其他 location 复用检查句柄的正常卸载流程清理挂载。内容对象与 Git 历史继续保留，Dashboard 负责选择、确认和错误展示。
 
 HTTP 工作区展示模块 `mcp/workspace_view` 通过 `WorkspaceApi::status` 和 `RevisionApi::metadata` 查询分支版本与创建来源，生成页面统计。全局视图和关系查询共用 model 中的分支观察选择规则。`local` 表示当前 owner 在本机的工作内容，`local_available` 单独表示本机保留了副本。其他 location 分支的只读挂载明确指定已发布版本。
 

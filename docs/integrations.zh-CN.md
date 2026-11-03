@@ -196,3 +196,11 @@ macOS 可能生成 AppleDouble `._` 元数据文件，AgentDrive 会将这些文
 文件写入和 `fsync` 遵循 binding 的 durability 设置。默认 `local` 设置下，使用 `mount_save` 的 `durability: "remote"` 并检查 `remote_confirmed`，确认内容已保存到 RustFS。仅凭本地文件写入成功无法确认远端保存。
 
 2026-10-18 的 FUSE-T 1.2.9 NFS 探针使用带有 xattr 回调的镜像文件系统，比较 `noattrcache`、默认缓存及 `nonamedattr`。默认缓存将该负载的 GETATTR 次数从 2028 减至 454，但三种设置下，外部 chmod 的可见延迟均约为 4.5–4.8 秒；通过挂载路径执行 chmod 后立即可见。xattr 回调调用次数均为零，自定义属性通过 `._` 文件保存，探针中的 ResourceFork 写入失败。因此 AgentDrive 保留当前缓存设置和 AppleDouble 文件。仅增加 xattr 方法尚未证明能在该后端消除配套文件。[FUSE-T 开发文档](https://github.com/macos-fuse-t/fuse-t/wiki)说明属性缓存由客户端管理、FUSE TTL 不生效，NFS 不支持通知。这些结果仅适用于本次 NFS 后端测试。
+
+## 工作区发现与删除
+
+Dashboard 在首次进入和主动刷新时发现当前远端存储中有权限访问的工作区，后台每 15 秒更新工作区列表和删除状态。选择工作区时加载分支信息，挂载目录由用户单独选择。远端不可用时保留本机列表并显示刷新错误。MCP 客户端可调用 `workspace_discover`，无需预先知道 workspace ID。
+
+每个工作区提供删除按钮，确认弹窗要求输入工作区名称。`workspace_delete` 使用标准请求格式，参数为 `request: {"workspace":"<workspace-id>"}`。删除需要管理权限、本机目录已经卸载、本机保存和发布任务已经完成。远端通过 compare-and-swap 在没有活动发布任务时记录删除状态；遇到失败或结果未知，处理提示中的问题后使用原 request_id 重试。
+
+删除作用于当前存储范围内的整个工作区。删除后工作区从列表移除，后续导入和发布会被拒绝。其他 location 收到删除状态后停止访问本机副本，并在句柄关闭后完成目录卸载；断网的 location 重连后接收删除状态。删除记录和存储对象保留用于一致性检查与存储历史，此操作不清除底层对象或 Git 历史。仅存储在本机的工作区同样可以删除。

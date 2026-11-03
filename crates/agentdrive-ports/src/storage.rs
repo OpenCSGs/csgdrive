@@ -326,5 +326,6 @@ pub trait RemoteRefStore: Send + Sync {
     }
     async fn get(&self, key: &RefKey) -> Result<Option<VersionedRef>>;
     async fn compare_exchange(&self, update: RefUpdate) -> Result<CasOutcome>;
+    async fn list_workspaces(&self) -> Result<Vec<WorkspaceId>>;
     async fn list_branches(&self, workspace: WorkspaceId) -> Result<Vec<BranchId>>;
 }

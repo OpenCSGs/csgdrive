@@ -263,6 +263,7 @@ mod tests {
             branches,
             remote_branches,
             workspace: Workspace {
+                deleted: false,
                 id: root.workspace,
                 name: "project".into(),
                 owner: "owner".to_owned().try_into().unwrap(),

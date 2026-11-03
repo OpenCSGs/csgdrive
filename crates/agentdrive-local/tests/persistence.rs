@@ -271,6 +271,7 @@ async fn idempotency_survives_reopen_and_conflicting_commit_rolls_back() {
         ErrorCode::RequestIdConflict
     );
     let workspace = Workspace {
+        deleted: false,
         id: WorkspaceId::new(),
         name: "test".into(),
         owner: first.principal.clone(),

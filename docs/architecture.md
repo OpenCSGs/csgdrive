@@ -31,6 +31,7 @@
 | `local/batch`, `local/queries` | Durable object publication batches and consistent SQLite read views |
 | `engine/snapshots`, `engine/revisions` | Capture working changes, save revisions, create branches and restore content |
 | `engine/workspaces` | Workspace creation, status, relationship queries and host-directory import/export |
+| `engine/workspaces/catalog` | Remote workspace discovery, persistent deletion state and cleanup through existing mount operations |
 | `engine/relationships` | Relationship authorization, origin visibility, ownership observations, filtering and stable pagination |
 | `engine/mounts` | Select the local branch for a workspace, reuse mount bindings, save mounted files and coordinate mount transitions |
 | `engine/replica`, `engine/ownership` | Synchronization jobs, conditional remote publication and writer ownership transfer |
@@ -50,6 +51,8 @@
 `agentdrive-ports` describes the interfaces used by the engine. Storage and platform adapters implement those interfaces. The configuration crate depends on model types and does not construct database, mount or network services. The daemon supplies one `LiveConfig` handle to the engine and HTTP gateway. Only `ConfigStore` publishes replacement snapshots; consumers obtain a consistent snapshot for each operation. `apps/agentdrived/settings::remote_storage` selects the remote adapter for both startup and runtime changes.
 
 Both remote backends implement `RemoteObjectStore` and `RemoteRefStore`. The engine reuses its existing publication order, durable retries, history import, ownership and storage-switching workflows. OpenCSG-specific HTTP paths, Bearer authentication, response parsing, chunk encoding and Git branch version checks remain inside `agentdrive-opencsg`; domain objects and MCP tools retain their existing version semantics.
+
+Workspace discovery enumerates IDs through `RemoteRefStore`, validates workspace control records, and caches authorized metadata without creating mounts. The workspace service shares this workflow between explicit refresh and the daemon's 15-second refresh. Global deletion uses a conditional update to the existing control record and publication barrier, then records an irreversible local deletion marker. Publication and history retention cannot begin after this marker is published. Peer locations retire mounts through the normal handle-aware release workflow. Objects and Git history remain stored; the dashboard handles selection, confirmation and error presentation only.
 
 The HTTP workspace presenter in `mcp/workspace_view` derives dashboard statistics and creation origins from `WorkspaceApi::status` and bounded `RevisionApi::metadata` lookups for branch heads and origins. Global views and relationship queries share the model's branch-observation selection rule. `local` identifies the current owner's local content; `local_available` separately records whether a local copy exists. Read-only mounts of a foreign branch select an explicit published revision.
 

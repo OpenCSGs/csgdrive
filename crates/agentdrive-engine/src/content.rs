@@ -80,17 +80,7 @@ impl ContentService {
                 .get(&key)
                 .await?
                 .ok_or_else(|| Error::new(ErrorCode::NotFound, "workspace is not published"))?;
-            if current.bytes.len() > MAX_METADATA_BYTES {
-                return Err(Error::integrity("workspace control exceeds format limit"));
-            }
-            let mut control: WorkspaceControl = decode(&current.bytes)?;
-            if control.workspace.id != workspace
-                || control.workspace.format_version != FORMAT_VERSION
-            {
-                return Err(Error::integrity(
-                    "invalid workspace control identity or format",
-                ));
-            }
+            let mut control = crate::replica::decode_workspace_control(workspace, &current.bytes)?;
             if !mutate(&mut control)? {
                 return Ok(());
             }
@@ -127,6 +117,12 @@ impl ContentService {
         roots: Vec<ObjectRef>,
     ) -> Result<()> {
         self.control(workspace, move |control| {
+            if control.workspace.deleted {
+                return Err(Error::new(
+                    ErrorCode::NotFound,
+                    "workspace has been deleted",
+                ));
+            }
             if control.active_operations.get(&operation) == Some(&roots) {
                 return Ok(false);
             }
@@ -230,6 +226,12 @@ impl ContentResolver for ContentService {
             return Ok(());
         }
         self.control(workspace, move |control| {
+            if control.workspace.deleted {
+                return Err(Error::new(
+                    ErrorCode::NotFound,
+                    "workspace has been deleted",
+                ));
+            }
             let pin = HistoryPin {
                 operation,
                 roots: roots.clone(),
