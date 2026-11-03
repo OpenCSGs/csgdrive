@@ -92,7 +92,7 @@ jq '.tools[] | select(.name == "mount_prepare") | .inputSchema' tools.json
 | `merge_resolve` | `merge`, `candidate`, `resolutions` | `candidate` 为当前候选 revision ID；通过 `source`、`target`、`delete`、`replace` 或 `copy` 编辑候选中的路径，返回新候选版本。 |
 | `merge_apply` | `merge`, `candidate`, `target`, `durability?` | 要求全部冲突已处理，目标分支没有未保存的修改并符合 `BranchGuard`；可能要求释放挂载。 |
 | `mount_prepare` | `workspace`, `path`, `branch?`, `access?`, `revision?`, `durability?`, `automatic?` | 默认 `read_write`，遵从整个 AgentDrive 的 `collaboration.enabled` 开关。自动模式省略 branch 时沿用已有挂载或本机选择，新 location 使用共享根分支；手动模式保留创建 location 分支的行为。同一个 principal 使用同路径和相同参数时复用 binding。提供 revision 要求 `read_only`。`automatic: true` 明确要求自动模式、远端存储和支持的驱动，无法覆盖全局开关。 |
-| `mount_save` | `mount`, `expected_binding_generation`, `durability?`, `wait_for_remote_ms?` | 将当前挂载的文件保存为正式 commit，更新 `formal_head` 并清除已保存内容的 `dirty` 状态。内容没有变化时复用当前 commit。返回版本操作结果；过期 binding 返回 `STALE_BINDING`。 |
+| `mount_save` | `mount`, `expected_binding_generation`, `message?`, `durability?`, `wait_for_remote_ms?` | 将当前挂载的文件保存为正式 commit，更新 `formal_head` 并清除已保存内容的 `dirty` 状态。可选 `message` 最多 4096 UTF-8 字节，不能含有 NUL。内容没有变化时复用当前 commit 及其提交说明。返回版本操作结果；过期 binding 返回 `STALE_BINDING`。 |
 | `mount_release` | `operation`, `expected_binding_generation` | 使用目录的进程释放原始挂载后，继续等待中的操作。operation ID 来自等待中的操作结果记录。 |
 | `mount_unmount` | `mount`, `generation` | 使用 `workspace_status.mounts` 中的 binding ID 和 generation，请求正常卸载。 |
 

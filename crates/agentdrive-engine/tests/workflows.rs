@@ -14,6 +14,8 @@ mod history;
 mod merge_history;
 #[path = "workflows/merge_recording.rs"]
 mod merge_recording;
+#[path = "workflows/mount_messages.rs"]
+mod mount_messages;
 #[path = "workflows/relationships.rs"]
 mod relationships;
 use agentdrive_ports::*;
@@ -1940,6 +1942,7 @@ async fn branch_switch_preserves_edits_and_waits_for_handles() {
             context(),
             SaveMount {
                 mount: mount.id,
+                message: None,
                 expected_binding_generation: mount.generation,
                 durability: Durability::Local,
                 wait_for_remote_ms: None,
@@ -2567,6 +2570,7 @@ async fn new_locations_fork_latest_published_root_and_persist_selection() {
                 context(),
                 SaveMount {
                     mount: main.id,
+                    message: None,
                     expected_binding_generation: main.generation,
                     durability: Durability::Remote,
                     wait_for_remote_ms: None,
@@ -2709,6 +2713,7 @@ async fn mount_save_is_idempotent_and_can_confirm_remote_without_another_revisio
     harness.write_new(&fs, "saved.txt", b"content").await;
     let request = SaveMount {
         mount: binding.id,
+        message: None,
         expected_binding_generation: binding.generation,
         durability: Durability::Local,
         wait_for_remote_ms: None,
@@ -2807,6 +2812,7 @@ async fn mount_save_commits_autosaved_changes_for_merge() {
                 context(),
                 SaveMount {
                     mount: target.id,
+                    message: None,
                     expected_binding_generation: target.generation,
                     durability: Durability::Local,
                     wait_for_remote_ms: None,
@@ -3539,6 +3545,7 @@ async fn merged_publication_confirms_every_operation_after_outage_and_lost_respo
                     context(),
                     SaveMount {
                         mount: binding.id,
+                        message: None,
                         expected_binding_generation: binding.generation,
                         durability: Durability::Local,
                         wait_for_remote_ms: None,
@@ -3674,6 +3681,7 @@ async fn fork_and_remote_location_mount_include_unversioned_checkpoints() {
                 context(),
                 SaveMount {
                     mount: other.id,
+                    message: None,
                     expected_binding_generation: other.generation,
                     durability: Durability::Remote,
                     wait_for_remote_ms: None,
@@ -3786,6 +3794,7 @@ async fn remote_save_can_return_a_receipt_before_publication_and_be_polled() {
     harness.write_new(&fs, "file", b"bounded remote wait").await;
     let request = SaveMount {
         mount: binding.id,
+        message: None,
         expected_binding_generation: binding.generation,
         durability: Durability::Remote,
         wait_for_remote_ms: Some(0),
@@ -3887,6 +3896,7 @@ async fn offline_save_retains_incremental_history_after_cache_collection() {
                 context(),
                 SaveMount {
                     mount: binding.id,
+                    message: None,
                     expected_binding_generation: binding.generation,
                     durability: Durability::Local,
                     wait_for_remote_ms: None,

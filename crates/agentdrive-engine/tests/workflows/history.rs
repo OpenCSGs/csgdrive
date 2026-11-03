@@ -179,6 +179,7 @@ async fn synchronization_requires_saved_content_and_matching_remote_revision() {
                 context(),
                 SaveMount {
                     mount: mount.id,
+                    message: None,
                     expected_binding_generation: mount.generation,
                     durability: Durability::Local,
                     wait_for_remote_ms: None,

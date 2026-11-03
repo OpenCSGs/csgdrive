@@ -79,6 +79,18 @@ async fn local_mcp_clients_share_operations_without_credentials() {
     assert_eq!(tools.len(), 34);
     assert!(tools.iter().any(|tool| tool.name == "workspace_discover"));
     assert!(tools.iter().any(|tool| tool.name == "workspace_delete"));
+    let mount_save = tools.iter().find(|tool| tool.name == "mount_save").unwrap();
+    let save_schema = &mount_save.input_schema["$defs"]["SaveMount"];
+    assert_eq!(
+        save_schema["properties"]["message"]["type"],
+        json!(["string", "null"])
+    );
+    assert!(
+        !save_schema["required"]
+            .as_array()
+            .unwrap()
+            .contains(&json!("message"))
+    );
     let adoption = tools
         .iter()
         .find(|tool| tool.name == "workspace_adopt_directory")
@@ -798,6 +810,80 @@ async fn local_mcp_clients_share_operations_without_credentials() {
         .json(&json!({"request_id":"dashboard-save", "request":{"mount":binding["id"],"expected_binding_generation":binding["generation"]}}))
         .send().await.unwrap().json().await.unwrap();
     assert_eq!(saved["local_saved"], true);
+    let mounted: MountBinding = serde_json::from_value(binding.clone()).unwrap();
+    let fs = FsContext {
+        mount: mounted.id,
+        generation: mounted.generation,
+        identity: LocalIdentity {
+            uid: 1000,
+            gid: 1000,
+        },
+    };
+    let inode = engine
+        .services
+        .files
+        .create(&fs, InodeId::ROOT, "article.md", FileKind::File, 0o644)
+        .await
+        .unwrap();
+    let handle = engine
+        .services
+        .files
+        .open(
+            &fs,
+            inode.id,
+            OpenMode {
+                read: true,
+                write: true,
+                append: false,
+            },
+        )
+        .await
+        .unwrap();
+    engine
+        .services
+        .files
+        .write(
+            &fs,
+            handle.id,
+            0,
+            bytes::Bytes::from_static(b"reviewed content"),
+        )
+        .await
+        .unwrap();
+    engine.services.files.release(&fs, handle.id).await.unwrap();
+    let message = "完善文章说明\n保留项目资料组织方式";
+    let message_client = Client::connect(&endpoint).await.unwrap();
+    let committed = message_client
+        .call(
+            "mount_save".into(),
+            json!({"request_id":"mcp-save-with-message", "request":{
+                "mount":binding["id"], "expected_binding_generation":binding["generation"],
+                "message":message
+            }}),
+        )
+        .await
+        .unwrap();
+    assert_ne!(committed.is_error, Some(true));
+    let committed = committed.structured_content.unwrap();
+    assert_eq!(committed["local_saved"], true);
+    let history = message_client
+        .call(
+            "revision_list".into(),
+            json!({"workspace":workspace,"branch":child}),
+        )
+        .await
+        .unwrap()
+        .structured_content
+        .unwrap();
+    let revision = history
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|revision| revision["id"] == committed["result"]["revision"])
+        .unwrap();
+    assert_eq!(revision["message"], message);
+    assert_eq!(revision["kind"], "commit");
+    message_client.close().await.unwrap();
     let unmounted: Value = http.post(format!("{base}/api/commands/mount_unmount"))
         .json(&json!({"request_id":"dashboard-unmount", "request":{"mount":binding["id"],"generation":binding["generation"]}}))
         .send().await.unwrap().json().await.unwrap();

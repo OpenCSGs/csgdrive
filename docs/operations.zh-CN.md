@@ -92,7 +92,7 @@ agentdrive call merge_apply --request-id "$RUN_ID-apply" --json - < merge-apply.
 
 Dashboard 同步状态同时核验本机修改与保存序号，以及远端确认的 owner、authority epoch、generation、保存序号、版本和内容对象。发布队列为空时，新修改仍可能等待本机保存或远端确认。工作区状态表示本机负责写入的分支，档案室分别显示每个分支的保存与确认状态。
 
-本地 fsync 保存当前工作内容，不增加 revision。`mount_save` 创建正式 commit 并更新 `formal_head`；内容没有变化时复用当前 commit。`revision_commit` 还支持提供提交说明或创建 checkpoint。后台自动保存继续按照五秒无新写入、三十秒持续写入的期限生成 `Autosave` revision。远端 fsync 发布检查点并等待确认；合并检查点同步任务保证最新持久状态，显式 revision 继续保留在历史中。
+本地 fsync 保存当前工作内容，不增加 revision。`mount_save` 创建正式 commit 并更新 `formal_head`。`mount_save` 和 `revision_commit` 均支持可选的 `message`，最多 4096 UTF-8 字节，不能含有 NUL。内容没有变化时复用当前 commit 并保留原有提交说明，因此仅修改 `message` 不会重命名已有 commit。`revision_commit` 还支持创建 checkpoint。后台自动保存继续按照五秒无新写入、三十秒持续写入的期限生成 `Autosave` revision。远端 fsync 发布检查点并等待确认；合并检查点同步任务保证最新持久状态，显式 revision 继续保留在历史中。
 
 `mount_save.wait_for_remote_ms` 接受 0–120000 毫秒，默认 30000。该参数限制本地保存完成后的远端等待时间，本地内容捕获耗时单独计算。等待到期时返回 `local_saved: true`、`remote_confirmed: false`，发布继续进行，等待到期本身不代表失败。使用返回的 ID 查询 `operation_get`，或使用原 request ID 查询 `operation_by_request`，无需重复创建保存请求。实际远端错误保留在 `error` 中，持久化任务会继续重试。文件系统的远端 fsync 必须确认完成才能成功返回。
 
