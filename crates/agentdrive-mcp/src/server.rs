@@ -456,7 +456,7 @@ pub fn tool_catalog() -> Vec<Tool> {
         ),
         tool::<Command<SaveMount>>(
             "mount_save",
-            "Save mounted files as a formal commit, updating formal_head and clearing dirty for the saved content. Unchanged content reuses the current commit. For remote durability, wait_for_remote_ms limits confirmation waiting (default 30000, range 0..120000). A pending receipt has local_saved=true and remote_confirmed=false; poll operation_get for sync_progress and confirmation. Background publication continues after the wait expires.",
+            "Save mounted files as a formal commit, updating formal_head and clearing dirty for the saved content. Optional message sets the new commit description (maximum 4096 UTF-8 bytes, no NUL). Unchanged content reuses the current commit and retains its message. For remote durability, wait_for_remote_ms limits confirmation waiting (default 30000, range 0..120000). A pending receipt has local_saved=true and remote_confirmed=false; poll operation_get for sync_progress and confirmation. Background publication continues after the wait expires.",
             false,
         ),
         tool::<Command<ReleaseMount>>(

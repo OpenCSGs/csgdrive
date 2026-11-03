@@ -150,6 +150,7 @@ async fn storage_switch_preserves_autosaves_commits_and_history_on_a_fresh_locat
                 context(),
                 SaveMount {
                     mount: binding.id,
+                    message: None,
                     expected_binding_generation: binding.generation,
                     durability: Durability::Local,
                     wait_for_remote_ms: None,

@@ -1165,7 +1165,7 @@ impl MountApi for MountService {
                     .save_locked(
                         operation.clone(),
                         SaveRevision {
-                            message: None,
+                            message: request.message,
                             guard: BranchGuard::from(&branch),
                             kind: RevisionKind::Commit,
                             parents: None,

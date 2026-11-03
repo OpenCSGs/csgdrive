@@ -166,6 +166,7 @@ fn command_error(result: Result<OperationRecord>) -> Error {
 fn save_request(binding: &MountBinding) -> SaveMount {
     SaveMount {
         mount: binding.id,
+        message: None,
         expected_binding_generation: binding.generation,
         durability: Durability::Remote,
         wait_for_remote_ms: None,
@@ -921,6 +922,7 @@ async fn lost_authority_preserves_changes_and_rebinds_after_handles_close() {
                 context(),
                 SaveMount {
                     mount: moved.id,
+                    message: None,
                     expected_binding_generation: moved.generation,
                     durability: Durability::Local,
                     wait_for_remote_ms: None,
@@ -1471,6 +1473,7 @@ async fn authority_publication_blocks_external_mutations_until_the_cas_completes
                 context(),
                 SaveMount {
                     mount: binding.id,
+                    message: None,
                     expected_binding_generation: binding.generation,
                     durability: Durability::Local,
                     wait_for_remote_ms: None,

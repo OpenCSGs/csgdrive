@@ -296,6 +296,7 @@ pub struct AdoptDirectory {
 #[derive(Clone, Debug, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct SaveMount {
+    pub message: Option<String>,
     pub mount: MountId,
     pub expected_binding_generation: u64,
     #[serde(default)]

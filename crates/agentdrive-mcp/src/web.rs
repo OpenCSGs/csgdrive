@@ -568,6 +568,7 @@ async fn lifecycle(
                             expected_binding_generation,
                             durability: Durability::Local,
                             wait_for_remote_ms: None,
+                            message: None,
                         }
                     )
                     .await?
