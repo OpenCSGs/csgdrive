@@ -1,4 +1,4 @@
-export function createNavigation({element, $, navigate}) {
+export function createNavigation({element, $, navigate, deleteWorkspace}) {
   const pages = [
     ['archive-nav', '/archive', '档案室'],
     ['history-nav', '/dashboard', '分支与版本'],
@@ -91,6 +91,7 @@ export function createNavigation({element, $, navigate}) {
     if (key !== listKey) {
       const focused = document.activeElement?.dataset.workspace, scroll = $('workspace-list').scrollTop;
       $('workspace-list').replaceChildren(...items.map(workspace => {
+        const row = element('div', 'workspace-row'); row.dataset.name = workspace.name.toLocaleLowerCase();
         const link = element('a', 'workspace-link');
         const url = new URL('/archive', location.origin); url.searchParams.set('workspace', workspace.id);
         link.href = url.pathname + url.search; link.dataset.workspace = workspace.id;
@@ -99,13 +100,16 @@ export function createNavigation({element, $, navigate}) {
         const icon = element('span', 'workspace-avatar', Array.from(workspace.name)[0]?.toLocaleUpperCase() || 'W');
         icon.setAttribute('aria-hidden', 'true');
         link.append(icon, element('span', 'workspace-title', workspace.name));
-        return link;
+        const remove = element('button', 'workspace-delete-button', '删除'); remove.type = 'button';
+        remove.setAttribute('aria-label', `删除工作区 ${workspace.name}`); remove.setAttribute('aria-haspopup', 'dialog');
+        remove.onclick = () => deleteWorkspace(workspace, remove);
+        row.append(link, remove); return row;
       }));
       $('workspace-list').scrollTop = scroll;
-      if (focused) [...$('workspace-list').children].find(link => link.dataset.workspace === focused)?.focus({preventScroll:true});
+      if (focused) [...$('workspace-list').querySelectorAll('a[data-workspace]')].find(link => link.dataset.workspace === focused)?.focus({preventScroll:true});
       listKey = key;
     }
-    for (const link of $('workspace-list').children) {
+    for (const link of $('workspace-list').querySelectorAll('a[data-workspace]')) {
       const active = !settings && link.dataset.workspace === selected?.id;
       link.classList.toggle('workspace-active', active);
       if (active) link.setAttribute('aria-current', 'true'); else link.removeAttribute('aria-current');

@@ -279,6 +279,34 @@ async fn branch_discovery_reads_all_pages_and_errors_do_not_expose_tokens() {
 }
 
 #[tokio::test]
+async fn workspace_discovery_reads_directory_pages_and_ignores_unrelated_names() {
+    let server = Server::new().await;
+    let backend = server.backend();
+    let mut expected = std::collections::BTreeSet::new();
+    {
+        let mut data = server.data.lock().unwrap();
+        let mut files = data.files().clone();
+        for _ in 0..235 {
+            let workspace = WorkspaceId::new();
+            expected.insert(workspace);
+            files.insert(
+                format!("agentdrive/v1/{workspace}/control.json"),
+                "{}".into(),
+            );
+        }
+        files.insert("agentdrive/v1/README.md".into(), "catalog".into());
+        files.insert("agentdrive/v1/unrelated/file.json".into(), "{}".into());
+        data.publish(files);
+    }
+    assert_eq!(
+        backend.list_workspaces().await.unwrap(),
+        expected.into_iter().collect::<Vec<_>>()
+    );
+    server.data.lock().unwrap().unavailable = true;
+    assert!(backend.list_workspaces().await.is_err());
+}
+
+#[tokio::test]
 async fn credentials_are_not_forwarded_to_redirects() {
     let server = Server::new().await;
     let destination = Server::new().await;

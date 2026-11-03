@@ -631,6 +631,10 @@ impl LocalStateStore for LocalBackend {
                 transaction.execute("INSERT INTO workspaces(id,data) VALUES(?1,?2)", params![workspace.id.to_string(), encode(workspace)?]).map_err(sql_error)?;
             }
             for workspace in &commit.workspaces {
+                let previous: Option<Workspace> = read_one(&transaction, "SELECT data FROM workspaces WHERE id=?1", &[workspace.id.to_string()])?;
+                if previous.is_some_and(|w| w.deleted) && !workspace.deleted {
+                    return Err(Error::new(ErrorCode::NotFound, "workspace has been deleted"));
+                }
                 transaction.execute("UPDATE workspaces SET data=?2 WHERE id=?1", params![workspace.id.to_string(), encode(workspace)?]).map_err(sql_error)?;
             }
             for selection in &commit.selections {

@@ -31,6 +31,7 @@ pub struct EngineConfig {
 
 #[derive(Debug)]
 pub struct Engine {
+    workspaces: Arc<WorkspaceService>,
     pub services: Services,
     pub runtime: Arc<Runtime>,
     pub(crate) revisions: Arc<RevisionService>,
@@ -143,7 +144,7 @@ impl Engine {
         collaboration.initialize().await?;
         let services = Services {
             collaboration: collaboration.clone(),
-            workspace,
+            workspace: workspace.clone(),
             revisions: versions,
             replica: publisher.clone(),
             cache,
@@ -156,6 +157,7 @@ impl Engine {
             branch_files,
         };
         Ok(Arc::new(Self {
+            workspaces: workspace,
             services,
             runtime,
             revisions,
@@ -194,6 +196,9 @@ impl Engine {
                     .workspace(branch.workspace)
                     .await?
                     .ok_or_else(|| Error::integrity("workspace is missing"))?;
+                if workspace.deleted {
+                    continue;
+                }
                 self.revisions.autosave(id, workspace.owner).await?;
                 saved += 1;
             }
@@ -206,7 +211,14 @@ impl Engine {
             return Ok(());
         }
         let mut first_error = None;
-        for workspace in self.runtime.state.workspaces().await? {
+        for workspace in self
+            .runtime
+            .state
+            .workspaces()
+            .await?
+            .into_iter()
+            .filter(|w| !w.deleted)
+        {
             if (!self.runtime.state.sync_jobs(workspace.id).await?.is_empty()
                 || !self
                     .runtime
@@ -227,13 +239,23 @@ impl Engine {
         first_error.map_or(Ok(()), Err)
     }
 
-    /// 仅处理 Dashboard 已请求的工作区，各工作区共享刷新结果。
+    /// 更新远端工作区目录，并处理 Dashboard 已请求的分支历史刷新。
     pub async fn refresh_requested_history(&self) {
-        self.publisher.refresh_requested_history().await;
+        tokio::join!(
+            self.workspaces.refresh_catalog_due(),
+            self.publisher.refresh_requested_history()
+        );
     }
 
     pub async fn flush_local(&self) -> Result<()> {
-        for workspace in self.runtime.state.workspaces().await? {
+        for workspace in self
+            .runtime
+            .state
+            .workspaces()
+            .await?
+            .into_iter()
+            .filter(|w| !w.deleted)
+        {
             for branch in self.runtime.state.branches(workspace.id).await? {
                 if branch.owner == self.runtime.location
                     && branch.state == BranchState::Writable

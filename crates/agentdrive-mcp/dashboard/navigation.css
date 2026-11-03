@@ -85,3 +85,20 @@
   .app .topbar-right #updated { display:none; }
   .app .panels { grid-template-columns:1fr; }
 }
+
+.workspace-row { position:relative; }
+.workspace-row .workspace-link { padding-right:48px; }
+.workspace-delete-button { position:absolute; right:6px; top:50%; transform:translateY(-50%); color:#eab6b0; border:1px solid #70544f; background:transparent; border-radius:4px; padding:5px; font-size:11px; }
+.workspace-delete-button:hover,.workspace-delete-button:focus-visible { background:#603c39; color:white; }
+.workspaces-collapsed .workspace-delete-button { display:none; }
+.workspaces-collapsed .workspace-row .workspace-link { padding-right:10px; }
+.revision-dialog.workspace-delete-dialog { max-width:560px; padding:24px; }
+.workspace-delete-dialog h2 { margin:0 0 16px; font-size:20px; }
+.workspace-delete-dialog p { line-height:1.7; }
+.workspace-delete-dialog label { display:flex; flex-direction:column; gap:8px; margin:20px 0; }
+.workspace-delete-dialog input { width:100%; padding:10px; border:1px solid #d3dcd8; border-radius:5px; }
+.workspace-delete-name { font-weight:600; overflow-wrap:anywhere; }
+.workspace-delete-confirm { color:white; background:#ac3931; border:1px solid #ac3931; border-radius:5px; padding:9px 14px; }
+.workspace-delete-confirm:disabled { opacity:.45; }
+.workspace-delete-dialog .management-actions { justify-content:flex-end; }
+.workspace-delete-dialog .command-error:empty { display:none; }

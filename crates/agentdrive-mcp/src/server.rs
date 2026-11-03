@@ -39,6 +39,25 @@ impl McpServer {
             }};
         }
         match name {
+            "workspace_delete" => {
+                let input: Command<WorkspaceQuery> = parse(arguments)?;
+                encode_operation(
+                    self.services
+                        .workspace
+                        .delete(
+                            RequestContext {
+                                principal: self.principal.clone(),
+                                request_id: input.request_id,
+                            },
+                            input.request.workspace,
+                        )
+                        .await?,
+                )
+            }
+            "workspace_discover" => {
+                let _: Empty = parse(arguments)?;
+                encode(self.services.workspace.discover(&self.principal).await?)
+            }
             "workspace_create" => command!(CreateWorkspace, workspace, create),
             "workspace_adopt_directory" => command!(AdoptDirectory, workspace, adopt_directory),
             "workspace_import" => command!(ImportDirectory, workspace, import_directory),
@@ -298,6 +317,16 @@ pub fn tool_catalog() -> Vec<Tool> {
         tool::<Command<AdoptDirectory>>(
             "workspace_adopt_directory",
             "Convert a local directory into a mount at the same path. Omit workspace to create a workspace named after the directory with its contents as the initial main revision. Supply workspace to import a new branch (requires manage permission). Stop all file writes first. Requires restart_agent=true: after this operation, stop using the directory and restart the Agent and its terminals before any further file access. Original files remain at result.backup_path. Retry failures with the same request_id; inspect mount_ready and error.",
+            false,
+        ),
+        tool::<Empty>(
+            "workspace_discover",
+            "Discover accessible workspaces in the configured remote storage and update the local catalog.",
+            true,
+        ),
+        tool::<Command<WorkspaceQuery>>(
+            "workspace_delete",
+            "Delete a workspace globally. Unmount local directories and finish pending changes first. Remote deletion prevents new imports and publication; other locations retire their mounts after observing it. Reuse request_id on retry.",
             false,
         ),
         tool::<Command<CreateWorkspace>>(

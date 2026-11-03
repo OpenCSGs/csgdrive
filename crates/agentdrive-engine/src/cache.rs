@@ -543,6 +543,7 @@ mod retention_tests {
         local
             .commit(LocalCommit {
                 new_workspaces: vec![Workspace {
+                    deleted: false,
                     id: workspace,
                     name: "retention".into(),
                     owner: actor.clone(),

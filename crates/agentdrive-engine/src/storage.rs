@@ -31,7 +31,14 @@ impl Engine {
         persist: &mut dyn FnMut() -> Result<()>,
     ) -> Result<()> {
         let _lifecycle = self.runtime.lifecycle.lock().await;
-        let workspaces = self.runtime.state.workspaces().await?;
+        let workspaces: Vec<_> = self
+            .runtime
+            .state
+            .workspaces()
+            .await?
+            .into_iter()
+            .filter(|w| !w.deleted)
+            .collect();
         for workspace in &workspaces {
             if self
                 .runtime
@@ -203,6 +210,12 @@ async fn publish_workspace(
             if control.workspace != workspace || control.initial_revision != initial_revision {
                 return Err(Error::integrity(
                     "destination workspace identity or policy differs",
+                ));
+            }
+            if control.workspace.deleted {
+                return Err(Error::new(
+                    ErrorCode::NotFound,
+                    "workspace has been deleted",
                 ));
             }
             if control.phase != GcPhase::Open {

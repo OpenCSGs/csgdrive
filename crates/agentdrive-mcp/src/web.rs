@@ -69,7 +69,9 @@ async fn management_command(
 ) -> std::result::Result<Json<Value>, ApiError> {
     if !matches!(
         command.as_str(),
-        "branch_create"
+        "workspace_delete"
+            | "workspace_discover"
+            | "branch_create"
             | "branch_switch"
             | "mount_prepare"
             | "mount_save"
@@ -123,6 +125,7 @@ pub(crate) fn assets() -> Router {
         .route("/collaboration.js", get(|| async { ([(header::CONTENT_TYPE, "text/javascript; charset=utf-8")], include_str!("../dashboard/collaboration.js")) }))
         .route("/commands.js", get(|| async { ([(header::CONTENT_TYPE, "text/javascript; charset=utf-8")], include_str!("../dashboard/commands.js")) }))
         .route("/management.css", get(|| async { ([(header::CONTENT_TYPE, "text/css; charset=utf-8")], include_str!("../dashboard/management.css")) }))
+        .route("/workspace-actions.js", get(|| async { ([(header::CONTENT_TYPE, "text/javascript; charset=utf-8")], include_str!("../dashboard/workspace-actions.js")) }))
         .route("/navigation.js", get(|| async { ([(header::CONTENT_TYPE, "text/javascript; charset=utf-8")], include_str!("../dashboard/navigation.js")) }))
         .route("/navigation.css", get(|| async { ([(header::CONTENT_TYPE, "text/css; charset=utf-8")], include_str!("../dashboard/navigation.css")) }))
         .route("/dashboard.js", get(|| async { ([(header::CONTENT_TYPE, "text/javascript; charset=utf-8")], include_str!("../dashboard/dashboard.js")) }))
@@ -171,11 +174,23 @@ impl IntoResponse for ApiError {
     }
 }
 
+#[derive(Default, Deserialize)]
+struct CatalogQuery {
+    #[serde(default)]
+    discover: bool,
+}
+
 async fn workspaces(
     State(services): State<Services>,
     Extension(actor): Extension<Principal>,
+    Query(query): Query<CatalogQuery>,
 ) -> std::result::Result<Json<Value>, ApiError> {
-    Ok(Json(json!(services.workspace.list(&actor).await?)))
+    let listed = if query.discover {
+        services.workspace.discover(&actor).await?
+    } else {
+        services.workspace.list(&actor).await?
+    };
+    Ok(Json(json!(listed)))
 }
 
 async fn merge_history(

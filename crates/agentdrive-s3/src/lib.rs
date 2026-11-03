@@ -496,6 +496,23 @@ impl RemoteRefStore for S3Backend {
         }
     }
 
+    async fn list_workspaces(&self) -> Result<Vec<WorkspaceId>> {
+        let prefix = Path::from(format!("{}/", self.prefix));
+        let listed = self
+            .client
+            .list_with_delimiter(Some(&prefix))
+            .await
+            .map_err(store_error)?;
+        let mut ids = std::collections::BTreeSet::new();
+        for path in listed.common_prefixes {
+            if let Some(name) = path.filename()
+                && let Ok(id) = name.parse::<WorkspaceId>()
+            {
+                ids.insert(id);
+            }
+        }
+        Ok(ids.into_iter().collect())
+    }
     async fn list_branches(&self, workspace: WorkspaceId) -> Result<Vec<BranchId>> {
         let prefix = Path::from(format!("{}/{workspace}/branches/", self.prefix));
         let mut stream = self.client.list(Some(&prefix));

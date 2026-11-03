@@ -89,6 +89,19 @@ impl RemoteRefStore for OpenCsgBackend {
         }
     }
 
+    async fn list_workspaces(&self) -> Result<Vec<WorkspaceId>> {
+        let head = self.repository.head().await?;
+        let entries = self.repository.entries(&self.prefix, &head).await?;
+        let mut ids = std::collections::BTreeSet::new();
+        for entry in entries {
+            if entry.kind != "file"
+                && let Ok(id) = entry.name.parse::<WorkspaceId>()
+            {
+                ids.insert(id);
+            }
+        }
+        Ok(ids.into_iter().collect())
+    }
     async fn list_branches(&self, workspace: WorkspaceId) -> Result<Vec<BranchId>> {
         let head = self.repository.head().await?;
         let entries = self

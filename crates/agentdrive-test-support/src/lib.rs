@@ -192,6 +192,18 @@ impl RemoteRefStore for MemoryRemote {
             },
         )
     }
+    async fn list_workspaces(&self) -> Result<Vec<WorkspaceId>> {
+        self.check()?;
+        Ok(self
+            .refs
+            .lock()
+            .keys()
+            .filter_map(|key| match key {
+                RefKey::Workspace(id) => Some(*id),
+                _ => None,
+            })
+            .collect())
+    }
     async fn list_branches(&self, workspace: WorkspaceId) -> Result<Vec<BranchId>> {
         self.check()?;
         Ok(self

@@ -76,7 +76,9 @@ async fn local_mcp_clients_share_operations_without_credentials() {
     let owner = Client::connect(&endpoint).await.unwrap();
     let peer = Client::connect(&endpoint).await.unwrap();
     let tools = owner.tools().await.unwrap().tools;
-    assert_eq!(tools.len(), 32);
+    assert_eq!(tools.len(), 34);
+    assert!(tools.iter().any(|tool| tool.name == "workspace_discover"));
+    assert!(tools.iter().any(|tool| tool.name == "workspace_delete"));
     let adoption = tools
         .iter()
         .find(|tool| tool.name == "workspace_adopt_directory")

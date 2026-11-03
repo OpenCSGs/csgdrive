@@ -307,7 +307,14 @@ impl MountService {
     async fn remove_old(&self, old: &MountBinding) -> Result<()> {
         self.pause_old(old).await?;
         let result = async {
-            if old.access == AccessMode::ReadWrite {
+            if old.access == AccessMode::ReadWrite
+                && !self
+                    .runtime
+                    .state
+                    .workspace(old.workspace)
+                    .await?
+                    .is_some_and(|w| w.deleted)
+            {
                 let branch = self.runtime.branch(old.branch).await?;
                 if branch.state == BranchState::Writable
                     && branch.owner == self.runtime.location
@@ -351,6 +358,14 @@ impl MountService {
     }
 
     async fn install_new(&self, binding: &MountBinding) -> Result<MountBinding> {
+        self.runtime
+            .authorize(
+                &binding.principal,
+                binding.workspace,
+                Some(binding.branch),
+                Permission::Read,
+            )
+            .await?;
         let mut ready = binding.clone();
         ready.state = MountState::Ready;
         self.runtime

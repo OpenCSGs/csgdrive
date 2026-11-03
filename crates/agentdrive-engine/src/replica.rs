@@ -508,6 +508,21 @@ pub(crate) fn decode_branch_ref(
     Ok(reference)
 }
 
+pub(crate) fn decode_workspace_control(id: WorkspaceId, bytes: &[u8]) -> Result<WorkspaceControl> {
+    if bytes.len() > MAX_METADATA_BYTES {
+        return Err(Error::integrity("workspace control exceeds format limit"));
+    }
+    let control: WorkspaceControl = decode(bytes)?;
+    if control.workspace.id != id
+        || control.workspace.format_version != FORMAT_VERSION
+        || control.initial_revision.workspace != id
+        || control.initial_revision.id != control.workspace.initial_revision
+    {
+        return Err(Error::integrity("invalid remote workspace"));
+    }
+    Ok(control)
+}
+
 #[async_trait]
 impl ReplicaPublisher for ReplicaService {
     async fn load_workspace(&self, actor: &Principal, workspace: WorkspaceId) -> Result<()> {
@@ -525,17 +540,7 @@ impl ReplicaPublisher for ReplicaService {
                 .ok_or_else(|| {
                     Error::new(ErrorCode::NotFound, "remote workspace does not exist")
                 })?;
-            if value.bytes.len() > MAX_METADATA_BYTES {
-                return Err(Error::integrity("workspace control exceeds format limit"));
-            }
-            let control: WorkspaceControl = decode(&value.bytes)?;
-            if control.workspace.id != workspace
-                || control.workspace.format_version != FORMAT_VERSION
-                || control.initial_revision.id != control.workspace.initial_revision
-                || control.initial_revision.workspace != workspace
-            {
-                return Err(Error::integrity("invalid remote workspace"));
-            }
+            let control = decode_workspace_control(workspace, &value.bytes)?;
             control.workspace.authorize(actor, None, Permission::Read)?;
             self.content
                 .metadata(workspace, &control.initial_revision.root)
@@ -583,7 +588,13 @@ impl ReplicaPublisher for ReplicaService {
         let key = RefKey::Workspace(workspace.id);
         for _ in 0..8 {
             if let Some(existing) = refs.get(&key).await? {
-                let control: WorkspaceControl = decode(&existing.bytes)?;
+                let control = decode_workspace_control(workspace.id, &existing.bytes)?;
+                if control.workspace.deleted {
+                    return Err(Error::new(
+                        ErrorCode::NotFound,
+                        "workspace has been deleted",
+                    ));
+                }
                 if control.workspace != workspace || control.initial_revision != revision {
                     return Err(Error::integrity(
                         "remote workspace identity or policy differs",

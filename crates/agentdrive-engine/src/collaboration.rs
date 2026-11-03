@@ -234,7 +234,14 @@ impl CollaborationService {
 
     /// 在服务开始接收文件请求之前恢复持久记录中的冻结状态。
     pub async fn initialize(&self) -> Result<()> {
-        for workspace in self.runtime.state.workspaces().await? {
+        for workspace in self
+            .runtime
+            .state
+            .workspaces()
+            .await?
+            .into_iter()
+            .filter(|w| !w.deleted)
+        {
             let failed = self.failed_authorities(workspace.id).await?;
             for record in self.runtime.state.collaborations(workspace.id).await? {
                 if self.transition_active(&record)
@@ -309,7 +316,14 @@ impl CollaborationService {
     pub async fn tick(&self) -> Result<()> {
         self.register_mounted_branches().await?;
         let mut first_error = None;
-        for workspace in self.runtime.state.workspaces().await? {
+        for workspace in self
+            .runtime
+            .state
+            .workspaces()
+            .await?
+            .into_iter()
+            .filter(|w| !w.deleted)
+        {
             for candidate in self.runtime.state.collaborations(workspace.id).await? {
                 let Ok(_coordinate) = self.coordinate(candidate.branch) else {
                     continue;

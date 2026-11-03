@@ -6,7 +6,12 @@ use agentdrive_ports::*;
 use async_trait::async_trait;
 use std::sync::Arc;
 
+mod catalog;
+
 pub struct WorkspaceService {
+    catalog_gate: tokio::sync::Mutex<()>,
+    catalog_actor: parking_lot::Mutex<Option<Principal>>,
+    catalog_checked: parking_lot::Mutex<Option<u64>>,
     runtime: Arc<Runtime>,
     revisions: Arc<RevisionService>,
     operations: Arc<OperationService>,
@@ -35,6 +40,9 @@ impl WorkspaceService {
         live: Arc<agentdrive_config::LiveConfig>,
     ) -> Arc<Self> {
         Arc::new(Self {
+            catalog_gate: tokio::sync::Mutex::new(()),
+            catalog_actor: parking_lot::Mutex::new(None),
+            catalog_checked: parking_lot::Mutex::new(None),
             runtime,
             revisions,
             operations,
@@ -125,6 +133,7 @@ impl WorkspaceService {
         let id = WorkspaceId::new();
         let initial_revision = RevisionId::new();
         let workspace = Workspace {
+            deleted: false,
             id,
             name: request.name,
             owner: context.operation.principal.clone(),
@@ -248,6 +257,21 @@ impl WorkspaceService {
 
 #[async_trait]
 impl WorkspaceApi for WorkspaceService {
+    async fn discover(&self, actor: &Principal) -> Result<Vec<Workspace>> {
+        *self.catalog_actor.lock() = Some(actor.clone());
+        let _catalog = self.catalog_gate.lock().await;
+        self.refresh_catalog(Some(actor)).await?;
+        self.list(actor).await
+    }
+
+    async fn delete(
+        &self,
+        context: RequestContext,
+        workspace: WorkspaceId,
+    ) -> Result<OperationRecord> {
+        self.delete_workspace(context, workspace).await
+    }
+
     async fn adopt_directory(
         &self,
         context: RequestContext,
@@ -487,6 +511,7 @@ impl WorkspaceApi for WorkspaceService {
     }
 
     async fn list(&self, actor: &Principal) -> Result<Vec<Workspace>> {
+        *self.catalog_actor.lock() = Some(actor.clone());
         Ok(self
             .runtime
             .state
@@ -516,6 +541,20 @@ impl WorkspaceApi for WorkspaceService {
             .runtime
             .authorize(actor, workspace, None, Permission::Read)
             .await?;
+        if self.runtime.state.branches(workspace.id).await?.is_empty()
+            && self
+                .runtime
+                .state
+                .remote_refs(workspace.id)
+                .await?
+                .is_empty()
+            && self.revisions.trees.content.refs().is_some()
+        {
+            self.revisions
+                .publisher
+                .refresh_history(workspace.id)
+                .await?;
+        }
         let branches = self.runtime.state.branches(workspace.id).await?;
         let remote_branches = self.branch_references(&workspace, &branches).await?;
         let pending_jobs = self.runtime.state.sync_jobs(workspace.id).await?.len();

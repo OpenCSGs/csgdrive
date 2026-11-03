@@ -33,6 +33,13 @@ async function setup(t, options = {}) {
     assert.equal(request.headers().authorization, undefined);
     if (url.pathname === '/api/settings') return route.fulfill({json:{revision:'config',config_path:'/config',runtime:{cache:{max_bytes:2147483648},allowed_origins:[],remote:null},startup:{listen:'127.0.0.1:7421',data_dir:'/state',mount_roots:[],directory_roots:[]}}});
     if (url.pathname === '/api/workspaces') return data.listError ? route.fulfill({status:503,json:{error:{message:'Workspaces unavailable'}}}) : route.fulfill({json:data.workspaces});
+    if (url.pathname === '/api/commands/workspace_delete') {
+      const input = request.postDataJSON();
+      (data.deletions ||= []).push(input);
+      if (data.deleteError) return route.fulfill({json:{error:{message:data.deleteError},local_saved:false}});
+      data.workspaces = data.workspaces.filter(w => w.id !== input.request.workspace);
+      return route.fulfill({json:{phase:'complete',local_saved:true,error:null}});
+    }
     const workspace = data.workspaces.find(workspace => url.pathname.split('/')[3] === workspace.id);
     if (!workspace) return route.fulfill({status:404,json:{error:{message:'Not found'}}});
     if (data.pending && url.pathname.endsWith('/archive')) await data.pending(workspace.id);
@@ -151,4 +158,54 @@ test('compact navigation remains reachable after resizing and keyboard collapse'
   assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth <= innerWidth),true);
   await page.locator('#settings-nav').click(); await page.locator('#settings-form').waitFor();
   assert.equal(await page.locator('#workspace-menu').isVisible(),false);
+});
+
+
+test('workspace deletion requires the name, preserves its request on failure, and selects the next archive', async t => {
+  const {page,data} = await setup(t);
+  await page.goto(endpoint+'/branches?workspace=first'); await settled(page);
+  await page.getByRole('button',{name:'删除工作区 项目 Alpha',exact:true}).click();
+  const dialog = page.locator('.workspace-delete-dialog');
+  const confirm = dialog.getByRole('button',{name:'删除工作区',exact:true});
+  assert.equal(await confirm.isEnabled(),false);
+  await dialog.getByLabel('输入工作区名称确认删除').fill('项目 Alpha');
+  data.deleteError = '请先卸载目录';
+  await confirm.click(); await dialog.getByRole('alert').filter({hasText:'请先卸载目录'}).waitFor();
+  assert.equal(new URL(page.url()).searchParams.get('workspace'),'first');
+  const original = data.deletions[0];
+  await page.locator('#refresh').evaluate(button => button.click()); await settled(page);
+  assert.equal(await dialog.getByLabel('输入工作区名称确认删除').inputValue(),'项目 Alpha');
+  data.deleteError = null;
+  await confirm.click(); await dialog.waitFor({state:'hidden'}); await settled(page);
+  assert.deepEqual(data.deletions[1],original);
+  assert.equal(new URL(page.url()).pathname,'/archive');
+  assert.equal(new URL(page.url()).searchParams.get('workspace'),'second');
+  assert.equal(await page.locator('#workspace-total').textContent(),'1');
+});
+
+test('deleting an unselected workspace preserves the current page; deleting the last workspace shows empty state', async t => {
+  const {page} = await setup(t);
+  await page.goto(endpoint+'/branches?workspace=first'); await settled(page);
+  for (const name of ['项目 Beta','项目 Alpha']) {
+    await page.getByRole('button',{name:`删除工作区 ${name}`,exact:true}).click();
+    const dialog = page.locator('.workspace-delete-dialog');
+    await dialog.getByLabel('输入工作区名称确认删除').fill(name);
+    await dialog.getByRole('button',{name:'删除工作区',exact:true}).click();
+    await dialog.waitFor({state:'hidden'}); await settled(page);
+    if (name==='项目 Beta') assert.equal(new URL(page.url()).pathname,'/branches');
+  }
+  assert.equal(await page.locator('#workspace-total').textContent(),'0');
+  assert.equal(await page.locator('#workspace-menu-name').textContent(),'暂无工作区');
+  assert.equal(new URL(page.url()).search,'');
+});
+
+test('failed remote discovery keeps local workspaces usable and cancel does not delete', async t => {
+  const {page,data} = await setup(t);
+  await page.route('**/api/workspaces?discover=true', route => route.fulfill({status:503,json:{error:{message:'Remote unavailable'}}}));
+  await page.goto(endpoint+'/'); await settled(page);
+  assert.equal(await page.locator('#workspace-total').textContent(),'2');
+  assert.match(await page.locator('#error').textContent(),/Remote unavailable/);
+  await page.getByRole('button',{name:'删除工作区 项目 Alpha',exact:true}).click();
+  await page.locator('.workspace-delete-dialog').getByRole('button',{name:'取消',exact:true}).click();
+  assert.equal(data.deletions,undefined);
 });

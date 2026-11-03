@@ -33,6 +33,15 @@ impl CollaborationService {
             return Ok(());
         }
         for mount in self.runtime.state.mounts().await? {
+            if self
+                .runtime
+                .state
+                .workspace(mount.workspace)
+                .await?
+                .is_none_or(|w| w.deleted)
+            {
+                continue;
+            }
             if mount.state == MountState::Released
                 || mount.access != AccessMode::ReadWrite
                 || mount.revision.is_some()

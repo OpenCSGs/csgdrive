@@ -51,6 +51,8 @@ pub struct Grant {
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct Workspace {
+    #[serde(default)]
+    pub deleted: bool,
     pub id: WorkspaceId,
     pub name: String,
     pub owner: Principal,
@@ -70,6 +72,12 @@ impl Workspace {
         branch: Option<BranchId>,
         permission: Permission,
     ) -> Result<()> {
+        if self.deleted && permission != Permission::Manage {
+            return Err(Error::new(
+                ErrorCode::NotFound,
+                "workspace has been deleted",
+            ));
+        }
         if actor == &self.owner
             || self.grants.iter().any(|grant| {
                 grant.principal == *actor

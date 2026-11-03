@@ -48,6 +48,9 @@ impl RemoteRefStore for ObservedRemote {
     async fn compare_exchange(&self, update: RefUpdate) -> Result<CasOutcome> {
         self.inner.compare_exchange(update).await
     }
+    async fn list_workspaces(&self) -> Result<Vec<WorkspaceId>> {
+        self.inner.list_workspaces().await
+    }
     async fn list_branches(&self, workspace: WorkspaceId) -> Result<Vec<BranchId>> {
         self.inner.list_branches(workspace).await
     }
