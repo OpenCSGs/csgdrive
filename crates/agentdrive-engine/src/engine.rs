@@ -178,9 +178,7 @@ impl Engine {
             .dirty
             .lock()
             .iter()
-            .filter(|(_, time)| {
-                now.saturating_sub(time.last) >= 5_000 || now.saturating_sub(time.first) >= 30_000
-            })
+            .filter(|(_, time)| now.saturating_sub(time.first) >= 2_000)
             .map(|(id, _)| *id)
             .collect();
         let mut saved = 0;

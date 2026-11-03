@@ -7,7 +7,7 @@ use std::{
     sync::{Arc, Weak},
 };
 
-const REFRESH_INTERVAL_MS: u64 = 15_000;
+const REFRESH_INTERVAL_MS: u64 = 2_000;
 
 #[derive(Debug, Default)]
 struct Entry {
