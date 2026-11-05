@@ -78,13 +78,12 @@ Backend tests exercise competing conditional reference creation, stale condition
 | Check | Verified environment |
 | --- | --- |
 | Workspace tests and Clippy | macOS, Linux, Windows |
-| Native mounted file operations and revision access | Linux as root and as an ordinary user; Windows with WinFsp 2.1; macOS 26.5 with FUSE-T 1.2.9 |
+| Native mounted file operations and revision access | Linux as root and as an ordinary user; Windows with WinFsp 2.1; macOS 26.5 with the built-in NFSv3 client |
 | CLI, stdio MCP, directory metadata, restart recovery | macOS, Linux, Windows |
 | Conditional S3 writes and multipart content | Isolated RustFS instance |
 | Two-daemon S3 replication and ownership transfer | macOS and Linux |
-| macFUSE callback compilation | macOS |
 
-[GitHub Actions](https://github.com/GatewayJ/agentdrive/actions) runs the checked-in test matrix for each commit. Native macOS mounting was verified with FUSE-T 1.2.9. The three native tests passed, including directory adoption, exclusive creation, rename with an open handle, more than 128 entries, read-only history, and normal unmount. macOS AppleDouble metadata files are excluded from directory-entry count assertions.
+The native macOS tests cover handing off a turn with an open file, reading the updated directory and file, rejecting stale writes, waiting 12 seconds for write ownership, and restoring the mount after graceful shutdown. [GitHub Actions](https://github.com/OpenCSGs/csgdrive/actions) runs the platform matrix.
 
 The create/import/read/export/mount examples in [CLI usage](cli.md) were executed against a temporary daemon. The [MCP parameter tables](mcp.md) were checked against the running daemon's tool schemas. S3 configuration was checked against the daemon config loader, adapter, and credential/endpoint selection in the locked `object_store` dependency. These documentation checks do not add an AWS S3 deployment to the verified environments above.
 
