@@ -172,6 +172,7 @@ impl Harness {
         self.local.mount(self.binding.id).await.unwrap().unwrap()
     }
 
+    #[cfg(unix)]
     async fn wait_for_handles(&self, expected: usize) {
         tokio::time::timeout(Duration::from_secs(10), async {
             while self.driver.open_handles(&self.binding).await.unwrap() != expected {
