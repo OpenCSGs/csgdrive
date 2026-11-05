@@ -393,7 +393,7 @@ impl NFSFileSystem for NfsFiles {
         let (context, _active) = self.request()?;
         self.make(&context, parent, name, FileKind::File, 0o600)
             .await
-            .map(|inode| inode.id.0)
+            .and_then(|inode| self.fileid(&context, inode.id))
     }
 
     async fn mkdir(&self, parent: u64, name: &filename3) -> NfsResult<(u64, fattr3)> {

@@ -82,8 +82,10 @@ impl Driver {
         } else {
             "rw"
         };
+        // A local CREATE may wait for remote write authority. Keep the RPC pending
+        // until the server replies, while allowing the caller to receive termination signals.
         let options = format!(
-            "vers=3,tcp,port={port},mountport={port},locallocks,noresvport,soft,timeo=20,retrans=2,retrycnt=0,noac,nonegnamecache,sync,nobrowse,nodev,nosuid,{access}"
+            "vers=3,tcp,port={port},mountport={port},locallocks,noresvport,intr,retrycnt=0,noac,nonegnamecache,sync,nobrowse,nodev,nosuid,{access}"
         );
         // Pass the one-use export capability to Darwin's mount helper through a pipe.
         // Process arguments and the final kernel mount table are visible to other local users.
