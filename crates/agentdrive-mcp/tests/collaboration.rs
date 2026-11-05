@@ -193,7 +193,7 @@ async fn collaboration_routes_enforce_binding_generation() {
             .any(|value| value["settings"]["enabled"] == true)
     );
     let input = json!({"mount":mount["id"],"expected_binding_generation":mount["generation"].as_u64().unwrap()+1,
-        "enabled":true,"idle_timeout_secs":120,"release_on_event":true});
+        "enabled":true});
     let stale = server
         .http
         .put(format!("{}/api/collaboration", server.base))
@@ -268,7 +268,7 @@ async fn unsupported_drivers_reject_automatic_mounts_and_configuration() {
         .put(format!("{}/api/collaboration", server.base))
         .json(
             &json!({"mount":mount["id"],"expected_binding_generation":mount["generation"],
-            "enabled":true,"idle_timeout_secs":60,"release_on_event":true}),
+            "enabled":true}),
         )
         .send()
         .await
@@ -290,7 +290,7 @@ async fn global_settings_control_collaboration_and_branch_configuration_cannot_o
         .put(format!("{}/api/collaboration", server.base))
         .json(
             &json!({"mount":mount["id"],"expected_binding_generation":mount["generation"],
-            "enabled":true,"idle_timeout_secs":60,"release_on_event":true}),
+            "enabled":true}),
         )
         .send()
         .await
@@ -301,7 +301,7 @@ async fn global_settings_control_collaboration_and_branch_configuration_cannot_o
         .put(format!("{}/api/collaboration", server.base))
         .json(
             &json!({"mount":mount["id"],"expected_binding_generation":mount["generation"],
-            "enabled":false,"idle_timeout_secs":60,"release_on_event":true}),
+            "enabled":false}),
         )
         .send()
         .await

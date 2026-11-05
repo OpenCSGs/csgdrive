@@ -21,10 +21,10 @@ make -j "$(getconf _NPROCESSORS_ONLN)" verify
 | 平台 | 原生文件系统要求 | 构建方式 |
 | --- | --- | --- |
 | Linux | FUSE 3 工具、`/dev/fuse` 和挂载权限 | 使用默认 features |
-| macOS | [FUSE-T](https://github.com/macos-fuse-t/fuse-t) 和 `pkg-config` | `make -j "$(sysctl -n hw.ncpu)" build FEATURES=macos-fuse-t` |
+| macOS | 系统自带的 NFSv3 客户端 | `make -j "$(sysctl -n hw.ncpu)" build` |
 | Windows | MSVC，以及包含 Developer 功能的 [WinFsp 2.1](https://github.com/winfsp/winfsp/releases/tag/v2.1) | PowerShell：`make -j $env:NUMBER_OF_PROCESSORS build` |
 
-macOS 默认构建包含守护进程、CLI 和存储操作。原生挂载使用 `macos-fuse-t`，无需内核扩展。Make 会选择 FUSE-T 动态库；直接运行 Cargo 时需要设置 `PKG_CONFIG_PATH="$PWD/build/fuse-t"`。已有 macFUSE 环境可继续使用 `FEATURES=macos-mount`。Windows 构建会从注册的安装路径加载 WinFsp；Windows 状态目录应位于本地 NTFS 卷。
+macOS 在本机回环地址提供 NFS 服务。请将挂载点放在当前用户的私有目录中。Windows 从注册的安装路径加载 WinFsp，状态目录使用本地 NTFS 卷。
 
 ## 运行
 

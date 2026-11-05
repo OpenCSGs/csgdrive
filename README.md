@@ -93,7 +93,7 @@ A single `branch_switch` call completes a branch change. If a process occupies t
 
 ## Get started
 
-Build from source on Linux, macOS or Windows. Native mounts require FUSE, FUSE-T / macFUSE or WinFsp respectively. [Installation, dependencies and startup commands](docs/installation.md)
+Build from source on Linux, macOS or Windows. Linux mounts use FUSE, macOS uses its built-in NFS client, and Windows uses WinFsp. [Installation, dependencies and startup commands](docs/installation.md)
 
 - [Remote storage configuration](docs/configuration.md): local storage, S3, RustFS, OpenCSG Codes and multiple machines.
 - [Operations and recovery](docs/operations.md): publication confirmation, handoffs, merging and recovery.

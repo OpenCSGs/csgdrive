@@ -1,4 +1,4 @@
-//! Keep FUSE-T's underlying directory protected while its native session is absent.
+//! Protect the local directory beneath a macOS NFS mount.
 use agentdrive_model::{Error, ErrorCode, Result};
 use std::{
     fs::{File, OpenOptions, Permissions},

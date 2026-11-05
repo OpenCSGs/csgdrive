@@ -96,8 +96,8 @@ jobs:
           restore-keys: rust-${{ runner.os }}-${{ runner.arch }}-
       - name: Verify workspace
         run: make -j "$(sysctl -n hw.ncpu)" verify
-      - name: Check macFUSE callbacks
-        run: make -j "$(sysctl -n hw.ncpu)" check CARGO_FLAGS='--locked -p agentdrive-platform --features macos-mount,fuser/macos-no-mount'
+      - name: Verify native NFS mounts
+        run: make -j "$(sysctl -n hw.ncpu)" test CARGO_FLAGS='--locked -p agentdrive-platform --test native_mount -- --ignored --test-threads=1'
       - name: Verify CLI and stdio MCP
         run: |
           make -j "$(sysctl -n hw.ncpu)" build

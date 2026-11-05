@@ -6,7 +6,10 @@ use std::{
     sync::Arc,
 };
 
-#[cfg(any(target_os = "linux", all(target_os = "macos", feature = "macos-mount")))]
+#[cfg(target_os = "macos")]
+#[path = "nfs.rs"]
+mod implementation;
+#[cfg(target_os = "linux")]
 #[path = "fuse.rs"]
 mod implementation;
 #[cfg(windows)]
@@ -15,11 +18,7 @@ mod implementation;
 
 pub struct NativeMountDriver {
     roots: Vec<PathBuf>,
-    #[cfg(any(
-        target_os = "linux",
-        windows,
-        all(target_os = "macos", feature = "macos-mount")
-    ))]
+    #[cfg(agentdrive_native_mount)]
     implementation: implementation::Driver,
 }
 impl std::fmt::Debug for NativeMountDriver {
@@ -38,11 +37,7 @@ impl NativeMountDriver {
         }
         Ok(Arc::new(Self {
             roots: canonical,
-            #[cfg(any(
-                target_os = "linux",
-                windows,
-                all(target_os = "macos", feature = "macos-mount")
-            ))]
+            #[cfg(agentdrive_native_mount)]
             implementation: implementation::Driver::new()?,
         }))
     }
@@ -51,31 +46,14 @@ impl NativeMountDriver {
 #[async_trait]
 impl MountDriver for NativeMountDriver {
     fn supports_automatic_collaboration(&self) -> bool {
-        cfg!(any(
-            target_os = "linux",
-            windows,
-            all(target_os = "macos", feature = "macos-mount")
-        ))
+        cfg!(agentdrive_native_mount)
     }
 
-    fn requires_remount_for_rebind(&self) -> bool {
-        // FUSE-T's NFS backend does not support inode or directory-entry invalidation.
-        cfg!(all(target_os = "macos", feature = "macos-fuse-t"))
-    }
-
-    fn handle_tracking_scope(&self) -> agentdrive_ports::HandleTrackingScope {
-        if cfg!(any(
-            target_os = "linux",
-            windows,
-            all(
-                target_os = "macos",
-                feature = "macos-mount",
-                not(feature = "macos-fuse-t")
-            )
-        )) {
-            agentdrive_ports::HandleTrackingScope::Native
+    fn handle_tracking_scope(&self) -> HandleTrackingScope {
+        if cfg!(any(target_os = "linux", windows)) {
+            HandleTrackingScope::Native
         } else {
-            agentdrive_ports::HandleTrackingScope::Protocol
+            HandleTrackingScope::Protocol
         }
     }
 
@@ -121,42 +99,26 @@ impl MountDriver for NativeMountDriver {
 
     async fn mount(&self, spec: MountSpec, file_system: Arc<dyn FileSystem>) -> Result<()> {
         self.normalize_path(&spec.binding.path).await?;
-        #[cfg(any(
-            target_os = "linux",
-            windows,
-            all(target_os = "macos", feature = "macos-mount")
-        ))]
+        #[cfg(agentdrive_native_mount)]
         {
             self.implementation.mount(spec, file_system).await
         }
-        #[cfg(not(any(
-            target_os = "linux",
-            windows,
-            all(target_os = "macos", feature = "macos-mount")
-        )))]
+        #[cfg(not(agentdrive_native_mount))]
         {
             let _ = file_system;
             Err(Error::new(
                 ErrorCode::Unsupported,
-                "native mounts require FUSE-T with macos-fuse-t, or macFUSE with macos-mount",
+                "native mounts are unavailable on this platform",
             ))
         }
     }
 
     async fn open_handles(&self, binding: &MountBinding) -> Result<usize> {
-        #[cfg(any(
-            target_os = "linux",
-            windows,
-            all(target_os = "macos", feature = "macos-mount")
-        ))]
+        #[cfg(agentdrive_native_mount)]
         {
             self.implementation.open_handles(binding).await
         }
-        #[cfg(not(any(
-            target_os = "linux",
-            windows,
-            all(target_os = "macos", feature = "macos-mount")
-        )))]
+        #[cfg(not(agentdrive_native_mount))]
         {
             let _ = binding;
             Err(Error::new(
@@ -167,19 +129,11 @@ impl MountDriver for NativeMountDriver {
     }
 
     async fn rebind(&self, previous: &MountBinding, next: &MountBinding) -> Result<()> {
-        #[cfg(any(
-            target_os = "linux",
-            windows,
-            all(target_os = "macos", feature = "macos-mount")
-        ))]
+        #[cfg(agentdrive_native_mount)]
         {
             self.implementation.rebind(previous, next).await
         }
-        #[cfg(not(any(
-            target_os = "linux",
-            windows,
-            all(target_os = "macos", feature = "macos-mount")
-        )))]
+        #[cfg(not(agentdrive_native_mount))]
         {
             let _ = (previous, next);
             Err(Error::new(
@@ -190,19 +144,11 @@ impl MountDriver for NativeMountDriver {
     }
 
     async fn unmount(&self, binding: &MountBinding) -> Result<()> {
-        #[cfg(any(
-            target_os = "linux",
-            windows,
-            all(target_os = "macos", feature = "macos-mount")
-        ))]
+        #[cfg(agentdrive_native_mount)]
         {
             self.implementation.unmount(binding).await
         }
-        #[cfg(not(any(
-            target_os = "linux",
-            windows,
-            all(target_os = "macos", feature = "macos-mount")
-        )))]
+        #[cfg(not(agentdrive_native_mount))]
         {
             let _ = binding;
             Err(Error::new(
@@ -213,19 +159,11 @@ impl MountDriver for NativeMountDriver {
     }
 
     async fn status(&self, binding: &MountBinding) -> Result<NativeMountState> {
-        #[cfg(any(
-            target_os = "linux",
-            windows,
-            all(target_os = "macos", feature = "macos-mount")
-        ))]
+        #[cfg(agentdrive_native_mount)]
         {
             self.implementation.status(binding).await
         }
-        #[cfg(not(any(
-            target_os = "linux",
-            windows,
-            all(target_os = "macos", feature = "macos-mount")
-        )))]
+        #[cfg(not(agentdrive_native_mount))]
         {
             let _ = binding;
             Ok(NativeMountState::Absent)
@@ -241,21 +179,13 @@ impl MountDriver for NativeMountDriver {
         {
             "windows-winfsp"
         }
-        #[cfg(all(target_os = "macos", feature = "macos-fuse-t"))]
+        #[cfg(target_os = "macos")]
         {
-            "macos-fuse-t"
+            "macos-nfs"
         }
-        #[cfg(all(
-            target_os = "macos",
-            feature = "macos-mount",
-            not(feature = "macos-fuse-t")
-        ))]
+        #[cfg(not(agentdrive_native_mount))]
         {
-            "macos-macfuse"
-        }
-        #[cfg(all(target_os = "macos", not(feature = "macos-mount")))]
-        {
-            "macos-macfuse-feature-required"
+            "unsupported"
         }
     }
 }
@@ -265,42 +195,9 @@ mod collaboration_tests {
     use super::*;
 
     #[test]
-    fn only_fuse_t_requires_a_new_session_for_rebind() {
-        let driver = NativeMountDriver::new(Vec::new()).unwrap();
-        assert_eq!(
-            driver.requires_remount_for_rebind(),
-            cfg!(all(target_os = "macos", feature = "macos-fuse-t"))
-        );
-    }
-
-    #[test]
-    #[cfg(any(
-        target_os = "linux",
-        windows,
-        all(target_os = "macos", feature = "macos-mount")
-    ))]
+    #[cfg(agentdrive_native_mount)]
     fn compiled_native_drivers_support_automatic_collaboration() {
         let driver = NativeMountDriver::new(Vec::new()).unwrap();
         assert!(driver.supports_automatic_collaboration());
-    }
-
-    #[test]
-    #[cfg(all(target_os = "macos", not(feature = "macos-mount")))]
-    fn unavailable_native_driver_does_not_support_automatic_collaboration() {
-        let driver = NativeMountDriver::new(Vec::new()).unwrap();
-        assert!(!driver.supports_automatic_collaboration());
-    }
-
-    #[cfg(all(
-        target_os = "macos",
-        any(feature = "macos-fuse-t", not(feature = "macos-mount"))
-    ))]
-    #[test]
-    fn protocol_or_unavailable_driver_does_not_claim_native_handle_tracking() {
-        let driver = NativeMountDriver::new(Vec::new()).unwrap();
-        assert_eq!(
-            driver.handle_tracking_scope(),
-            HandleTrackingScope::Protocol
-        );
     }
 }

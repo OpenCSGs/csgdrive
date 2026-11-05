@@ -246,6 +246,8 @@ pub enum AccessMode {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum MountState {
+    /// Detached during a clean daemon shutdown and restored on its next startup.
+    Suspended,
     Preparing,
     Ready,
     Paused,

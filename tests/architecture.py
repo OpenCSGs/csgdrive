@@ -20,7 +20,7 @@ BOUNDARIES = {
     "agentdrive-test-support": {"agentdrive-model", "agentdrive-ports"},
 }
 ADAPTER_DEPENDENCIES = {
-    "rusqlite", "object_store", "reqwest", "fuser", "winfsp_wrs", "axum", "rmcp",
+    "rusqlite", "object_store", "reqwest", "fuser", "nfsserve", "winfsp_wrs", "axum", "rmcp",
 }
 
 

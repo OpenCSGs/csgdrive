@@ -72,10 +72,7 @@ impl CollaborationService {
             self.save_record(&self.new_record(
                 &branch,
                 actor.clone(),
-                CollaborationSettings {
-                    enabled: true,
-                    ..Default::default()
-                },
+                CollaborationSettings { enabled: true },
             ))
             .await?;
         }
@@ -122,10 +119,9 @@ impl CollaborationService {
             return self.suspend(&mut record).await;
         }
         let branch = self.runtime.branch(branch_id).await?;
-        if matches!(
-            record.phase,
-            CollaborationPhase::Writing | CollaborationPhase::WaitingForHandles
-        ) && record.transition.is_none()
+        if record.phase == CollaborationPhase::Writing
+            && record.release.is_none()
+            && record.transition.is_none()
             && record.recovery.is_none()
             && branch.owner == self.runtime.location
             && branch.state == BranchState::Writable
@@ -174,15 +170,7 @@ impl CollaborationService {
             .retryable());
         }
         match self.acquire(&mut record, expected).await {
-            Ok(()) => {
-                self.activity
-                    .lock()
-                    .entry(branch_id)
-                    .and_modify(|activity| {
-                        activity.last_write = self.runtime.clock.monotonic_ms();
-                    });
-                Ok(())
-            }
+            Ok(()) => Ok(()),
             Err(error) => {
                 record.error = Some(error.clone());
                 self.save_record(&record).await?;

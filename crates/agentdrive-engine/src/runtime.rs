@@ -16,6 +16,7 @@ pub struct Runtime {
     pub(crate) lifecycle: AsyncMutex<()>,
     pub(crate) stopped: Mutex<BTreeSet<BranchId>>,
     pub(crate) collaboration_blocked: Mutex<BTreeSet<BranchId>>,
+    pub(crate) publishing_turns: Mutex<BTreeSet<BranchId>>,
     branches: Mutex<BTreeMap<BranchId, Weak<AsyncMutex<()>>>>,
     pub(crate) dirty: Mutex<BTreeMap<BranchId, DirtyTime>>,
     pub(crate) sync_progress: Mutex<BTreeMap<OperationId, Arc<Mutex<SyncProgress>>>>,
@@ -46,6 +47,7 @@ impl Runtime {
             lifecycle: AsyncMutex::new(()),
             stopped: Mutex::new(BTreeSet::new()),
             collaboration_blocked: Mutex::new(BTreeSet::new()),
+            publishing_turns: Mutex::new(BTreeSet::new()),
             branches: Mutex::new(BTreeMap::new()),
             dirty: Mutex::new(BTreeMap::new()),
             sync_progress: Mutex::new(BTreeMap::new()),
@@ -85,7 +87,9 @@ impl Runtime {
     }
 
     pub(crate) fn check_mutation(&self, branch: BranchId) -> Result<()> {
-        if self.collaboration_blocked.lock().contains(&branch) {
+        if self.collaboration_blocked.lock().contains(&branch)
+            || self.publishing_turns.lock().contains(&branch)
+        {
             return Err(Error::new(
                 ErrorCode::BranchBusy,
                 "branch is completing a collaboration transition",

@@ -104,7 +104,7 @@ impl SnapshotService {
         }
         let mut commit = LocalCommit::default();
         for mut mount in self.runtime.state.mounts().await? {
-            if mount.state != MountState::Released {
+            if !matches!(mount.state, MountState::Released | MountState::Suspended) {
                 mount.state = MountState::RecoveryRequired;
                 commit.mounts.push(mount);
             }
