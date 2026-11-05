@@ -47,9 +47,9 @@ Responses redact saved remote secrets. A stale revision or an external file edit
 
 ## Automatic collaboration
 
-With `collaboration.enabled: true` and configured remote storage, writable mounts automatically follow shared branch contents, acquire ownership on filesystem mutation, and save and release ownership after the configured inactivity interval or a registered execution completes. The Mounts page adjusts each branch's release timing and event settings. Read-only mounts and local-only storage retain their existing behavior.
+With `collaboration.enabled` and remote storage configured, the first modification requests branch write ownership. An agent registers each turn and sends a terminal callback when work finishes. AgentDrive commits and publishes the changes, then releases ownership after the final turn and remote confirmation. Mounts shows the writer, active executions and publication status.
 
-Set `collaboration.enabled: false` in Settings or `agentdrive.json` to switch stable branches to manual management while preserving their current authority. A release or recovery that has already frozen mutations continues until its safe endpoint. Re-enabling resumes automatic coordination. Driver handle tracking scope is shown in the Mounts page; see [integrations](integrations.md#automatic-collaboration).
+Disable automatic collaboration in Settings or `agentdrive.json` to manage stable branches manually. Pending publication and recovery continue.
 
 ## Local cache capacity
 

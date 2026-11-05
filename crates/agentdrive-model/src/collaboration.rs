@@ -1,22 +1,9 @@
 use crate::{Branch, BranchId, Error, LocationId, MountId, OperationId, Principal, WorkspaceId};
 use serde::{Deserialize, Serialize};
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
-#[serde(deny_unknown_fields)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct CollaborationSettings {
     pub enabled: bool,
-    pub idle_timeout_secs: Option<u64>,
-    pub release_on_event: bool,
-}
-
-impl Default for CollaborationSettings {
-    fn default() -> Self {
-        Self {
-            enabled: false,
-            idle_timeout_secs: Some(60),
-            release_on_event: true,
-        }
-    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
@@ -24,8 +11,8 @@ impl Default for CollaborationSettings {
 pub enum CollaborationPhase {
     Disabled,
     Following,
+    #[serde(alias = "waiting_for_handles")]
     Writing,
-    WaitingForHandles,
     Saving,
     Recovering,
     Switching,
@@ -57,6 +44,7 @@ pub struct CollaborationExecution {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ReleaseReason {
+    // Older daemons persisted idle releases. Discard them on startup unless the CAS was queued.
     Idle,
     ExecutionEnded,
 }
@@ -65,8 +53,9 @@ pub enum ReleaseReason {
 pub struct CollaborationRelease {
     pub operation: OperationId,
     pub authority_epoch: u64,
-    pub mutation_seq: u64,
     pub reason: ReleaseReason,
+    #[serde(default)]
+    pub message: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]

@@ -239,6 +239,7 @@ fn info(inode: Inode) -> FileInfo {
     result
 }
 struct OpenFile {
+    context: FsContext,
     inode: InodeId,
     handle: Mutex<Option<HandleId>>,
     directory: bool,
@@ -276,9 +277,6 @@ impl WindowsFs {
                 .block_on(self.files.lookup(context, inode.id, name))?;
         }
         Ok(inode)
-    }
-    fn parent(&self, path: &WorkspacePath) -> Result<Inode> {
-        self.parent_at(&self.context(), path)
     }
     fn parent_at(&self, context: &FsContext, path: &WorkspacePath) -> Result<Inode> {
         self.lookup_at(
@@ -328,6 +326,7 @@ impl WindowsFs {
         };
         Ok((
             Arc::new(OpenFile {
+                context: context.clone(),
                 inode: inode.id,
                 handle: Mutex::new(handle),
                 directory,
@@ -350,7 +349,7 @@ impl WindowsFs {
         if let Some(handle) = file.handle.lock().take()
             && let Err(error) = self
                 .runtime
-                .block_on(self.files.release(&self.context(), handle))
+                .block_on(self.files.release(&file.context, handle))
         {
             tracing::warn!(%error, "cannot release Windows file handle");
         }
@@ -481,7 +480,7 @@ impl FileSystemInterface for WindowsFs {
     ) -> NtResult<FileInfo> {
         self.runtime
             .block_on(self.files.setattr(
-                &self.context(),
+                &file.context,
                 file.inode,
                 AttributeUpdate {
                     size: Some(0),
@@ -502,9 +501,9 @@ impl FileSystemInterface for WindowsFs {
             let result = (|| {
                 let path =
                     self.path(name.ok_or_else(|| Error::invalid("delete requires a file name"))?)?;
-                let parent = self.parent(&path)?;
+                let parent = self.parent_at(&file.context, &path)?;
                 self.runtime.block_on(self.files.unlink(
-                    &self.context(),
+                    &file.context,
                     parent.id,
                     path.name(),
                     file.directory,
@@ -522,12 +521,10 @@ impl FileSystemInterface for WindowsFs {
         let size = buffer.len().min(IO_BUFFER_BYTES * 16) as u32;
         let bytes = self
             .runtime
-            .block_on(self.files.read(
-                &self.context(),
-                self.handle(&file).map_err(nt)?,
-                offset,
-                size,
-            ))
+            .block_on(
+                self.files
+                    .read(&file.context, self.handle(&file).map_err(nt)?, offset, size),
+            )
             .map_err(nt)?;
         if bytes.is_empty() && !buffer.is_empty() {
             return Err(win::STATUS_END_OF_FILE);
@@ -541,7 +538,7 @@ impl FileSystemInterface for WindowsFs {
         buffer: &[u8],
         mode: WriteMode,
     ) -> NtResult<(usize, FileInfo)> {
-        let context = self.context();
+        let context = file.context.clone();
         let buffer = &buffer[..buffer.len().min(IO_BUFFER_BYTES * 16)];
         let written = match mode {
             WriteMode::WriteToEOF => {
@@ -605,8 +602,11 @@ impl FileSystemInterface for WindowsFs {
     }
     fn flush(&self, file: Option<Arc<OpenFile>>) -> NtResult<FileInfo> {
         if self.binding.snapshot().access == AccessMode::ReadWrite {
+            let context = file
+                .as_ref()
+                .map_or_else(|| self.context(), |file| file.context.clone());
             self.runtime
-                .block_on(self.files.fsync(&self.context()))
+                .block_on(self.files.fsync(&context))
                 .map_err(nt)?;
         }
         match file {
@@ -616,7 +616,7 @@ impl FileSystemInterface for WindowsFs {
     }
     fn get_file_info(&self, file: Arc<OpenFile>) -> NtResult<FileInfo> {
         self.runtime
-            .block_on(self.files.getattr(&self.context(), file.inode))
+            .block_on(self.files.getattr(&file.context, file.inode))
             .map(info)
             .map_err(nt)
     }
@@ -631,7 +631,7 @@ impl FileSystemInterface for WindowsFs {
     ) -> NtResult<FileInfo> {
         let inode = self
             .runtime
-            .block_on(self.files.getattr(&self.context(), file.inode))
+            .block_on(self.files.getattr(&file.context, file.inode))
             .map_err(nt)?;
         let mode =
             (attributes.0 != u32::MAX).then_some(if attributes.is(FileAttributes::READONLY) {
@@ -641,7 +641,7 @@ impl FileSystemInterface for WindowsFs {
             });
         self.runtime
             .block_on(self.files.setattr(
-                &self.context(),
+                &file.context,
                 file.inode,
                 AttributeUpdate {
                     mode,
@@ -661,14 +661,14 @@ impl FileSystemInterface for WindowsFs {
     ) -> NtResult<FileInfo> {
         let inode = self
             .runtime
-            .block_on(self.files.getattr(&self.context(), file.inode))
+            .block_on(self.files.getattr(&file.context, file.inode))
             .map_err(nt)?;
         if allocation && size >= inode.size {
             return Ok(info(inode));
         }
         self.runtime
             .block_on(self.files.setattr(
-                &self.context(),
+                &file.context,
                 file.inode,
                 AttributeUpdate {
                     size: Some(size),
@@ -680,10 +680,10 @@ impl FileSystemInterface for WindowsFs {
     }
     fn can_delete(&self, file: Arc<OpenFile>, name: &U16CStr) -> NtResult<()> {
         let path = self.path(name).map_err(nt)?;
-        let parent = self.parent(&path).map_err(nt)?;
+        let parent = self.parent_at(&file.context, &path).map_err(nt)?;
         self.runtime
             .block_on(self.files.can_unlink(
-                &self.context(),
+                &file.context,
                 parent.id,
                 path.name(),
                 file.directory,
@@ -693,7 +693,7 @@ impl FileSystemInterface for WindowsFs {
     }
     fn rename(
         &self,
-        _: Arc<OpenFile>,
+        file: Arc<OpenFile>,
         name: &U16CStr,
         target: &U16CStr,
         replace: bool,
@@ -702,10 +702,10 @@ impl FileSystemInterface for WindowsFs {
         let target = self.path(target).map_err(nt)?;
         self.runtime
             .block_on(self.files.rename(
-                &self.context(),
-                self.parent(&path).map_err(nt)?.id,
+                &file.context,
+                self.parent_at(&file.context, &path).map_err(nt)?.id,
                 path.name(),
-                self.parent(&target).map_err(nt)?.id,
+                self.parent_at(&file.context, &target).map_err(nt)?.id,
                 target.name(),
                 replace,
             ))
@@ -721,8 +721,14 @@ impl FileSystemInterface for WindowsFs {
         mut add: impl FnMut(DirInfo) -> bool,
     ) -> NtResult<()> {
         let mut snapshot = file.entries.lock();
+        if self.binding.snapshot().generation != file.context.generation {
+            return Err(nt(Error::new(
+                ErrorCode::StaleBinding,
+                "directory belongs to a previous binding",
+            )));
+        }
         if marker.is_none() || snapshot.is_none() {
-            let context = self.context();
+            let context = file.context.clone();
             let entries = self
                 .runtime
                 .block_on(self.files.readdir(&context, file.inode))

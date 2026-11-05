@@ -2,7 +2,7 @@
 
 [English](integrations.md) | [简体中文](integrations.zh-CN.md)
 
-Start `agentdrived`; the local connection needs no token. Native directories require FUSE, FUSE-T/macFUSE, or WinFsp. Mount paths must be inside the daemon's `mount_roots`. The agent's execution environment must be able to access the mounted directory.
+Start `agentdrived`; the local connection needs no token. Native directories require FUSE, the built-in macOS NFS client, or WinFsp. Mount paths must be inside the daemon's `mount_roots`. The agent's execution environment must be able to access the mounted directory.
 
 ## MCP and mounted directories
 
@@ -90,21 +90,13 @@ The daemon publishes remotely in the background. `remote_confirmed` indicates su
 
 ## Automatic collaboration
 
-Upgrade every participating location to a version that supports automatic collaboration before enabling it for a shared branch.
+Enable automatic collaboration and configure remote storage. Mount the shared branch and register each turn through the webhook. The first file mutation requests write ownership. Finish writing the turn's output, including flushing application buffers, before sending the terminal callback.
 
-Automatic collaboration is available with Linux FUSE, macFUSE, FUSE-T, and WinFsp. The daemon follows the handle information supplied by each driver when deciding when to release ownership. FUSE can miss `O_PATH` references; FUSE-T's NFS backend can omit application-held directory references. The dashboard keeps this tracking scope visible beside the configuration and status.
-
-When receiving a new version on FUSE-T, AgentDrive automatically remounts the same directory. The unmounted directory rejects writes from unprivileged applications; file access during the mount update may need to be retried. If an application keeps the directory occupied, the daemon waits for it to be released and continues automatically.
-
-The **Automatic collaboration** switch in **Settings** applies to the entire AgentDrive daemon and defaults to enabled (`collaboration.enabled: true`). It requires configured remote storage. Create a writable mount in **Mounts** by selecting a branch and directory. The branch may belong to another location. The mounted directory follows published content while idle; its first modification requests write ownership automatically. While this location owns the branch, the daemon saves local changes and publishes them. Agent tools continue using ordinary filesystem operations.
-
-The **Automatic collaboration** panel in Mounts configures idle release and completion-event release for the selected mount's branch. Both triggers wait until the driver reports no open handles for that branch's local mounts. The panel shows the global setting with a link to Settings, active branch, writer, handle count and tracking scope, registered executions, local saving, remote confirmation, and any recovery branch awaiting a mount switch. An unavailable handle count is displayed as unknown. Unsaved form changes survive status refreshes.
+AgentDrive commits and publishes the turn's changes. After the final registered turn ends and the remote branch confirms that version, another location can acquire write ownership. An interrupted upload leaves the handoff pending for retry. The Mounts panel shows the writer, active executions, local save and remote confirmation.
 
 With automatic collaboration enabled, `mount_save`, `revision_commit` (commit or checkpoint), `branch_restore`, and `merge_apply` request write authority through the same coordinator, including commands on an unmounted local branch. Protected branches retain their existing ownership rules. The coordinator checks the requested head, generation, and optional mutation sequence before and after acquisition. A lease epoch change alone can be reconciled when these content conditions still match. Recoverable unsaved requests reuse their request ID; changed content requires rereading the branch and submitting a new request. Merge preparation uses fixed revisions without claiming authority. Applying a merge or resuming a restore validates the target again after acquiring authority.
 
 Disabling the global switch preserves stable branches' current authority for manual management. Releases and recovery switches that have already frozen mutations continue to completion. New writable mounts use the shared branch selected by the request, an existing mount, the local selection, or the workspace root branch. Local-only storage and read-only mounts retain ordinary mount behavior.
-
-`capabilities.handle_tracking_scope` describes what the driver can observe: `native` covers file and directory handles opened by the driver; `protocol` covers handles reported by the filesystem protocol. A zero count means the driver currently observes no open handles. `automatic_collaboration` reports driver support; `collaboration_enabled` reports the current global setting. A build without the required native driver rejects automatic mode.
 
 Wrap a Codex App Server process to register executions and forward completion outcomes:
 
@@ -121,11 +113,27 @@ Custom integrations call these local HTTP endpoints:
 | Endpoint | Input / output |
 | --- | --- |
 | `GET /api/workspaces/{workspace}/collaboration` | Returns branch coordination status and associated local mount IDs. |
-| `PUT /api/collaboration` | `{mount, expected_binding_generation, enabled, idle_timeout_secs, release_on_event}`; `enabled` must match the current global setting. Use `null` for `idle_timeout_secs` to disable idle release. |
+| `PUT /api/collaboration` | `{mount, expected_binding_generation, enabled}`. The setting must match the global switch. |
 | `POST /api/collaboration/events` | `{mount, source, thread_id, turn_id, phase}`; phase is `started`, `completed`, `interrupted`, or `failed`. |
 | `POST /api/collaboration/codex` | Codex notification with additional `mount` and `source` fields. Accepts `turn/started` and terminal `turn/completed` notifications. |
 
 Register `started` before the execution accesses the work directory. Reuse the same source, thread, turn, and mount identifiers for its completion. The daemon associates registration with the mount generation and write authority; clients do not supply an unlock epoch. Repeated terminal events are idempotent, and stale events cannot release a later grant. A successful event response acknowledges coordination state, not completion of remote publication or permission release.
+
+To simulate a turn, set `MOUNT_ID` to the local writable mount ID and use a fresh `turn_id` for each execution.
+
+```sh
+send_turn_event() {
+  curl --fail-with-body -sS http://127.0.0.1:7421/api/collaboration/events \
+    -H 'Content-Type: application/json' \
+    -d "{\"mount\":\"$MOUNT_ID\",\"source\":\"worker\",\"thread_id\":\"session-1\",\"turn_id\":\"$TURN_ID\",\"phase\":\"$1\"}"
+}
+TURN_ID="$(uuidgen)"
+send_turn_event started
+# Write and flush the turn output in the mounted directory.
+send_turn_event completed
+```
+
+Example Codex notification:
 
 ```json
 {
@@ -139,7 +147,7 @@ Register `started` before the execution accesses the work directory. Reuse the s
 }
 ```
 
-The `failed` and `interrupted` outcomes preserve accepted filesystem changes. If publication finds that write authority has changed, the daemon saves a recovery branch and switches affected local writable mounts after their handles close. The directory path stays the same. Check the displayed current branch and remote confirmation before using the recovered work elsewhere. If a file operation reports stale content, reopen and read the current files before preparing the change again.
+The terminal states `completed`, `failed` and `interrupted` preserve accepted changes. After handoff, reopen files by their original paths to read the new version.
 
 ## Branches and dashboard
 
@@ -185,17 +193,9 @@ The default dashboard landing page is `/archive`, above Branches & Versions in t
 
 Remote confirmation requires a known remote reference with matching owner, authority epoch, generation, durable sequence and working root, plus locally saved changes. An empty queue alone does not establish remote saving. Status reflects the last known confirmation; pull remote updates through MCP before reviewing newer work from another machine.
 
-## macOS FUSE-T
+## Native NFS on macOS
 
-Install FUSE-T 1.2.9 and pkg-config, then build with `make -j "$(sysctl -n hw.ncpu)" build FEATURES=macos-fuse-t`. AgentDrive uses the local NFS backend and disables its attribute cache. FUSE-T runs without a kernel extension. Its [license](https://github.com/macos-fuse-t/fuse-t) requires a commercial license for commercial use or distribution with commercial software.
-
-The NFS backend does not support cache invalidation notifications. Automatic collaboration receives new versions by recreating the native mount at the same path. A busy directory keeps the operation pending for automatic retry; the daemon uses normal unmounting. The unmounted directory rejects writes from unprivileged applications; file access during the mount update may need to be retried. Directory owners can change these permissions, and privileged processes can bypass them. Mounting fails with an explicit error if the directory has additional write grants.
-
-macOS can create AppleDouble `._` metadata files on this filesystem; AgentDrive stores them as ordinary workspace files. `branch_switch` attempts normal unmount and remount in one call. A running Agent, terminal, or MCP stdio proxy can keep the directory occupied. On `MOUNT_BUSY`, stop those processes or restart the Agent and retry the same `branch_switch` request from outside the mount. Configure the MCP proxy's working directory outside the mount when the client supports it.
-
-File writes and `fsync` follow the binding's durability setting. With the default `local` setting, use `mount_save` with `durability: "remote"` and check `remote_confirmed` to confirm publication to RustFS. A successful local file write alone does not confirm remote publication.
-
-The 2026-10-18 FUSE-T 1.2.9 NFS probe compared `noattrcache`, default caching and `nonamedattr` using a mirror filesystem with xattr callbacks. Default caching reduced GETATTR calls (2028 to 454 for the probe workload), but external chmod visibility took about 4.5–4.8 seconds in all three modes. Mounted chmod was immediately visible. The xattr callbacks were never invoked; custom attributes used `._` files, and ResourceFork writing failed in this probe. AgentDrive therefore retains its current cache options and AppleDouble preservation. Implementing xattr methods alone has not been demonstrated to remove these companion files with this backend. The [FUSE-T developer guide](https://github.com/macos-fuse-t/fuse-t/wiki) documents client-managed attribute caching, ignored FUSE TTL values, and unavailable NFS notifications. These observations do not establish cache coherence for another backend.
+Each working directory is served over loopback NFSv3. Handoff keeps the volume mounted and fences writes from outdated file handles.
 
 ## Workspace discovery and deletion
 

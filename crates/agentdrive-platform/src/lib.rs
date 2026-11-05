@@ -1,23 +1,16 @@
 //! Native mounting and confined host directories.
-#[cfg(any(
-    target_os = "linux",
-    windows,
-    test,
-    all(target_os = "macos", feature = "macos-mount")
-))]
+#[cfg(any(test, agentdrive_native_mount))]
 mod binding;
 mod directories;
-#[cfg(all(target_os = "macos", feature = "macos-fuse-t"))]
-mod fuse_mount_point;
-#[cfg(any(
-    target_os = "linux",
-    test,
-    all(target_os = "macos", feature = "macos-mount")
-))]
+#[cfg(any(target_os = "macos", target_os = "linux", test))]
 mod inodes;
 #[cfg(any(windows, test))]
 mod mount_point;
 mod native;
+#[cfg(target_os = "macos")]
+mod nfs_files;
+#[cfg(target_os = "macos")]
+mod nfs_mount_point;
 
 pub use directories::HostDirectories;
 pub use native::NativeMountDriver;

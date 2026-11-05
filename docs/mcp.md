@@ -123,10 +123,9 @@ Call `workspace_status` for an existing workspace and inspect `capabilities`:
 | Field | Current meaning |
 | --- | --- |
 | `format_version` | Persisted format version, currently `1`. |
-| `automatic_collaboration` | Whether the compiled native driver supports automatic collaboration. Linux FUSE, macOS FUSE and WinFsp support it; remote storage is also required. |
+| `automatic_collaboration` | Whether the compiled native driver supports automatic collaboration. Linux FUSE, macOS NFS and WinFsp support it; remote storage is also required. |
 | `collaboration_enabled` | Current daemon-wide `collaboration.enabled` setting, which defaults to true. Change it through Settings or the configuration file. |
-| `handle_tracking_scope` | `native` for native open/close callbacks, or `protocol` for protocol callbacks. This describes the reported handle count; consult `automatic_collaboration` for feature support. |
-| `platform_mount` | `linux-fuse`, `windows-winfsp`, `macos-macfuse`, `macos-fuse-t`, or `macos-macfuse-feature-required`, according to the build. This describes the compiled adapter; a successful mount also needs the OS driver and permissions. |
+| `platform_mount` | Native mount adapter: `linux-fuse`, `macos-nfs` or `windows-winfsp`. |
 | `file_operations` | `lookup`, `getattr`, `readdir`, `create`, `mkdir`, `read`, `write`, `truncate`, `chmod`, `rename`, `unlink`, `rmdir`, `fsync`. These describe mounted filesystem operations. |
 | `remote_configured` | Whether S3 or OpenCSG is currently enabled; a saved profile with `enabled: false` returns `false`. This flag does not test connectivity or credentials. |
 | `automatic_text_merge` | `false`; conflicts require explicit resolution. |

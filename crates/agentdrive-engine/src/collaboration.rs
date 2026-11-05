@@ -23,14 +23,7 @@ pub struct CollaborationService {
     mounts: Arc<MountService>,
     config: Arc<LiveConfig>,
     busy: Arc<Mutex<BTreeSet<BranchId>>>,
-    activity: Mutex<BTreeMap<BranchId, Activity>>,
-}
-
-#[derive(Clone, Copy)]
-struct Activity {
-    sequence: u64,
-    last_write: u64,
-    last_refresh: u64,
+    last_refresh: Mutex<BTreeMap<BranchId, u64>>,
 }
 
 struct CoordinatorGuard {
@@ -67,7 +60,7 @@ impl CollaborationService {
             mounts,
             config,
             busy: Arc::new(Mutex::new(BTreeSet::new())),
-            activity: Mutex::new(BTreeMap::new()),
+            last_refresh: Mutex::new(BTreeMap::new()),
         })
     }
 
@@ -180,11 +173,6 @@ impl CollaborationService {
             && record.recovery.is_none()
             && record.transition.is_none()
             && synchronization.remote_confirmed;
-        let (open_handles, handle_error) =
-            match self.mounts.collaboration_open_handles(branch.id).await {
-                Ok(count) => (Some(count), None),
-                Err(error) => (None, Some(error)),
-            };
         let mut settings = record.settings.clone();
         settings.enabled = settings.enabled && self.automatic_enabled();
         let phase = if !settings.enabled && !self.transition_active(record) {
@@ -216,7 +204,6 @@ impl CollaborationService {
             },
             authority_epoch: branch.authority_epoch,
             mounts: mounts.into_iter().map(|mount| mount.id).collect(),
-            open_handles,
             active_executions: record.executions.len(),
             local_saved: synchronization.local_saved,
             remote_confirmed,
@@ -224,7 +211,7 @@ impl CollaborationService {
                 .recovery
                 .as_ref()
                 .and_then(|recovery| recovery.branch),
-            error: record.error.clone().or(handle_error).or_else(|| {
+            error: record.error.clone().or_else(|| {
                 (record.settings.enabled && self.config.load().values.collaboration.enabled)
                     .then(|| self.mounts.check_collaboration_support().err())
                     .flatten()
@@ -243,8 +230,24 @@ impl CollaborationService {
             .filter(|w| !w.deleted)
         {
             let failed = self.failed_authorities(workspace.id).await?;
-            for record in self.runtime.state.collaborations(workspace.id).await? {
-                if self.transition_active(&record)
+            for mut record in self.runtime.state.collaborations(workspace.id).await? {
+                if record.transition.is_none()
+                    && record
+                        .release
+                        .as_ref()
+                        .is_some_and(|release| release.reason == ReleaseReason::Idle)
+                {
+                    record.release = None;
+                    record.phase = CollaborationPhase::Following;
+                    self.save_record(&record).await?;
+                }
+
+                if record.release.is_some()
+                    && record.recovery.is_none()
+                    && !failed.contains(&record.branch)
+                {
+                    self.runtime.publishing_turns.lock().insert(record.branch);
+                } else if self.transition_active(&record)
                     || (record.settings.enabled && failed.contains(&record.branch))
                 {
                     self.runtime
@@ -374,67 +377,28 @@ impl CollaborationService {
             return self.suspend(record).await;
         }
         let now = self.runtime.clock.monotonic_ms();
-        let activity = {
-            let mut values = self.activity.lock();
-            let value = values.entry(branch.id).or_insert(Activity {
-                sequence: branch.mutation_seq,
-                last_write: now,
-                last_refresh: 0,
-            });
-            if value.sequence != branch.mutation_seq {
-                value.sequence = branch.mutation_seq;
-                value.last_write = now;
-            }
-            *value
+        if record.release.is_some() {
+            return self.release_authority(record).await;
+        }
+        let writer = branch.owner == self.runtime.location && branch.state == BranchState::Writable;
+        let expected = if writer {
+            CollaborationPhase::Writing
+        } else {
+            CollaborationPhase::Following
         };
-        if branch.owner == self.runtime.location && branch.state == BranchState::Writable {
-            if let Some(release) = &record.release
-                && (release.authority_epoch != branch.authority_epoch
-                    || (release.reason == ReleaseReason::Idle
-                        && release.mutation_seq != branch.mutation_seq))
-            {
-                record.release = None;
-                record.phase = CollaborationPhase::Writing;
-                self.save_record(record).await?;
-            }
-            if let Some(release) = &mut record.release
-                && release.reason == ReleaseReason::ExecutionEnded
-            {
-                release.mutation_seq = branch.mutation_seq;
-            }
-            if record.release.is_none()
-                && record.settings.idle_timeout_secs.is_some_and(|seconds| {
-                    now.saturating_sub(activity.last_write) >= seconds.saturating_mul(1000)
-                })
-            {
-                record.release = Some(CollaborationRelease {
-                    operation: OperationId::new(),
-                    authority_epoch: branch.authority_epoch,
-                    mutation_seq: branch.mutation_seq,
-                    reason: ReleaseReason::Idle,
-                });
-                self.save_record(record).await?;
-            }
-            if record.release.is_some() {
-                return self.release_authority(record).await;
-            }
-            if now.saturating_sub(activity.last_refresh) >= 2_000
-                || record.phase != CollaborationPhase::Writing
-            {
-                self.activity
-                    .lock()
-                    .entry(branch.id)
-                    .and_modify(|value| value.last_refresh = now);
-                self.check_writer(record, &branch).await?;
-            }
-        } else if now.saturating_sub(activity.last_refresh) >= 2_000
-            || record.phase != CollaborationPhase::Following
-        {
-            self.activity
+        if record.phase != expected
+            || self
+                .last_refresh
                 .lock()
-                .entry(branch.id)
-                .and_modify(|value| value.last_refresh = now);
-            self.follow(record).await?;
+                .get(&branch.id)
+                .is_none_or(|last| now.saturating_sub(*last) >= 2_000)
+        {
+            self.last_refresh.lock().insert(branch.id, now);
+            if writer {
+                self.check_writer(record, &branch).await?;
+            } else {
+                self.follow(record).await?;
+            }
         }
         Ok(())
     }
@@ -499,15 +463,6 @@ impl CollaborationApi for CollaborationService {
         if request.enabled {
             self.mounts.check_collaboration_support()?;
         }
-        if request
-            .idle_timeout_secs
-            .is_some_and(|value| value == 0 || value > 86_400)
-            || (request.idle_timeout_secs.is_none() && !request.release_on_event)
-        {
-            return Err(Error::invalid(
-                "select an event release or an idle timeout between 1 and 86400 seconds",
-            ));
-        }
         if request.enabled && self.revisions.trees.content.refs().is_none() {
             return Err(Error::new(
                 ErrorCode::RemoteRequired,
@@ -525,8 +480,6 @@ impl CollaborationApi for CollaborationService {
         }
         let settings = CollaborationSettings {
             enabled: global_enabled,
-            idle_timeout_secs: request.idle_timeout_secs,
-            release_on_event: request.release_on_event,
         };
         let mut record = self
             .runtime
@@ -534,7 +487,8 @@ impl CollaborationApi for CollaborationService {
             .collaboration(branch.id)
             .await?
             .unwrap_or_else(|| self.new_record(&branch, actor.clone(), settings.clone()));
-        if record.transition.is_some()
+        if record.release.is_some()
+            || record.transition.is_some()
             || record.recovery.is_some()
             || self
                 .failed_authorities(branch.workspace)
@@ -561,7 +515,7 @@ impl CollaborationApi for CollaborationService {
         } else {
             CollaborationPhase::Disabled
         };
-        self.activity.lock().remove(&branch.id);
+        self.last_refresh.lock().remove(&branch.id);
         self.save_record(&record).await?;
         self.describe(&record).await
     }

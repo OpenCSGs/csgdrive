@@ -11,6 +11,8 @@ struct State {
 #[derive(Debug)]
 pub(crate) struct NativeBinding {
     state: Mutex<State>,
+    #[cfg(target_os = "macos")]
+    idle: tokio::sync::Notify,
 }
 
 impl NativeBinding {
@@ -20,6 +22,8 @@ impl NativeBinding {
                 binding,
                 open_handles: 0,
             }),
+            #[cfg(target_os = "macos")]
+            idle: tokio::sync::Notify::new(),
         })
     }
 
@@ -40,7 +44,18 @@ impl NativeBinding {
         self.state.lock().open_handles
     }
 
-    /// Retain through the native reply so rebind waits for in-flight requests and opens.
+    #[cfg(target_os = "macos")]
+    pub async fn wait_until_idle(&self) {
+        loop {
+            let idle = self.idle.notified();
+            if self.open_handles() == 0 {
+                return;
+            }
+            idle.await;
+        }
+    }
+
+    /// Retain through the native reply for explicit unmount and diagnostics.
     pub fn reserve(self: &Arc<Self>, generation: u64) -> Result<NativeHandle> {
         let mut state = self.state.lock();
         if state.binding.generation != generation {
@@ -77,11 +92,6 @@ impl NativeBinding {
                 "native rebind must preserve mount access and location",
             ));
         }
-        if state.open_handles != 0 {
-            return Err(
-                Error::new(ErrorCode::MountBusy, "native mount still has open handles").retryable(),
-            );
-        }
         state.binding = next.clone();
         Ok(())
     }
@@ -94,7 +104,12 @@ pub(crate) struct NativeHandle {
 
 impl Drop for NativeHandle {
     fn drop(&mut self) {
-        self.binding.state.lock().open_handles -= 1;
+        let mut state = self.binding.state.lock();
+        state.open_handles -= 1;
+        #[cfg(target_os = "macos")]
+        if state.open_handles == 0 {
+            self.binding.idle.notify_waiters();
+        }
     }
 }
 
@@ -123,43 +138,22 @@ mod tests {
     }
 
     #[test]
-    fn every_native_handle_and_open_reservation_blocks_rebind() {
+    fn live_rebind_preserves_old_context_and_rejects_old_generation_reservations() {
         let previous = binding();
         let state = NativeBinding::new(previous.clone());
-        let caller = LocalIdentity {
-            uid: 2000,
-            gid: 2000,
-        };
-        let old_context = state.context(Some(caller));
-        let file = state.reserve(previous.generation).unwrap();
-        let directory = state.reserve(previous.generation).unwrap();
-        let opening = state.reserve(previous.generation).unwrap();
+        let old_context = state.context(None);
+        let old = state.reserve(previous.generation).unwrap();
         let mut next = previous.clone();
-        next.branch = BranchId::new();
         next.generation += 1;
-        assert_eq!(state.open_handles(), 3);
-        assert_eq!(
-            state.rebind(&previous, &next).unwrap_err().code,
-            ErrorCode::MountBusy
-        );
-        drop(file);
-        drop(directory);
-        assert_eq!(state.open_handles(), 1);
-        assert_eq!(
-            state.rebind(&previous, &next).unwrap_err().code,
-            ErrorCode::MountBusy
-        );
-        drop(opening);
         state.rebind(&previous, &next).unwrap();
-        assert_eq!(state.snapshot(), next);
+        assert_eq!(state.context(None).generation, next.generation);
         assert_eq!(old_context.generation, previous.generation);
-        assert_eq!(state.context(Some(caller)).generation, next.generation);
-        assert_eq!(state.context(Some(caller)).identity, caller);
-        assert_eq!(state.context(None).identity, next.identity);
         assert_eq!(
-            state.reserve(previous.generation).unwrap_err().code,
+            state.reserve(old_context.generation).unwrap_err().code,
             ErrorCode::StaleBinding
         );
+        drop(old);
+        assert_eq!(state.open_handles(), 0);
     }
 
     #[test]
@@ -200,34 +194,5 @@ mod tests {
             ErrorCode::InvalidArgument
         );
         assert_eq!(state.snapshot(), previous);
-    }
-
-    #[test]
-    fn concurrent_open_and_rebind_cannot_both_use_the_previous_generation() {
-        for _ in 0..32 {
-            let previous = binding();
-            let state = NativeBinding::new(previous.clone());
-            let mut next = previous.clone();
-            next.branch = BranchId::new();
-            next.generation += 1;
-            let start = Arc::new(std::sync::Barrier::new(2));
-            let worker = {
-                let state = state.clone();
-                let start = start.clone();
-                let previous = previous.clone();
-                std::thread::spawn(move || {
-                    start.wait();
-                    state.rebind(&previous, &next)
-                })
-            };
-            start.wait();
-            let opened = state.reserve(previous.generation);
-            let rebound = worker.join().unwrap();
-            match (opened, rebound) {
-                (Ok(_handle), Err(error)) => assert_eq!(error.code, ErrorCode::MountBusy),
-                (Err(error), Ok(())) => assert_eq!(error.code, ErrorCode::StaleBinding),
-                outcome => panic!("open and rebind must have one winner: {outcome:?}"),
-            }
-        }
     }
 }
