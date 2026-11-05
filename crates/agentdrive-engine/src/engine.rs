@@ -32,6 +32,7 @@ pub struct EngineConfig {
 #[derive(Debug)]
 pub struct Engine {
     workspaces: Arc<WorkspaceService>,
+    mounts: Arc<MountService>,
     pub services: Services,
     pub runtime: Arc<Runtime>,
     pub(crate) revisions: Arc<RevisionService>,
@@ -151,19 +152,29 @@ impl Engine {
             ownership,
             merge,
             merge_history: crate::merge_history::MergeHistoryService::new(runtime.clone()),
-            mounts,
+            mounts: mounts.clone(),
             operations,
             files,
             branch_files,
         };
         Ok(Arc::new(Self {
             workspaces: workspace,
+            mounts,
             services,
             runtime,
             revisions,
             publisher,
             collaboration,
         }))
+    }
+
+    /// Detach native volumes for process shutdown, preserving binding identity and pending uploads.
+    pub async fn suspend_native_mounts(&self) -> Result<()> {
+        self.mounts.suspend_native_mounts().await
+    }
+
+    pub async fn restore_native_mounts(&self) -> Result<()> {
+        self.mounts.restore_native_mounts().await
     }
 
     pub async fn collaborate_due(&self) -> Result<()> {

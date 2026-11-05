@@ -4,10 +4,6 @@ TARGETS ?= --all-targets
 FEATURES ?=
 CARGO_FLAGS = --locked --workspace $(if $(FEATURES),--features $(FEATURES),)
 
-ifneq (,$(findstring macos-fuse-t,$(FEATURES) $(CARGO_FLAGS)))
-export PKG_CONFIG_PATH := $(CURDIR)/build/fuse-t$(if $(PKG_CONFIG_PATH),:$(PKG_CONFIG_PATH))
-endif
-
 .PHONY: all build check test fmt fmt-check clippy architecture verify clean
 all: build
 build:

@@ -49,13 +49,6 @@ impl CollaborationService {
                 "pending local publication must finish before updating this branch view",
             ));
         }
-        if self.mounts.collaboration_open_handles(branch_id).await? != 0 {
-            return Err(Error::new(
-                ErrorCode::MountBusy,
-                "close open handles before updating this branch view",
-            )
-            .retryable());
-        }
         let _objects = self.runtime.objects.read().await;
         self.publisher
             .import_history(ObservedBranchRef::new(
@@ -153,13 +146,6 @@ impl CollaborationService {
         {
             let _gate = self.runtime.lock_branch(branch_id).await;
             let _commit_objects = self.runtime.objects.read().await;
-            if self.mounts.collaboration_open_handles(branch_id).await? != 0 {
-                return Err(Error::new(
-                    ErrorCode::MountBusy,
-                    "branch acquired a handle while its update was being downloaded",
-                )
-                .retryable());
-            }
             let current = self.runtime.state.branch(branch_id).await?;
             if current != previous {
                 return Err(Error::new(
@@ -250,14 +236,6 @@ impl CollaborationService {
                 record.error = None;
                 self.save_record(record).await?;
             }
-            return Ok(());
-        }
-        if self
-            .mounts
-            .collaboration_open_handles(record.branch)
-            .await?
-            != 0
-        {
             return Ok(());
         }
         let changed = local.working_root != reference.working_root
@@ -455,10 +433,14 @@ impl CollaborationService {
             previous: previous.clone(),
         });
         record.phase = CollaborationPhase::Saving;
-        self.runtime
-            .collaboration_blocked
-            .lock()
-            .insert(record.branch);
+        if next.state == BranchState::Available {
+            self.runtime.publishing_turns.lock().insert(record.branch);
+        } else {
+            self.runtime
+                .collaboration_blocked
+                .lock()
+                .insert(record.branch);
+        }
         self.runtime
             .state
             .commit(LocalCommit {
@@ -545,12 +527,19 @@ impl CollaborationService {
             drop(_gate);
             return self.begin_recovery(record).await;
         }
-        if next.state == BranchState::Writable {
+        let released = next.state == BranchState::Available;
+        if released {
+            // Old file descriptors must lose their generation before any new write can claim the branch.
+            self.runtime
+                .collaboration_blocked
+                .lock()
+                .insert(record.branch);
+            self.runtime.publishing_turns.lock().remove(&record.branch);
+            record.phase = CollaborationPhase::Switching;
+            record.release = None;
+        } else {
             self.bind_executions(record, next.authority_epoch).await?;
             record.phase = CollaborationPhase::Writing;
-        } else {
-            record.phase = CollaborationPhase::Following;
-            record.release = None;
         }
         record.transition = None;
         record.error = None;
@@ -563,6 +552,10 @@ impl CollaborationService {
                 ..Default::default()
             })
             .await?;
+        drop(_gate);
+        if released {
+            return self.resume_view_switch(record).await;
+        }
         self.runtime
             .collaboration_blocked
             .lock()
@@ -589,40 +582,75 @@ impl CollaborationService {
         Ok(())
     }
 
+    /// The caller holds the branch lock. Persist the terminal event and the formal revision together
+    /// so a replay or daemon restart cannot publish a second version or forget to release the branch.
+    pub(super) async fn commit_turn_locked(
+        &self,
+        branch: &Branch,
+        record: &CollaborationRecord,
+        actor: &Principal,
+        turn: OperationId,
+        message: Option<String>,
+    ) -> Result<()> {
+        let context = match self
+            .operations
+            .start(
+                RequestContext {
+                    principal: actor.clone(),
+                    request_id: format!("turn-commit-{turn}"),
+                },
+                "turn_commit",
+                &(branch.id, turn),
+                Some(branch.workspace),
+                Some(branch.id),
+            )
+            .await?
+        {
+            OperationStart::Existing(operation) if operation.local_saved => return Ok(()),
+            OperationStart::Existing(operation) => OperationContext { operation },
+            OperationStart::New(context) => context,
+        };
+        let _objects = self.runtime.objects.read().await;
+        self.revisions
+            .save_and_record_locked(
+                context,
+                SaveRevision {
+                    guard: BranchGuard::from(branch),
+                    message,
+                    kind: RevisionKind::Commit,
+                    parents: None,
+                    replace_root: None,
+                    durability: Durability::Local,
+                },
+                |changes| changes.collaborations.push(record.clone()),
+            )
+            .await?;
+        Ok(())
+    }
+
     pub(super) async fn release_authority(&self, record: &mut CollaborationRecord) -> Result<()> {
         let Some(release) = record.release.clone() else {
             return Ok(());
         };
         let saved = {
             let _gate = self.runtime.lock_branch(record.branch).await;
-            if !self.automatic_enabled() && !self.transition_active(record) {
-                return self.suspend(record).await;
-            }
             let branch = self.runtime.branch(record.branch).await?;
             if branch.authority_epoch != release.authority_epoch
-                || (release.reason == ReleaseReason::Idle
-                    && branch.mutation_seq != release.mutation_seq)
+                || branch.state != BranchState::Writable
+                || branch.owner != self.runtime.location
             {
-                record.release = None;
-                record.phase = CollaborationPhase::Writing;
-                return self.save_record(record).await;
+                drop(_gate);
+                return self.begin_recovery(record).await;
             }
-            if self.mounts.collaboration_open_handles(branch.id).await? != 0 {
-                record.phase = CollaborationPhase::WaitingForHandles;
-                return self.save_record(record).await;
-            }
-            let _objects = self.runtime.objects.read().await;
-            let saved = self
-                .revisions
-                .preserve_working_locked(&branch, &record.actor)
-                .await?;
-            if !self.automatic_enabled() && !self.transition_active(record) {
-                return self.suspend(record).await;
-            }
-            self.runtime.collaboration_blocked.lock().insert(branch.id);
-            record.phase = CollaborationPhase::Saving;
-            self.save_record(record).await?;
-            saved
+            self.commit_turn_locked(
+                &branch,
+                record,
+                &record.actor,
+                release.operation,
+                release.message.clone(),
+            )
+            .await?;
+            self.runtime.branch(branch.id).await?
         };
         if let Err(error) = self.publisher.drain(saved.workspace, Some(saved.id)).await {
             if error.code == ErrorCode::StaleAuthority {
@@ -642,6 +670,15 @@ impl CollaborationService {
             || remote.write_available
         {
             return self.begin_recovery(record).await;
+        }
+        if remote.write_stopped
+            || !BranchSynchronization::new(&saved, Some(&remote), true).remote_confirmed
+        {
+            return Err(Error::new(
+                ErrorCode::RemoteUnknown,
+                "remote has not confirmed the turn revision and contents",
+            )
+            .retryable());
         }
         let previous = self.runtime.branch(saved.id).await?;
         let mut next = previous.clone();
@@ -664,14 +701,6 @@ impl CollaborationService {
     }
 
     pub(super) async fn resume_view_switch(&self, record: &mut CollaborationRecord) -> Result<()> {
-        if self
-            .mounts
-            .collaboration_open_handles(record.branch)
-            .await?
-            != 0
-        {
-            return Ok(());
-        }
         self.mounts
             .rebind_collaboration(record.branch, record.branch)
             .await?;

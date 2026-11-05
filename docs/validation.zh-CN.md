@@ -46,7 +46,7 @@ CLI 与 MCP 集成测试明确使用 UTF-8 读取进程输出和 daemon 文件�
 make -j "$(getconf _NPROCESSORS_ONLN)" test CARGO_FLAGS='-p agentdrive-platform --test native_mount -- --ignored --nocapture'
 ```
 
-macOS 在 `CARGO_FLAGS` 中添加 `--features macos-fuse-t`。Windows 在 PowerShell 中使用 `make -j $env:NUMBER_OF_PROCESSORS`。集成测试管理自己的临时状态和挂载目录，覆盖大于 3 MiB 的文件、截断、随机位置写入、原子追加、重命名、fsync、超过 128 个目录项、历史版本只读访问，以及卸载。
+Windows 在 PowerShell 中使用 `make -j $env:NUMBER_OF_PROCESSORS`。集成测试管理自己的临时状态和挂载目录，覆盖大于 3 MiB 的文件、截断、随机位置写入、原子追加、重命名、fsync、超过 128 个目录项、历史版本只读访问，以及卸载。
 
 WinFsp wrapper 的空指针卷 flush 回归测试在 Windows 上单独执行：
 

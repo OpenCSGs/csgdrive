@@ -5,9 +5,6 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 
-[features]
-macos-mount = ["agentdrive-platform/macos-mount"]
-
 [dependencies]
 agentdrive-config.workspace = true
 axum.workspace = true

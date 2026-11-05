@@ -63,8 +63,8 @@
             <section class="panel settings-panel" aria-labelledby="collaboration-title">
               <div class="settings-heading"><div><h2 id="collaboration-title">自动协作</h2><p>统一管理当前 AgentDrive 的全部工作区和读写挂载，默认开启。</p></div><span class="pill">保存后生效</span></div>
               <label class="storage-check"><input id="settings-collaboration-enabled" type="checkbox" checked>启用自动协作</label>
-              <p class="settings-help">配置远程存储后，工作目录在空闲时跟随远端，修改文件时自动申请写权限，保存完成后按空闲时间或工作结束事件交还。交还时机根据挂载驱动能够观察到的句柄判断。</p>
-              <p class="settings-help">关闭后，稳定状态下保留当前权限并使用手动管理。已经开始的同步交还和恢复分支切换会继续完成。可以在挂载点管理页面调整每个工作分支的交还时间与事件设置。</p>
+              <p class="settings-help">配置远程存储后，首次修改文件会自动申请写权限。每次 turn 结束时，AgentDrive 收到回调便提交本次修改。当前分支的全部 turn 结束且远端确认保存后，其他 location 可以接手写入。</p>
+              <p class="settings-help">关闭后，稳定状态下保留当前权限并使用手动管理。已经开始的同步交还和恢复分支切换会继续完成。可以在挂载点管理页面查看每个工作分支的交接进度。</p>
             </section>
             <section class="panel settings-panel" aria-labelledby="storage-title">
               <div class="settings-heading"><div><h2 id="storage-title">存储设置</h2><p>远程存储保存工作区内容和版本记录。切换会传输已有历史，完成后继续使用当前挂载目录。</p></div><span class="pill">保存后切换</span></div>

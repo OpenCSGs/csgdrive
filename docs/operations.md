@@ -32,13 +32,13 @@ Restore and merge apply may require an attached filesystem to become quiet. An o
 
 The operation verifies the original branch guard again before changing the attachment. A stale target fails without applying the candidate. Generation checks prevent a handle from continuing against a replacement branch. A successful local commit followed by mount failure returns `committed_mount_pending`; the durable result is retained for recovery. Cancellation is accepted only while the original attachment remains unchanged and no local commit has completed.
 
-A normal daemon shutdown stops HTTP traffic and background tasks, saves modified local branches, and requests ordinary unmounts. Busy mounts are reported for recovery. Do not remove the state directory while a daemon or filesystem is active.
+A normal daemon shutdown stops HTTP traffic and background tasks, saves modified local branches, and suspends its mounts. If the operating system reports a busy directory, the daemon continues serving that filesystem and retries shutdown when the directory is free. Do not remove the state directory while a daemon or filesystem is active.
 
 ## Process restart
 
 Startup restores working metadata from the last acknowledged immutable branch root and removes disposable working copies. Writes that had not reached fsync, autosave, a revision operation, or mount_save can be lost after abrupt process termination. A failed write followed by failed metadata persistence stops the affected branch for recovery.
 
-The local branch selection survives shutdown and restart. Run `agentdrive mount --workspace <workspace-id> <path>` or call `mount_prepare` again to reuse it. Native mounts are inspected before reuse; a matching binding retains its ID and generation. An unknown existing filesystem at a path requires operator cleanup; the service does not force-unmount an unrelated filesystem.
+The daemon restores suspended mounts at startup with their original ID, path, and generation. Previously accepted turn callbacks resume publication when the remote is available. An explicit unmount ends the mount intent. To mount that path again, run `agentdrive mount --workspace <workspace-id> <path>` or call `mount_prepare`. Native mounts are inspected before reuse; a matching binding retains its ID and generation. An unknown existing filesystem at a path requires operator cleanup; the service does not force-unmount an unrelated filesystem.
 
 Keep the state directory on a local filesystem with correct file flush and atomic rename behavior. Filesystem and storage hardware must honor flush requests. Unix object publication flushes file data and directories; Windows flushes file data and uses write-through namespace publication. Remote confirmation is the additional durability boundary when remote storage is configured.
 

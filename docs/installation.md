@@ -21,10 +21,10 @@ make -j "$(getconf _NPROCESSORS_ONLN)" verify
 | Platform | Native filesystem requirements | Build |
 | --- | --- | --- |
 | Linux | FUSE 3 utilities, `/dev/fuse`, permission to mount | Default features |
-| macOS | [FUSE-T](https://github.com/macos-fuse-t/fuse-t) and `pkg-config` | `make -j "$(sysctl -n hw.ncpu)" build FEATURES=macos-fuse-t` |
+| macOS | Built-in NFSv3 client | `make -j "$(sysctl -n hw.ncpu)" build` |
 | Windows | MSVC, [WinFsp 2.1](https://github.com/winfsp/winfsp/releases/tag/v2.1) including its Developer feature | PowerShell: `make -j $env:NUMBER_OF_PROCESSORS build` |
 
-The default macOS build provides the daemon, CLI, and storage operations. Enable `macos-fuse-t` for native mounts without a kernel extension. Make selects the FUSE-T library; direct Cargo builds must set `PKG_CONFIG_PATH="$PWD/build/fuse-t"`. Existing macFUSE installations can use `FEATURES=macos-mount`. The Windows build loads WinFsp from its registered installation path. Use a local NTFS volume for Windows state.
+On macOS the daemon serves NFS over loopback. Put mount points inside a private directory owned by the current user. Windows loads WinFsp from its registered installation path and uses a local NTFS volume for state.
 
 ## Run
 

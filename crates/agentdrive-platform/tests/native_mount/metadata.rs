@@ -156,10 +156,26 @@ impl FileSystem for PausedMetadata {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 #[ignore = "requires an installed native filesystem driver and mount permission"]
-async fn native_rebind_waits_until_metadata_reply_is_sent() {
+async fn native_rebind_preserves_new_view_with_old_metadata_in_flight() {
     for operation in [MetadataOperation::Lookup, MetadataOperation::Getattr] {
         metadata_rebind(operation).await;
     }
+}
+
+async fn unmount_after_metadata(harness: &Harness, binding: &MountBinding) {
+    tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            match harness.driver.unmount(binding).await {
+                Err(error) if error.code == ErrorCode::MountBusy && error.retryable => {
+                    tokio::time::sleep(Duration::from_millis(10)).await;
+                }
+                result => return result,
+            }
+        }
+    })
+    .await
+    .expect("native metadata requests kept the mount busy")
+    .unwrap();
 }
 
 async fn metadata_rebind(operation: MetadataOperation) {
@@ -183,7 +199,7 @@ async fn metadata_rebind(operation: MetadataOperation) {
         .await
         .unwrap();
     harness.wait_for_handles(0).await;
-    harness.driver.unmount(&harness.binding).await.unwrap();
+    unmount_after_metadata(&harness, &harness.binding).await;
     let (started, observed) = oneshot::channel();
     let (resume, waiting) = oneshot::channel();
     let files = Arc::new(PausedMetadata {
@@ -217,10 +233,6 @@ async fn metadata_rebind(operation: MetadataOperation) {
         .unwrap();
     let mut next = harness.binding.clone();
     next.generation += 1;
-    let result = harness.driver.rebind(&harness.binding, &next).await;
-    resume.send(()).unwrap();
-    let original = reader.await.unwrap();
-    harness.wait_for_handles(0).await;
     harness
         .driver
         .rebind(&harness.binding, &next)
@@ -234,16 +246,23 @@ async fn metadata_rebind(operation: MetadataOperation) {
         })
         .await
         .unwrap();
+    resume.send(()).unwrap();
+    let original = reader.await.unwrap();
+    if let Err(error) = original {
+        assert_eq!(
+            error.raw_os_error(),
+            Some(libc::ESTALE),
+            "{operation:?}: {error}"
+        );
+    }
+    assert_eq!(
+        harness.driver.status(&next).await.unwrap(),
+        NativeMountState::Mounted
+    );
     let path = harness.binding.path.join("probe.txt");
     let after = tokio::task::spawn_blocking(move || std::fs::metadata(path))
         .await
         .unwrap();
-    harness.driver.unmount(&next).await.unwrap();
-    assert_eq!(
-        result.unwrap_err().code,
-        ErrorCode::MountBusy,
-        "{operation:?}"
-    );
-    assert!(original.is_ok(), "{operation:?}: {original:?}");
+    unmount_after_metadata(&harness, &next).await;
     assert!(after.is_ok(), "{operation:?}: {after:?}");
 }

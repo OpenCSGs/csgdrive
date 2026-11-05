@@ -16,6 +16,7 @@ struct OpenFile {
     branch: BranchId,
     inode: InodeId,
     mode: OpenMode,
+    retired: bool,
 }
 
 pub struct FileService {
@@ -143,7 +144,9 @@ impl FileService {
                 "branch stopped after a storage failure",
             ));
         }
-        if !root_metadata
+        if write {
+            self.runtime.check_mutation(branch.id)?;
+        } else if !root_metadata
             && self
                 .runtime
                 .collaboration_blocked
@@ -325,11 +328,22 @@ impl FileService {
         Ok(handle)
     }
 
-    fn inode_open(&self, branch: BranchId, inode: InodeId) -> bool {
-        self.handles
-            .lock()
-            .values()
-            .any(|handle| handle.branch == branch && handle.inode == inode)
+    /// Keep the descriptor until close, but exclude it from the occupancy of the replacement view.
+    pub(crate) fn retire_handles(&self, binding: &MountBinding) {
+        for handle in self.handles.lock().values_mut() {
+            if handle.mount == binding.id && handle.generation == binding.generation {
+                handle.retired = true;
+            }
+        }
+    }
+
+    fn inode_open(&self, branch: BranchId, inode: InodeId, closing: Option<HandleId>) -> bool {
+        self.handles.lock().iter().any(|(id, handle)| {
+            !handle.retired
+                && handle.branch == branch
+                && handle.inode == inode
+                && Some(*id) != closing
+        })
     }
 
     async fn stop_after_write_error(&self, branch: &Branch, error: Error) -> Error {
@@ -618,6 +632,7 @@ impl FileSystem for FileService {
                 branch: mount.branch,
                 inode,
                 mode,
+                retired: false,
             },
         );
         Ok(FileHandle { id, inode })
@@ -673,8 +688,8 @@ impl FileSystem for FileService {
         if data.len() > IO_BUFFER_BYTES * 16 {
             return Err(Error::invalid("write request exceeds the buffer limit"));
         }
-        self.prepare_mutation(context).await?;
         let handle = self.handle(context, id)?;
+        self.prepare_mutation(context).await?;
         let _gate = self.runtime.lock_branch(handle.branch).await;
         let handle = self.handle(context, id)?;
         if !handle.mode.write {
@@ -789,7 +804,7 @@ impl FileSystem for FileService {
                     "rename destination has a different file kind",
                 ));
             }
-            if self.inode_open(branch.id, target.inode.id) {
+            if self.inode_open(branch.id, target.inode.id, None) {
                 return Err(Error::new(
                     ErrorCode::Busy,
                     "rename destination has open handles",
@@ -886,11 +901,7 @@ impl FileSystem for FileService {
         if directory != (target.inode.kind == FileKind::Directory) {
             return Err(Error::invalid("unlink file kind mismatch"));
         }
-        if self.handles.lock().iter().any(|(id, handle)| {
-            Some(*id) != closing_handle
-                && handle.branch == branch.id
-                && handle.inode == target.inode.id
-        }) {
+        if self.inode_open(branch.id, target.inode.id, closing_handle) {
             return Err(Error::new(ErrorCode::Busy, "file has other open handles"));
         }
         if directory
@@ -940,7 +951,7 @@ impl FileSystem for FileService {
                 "unlink file kind mismatch",
             ));
         }
-        if self.inode_open(branch.id, target.inode.id) {
+        if self.inode_open(branch.id, target.inode.id, None) {
             return Err(Error::new(ErrorCode::Busy, "file has open handles"));
         }
         if directory
@@ -1010,7 +1021,7 @@ impl WorkingTree for FileService {
             .handles
             .lock()
             .values()
-            .any(|handle| handle.branch == branch.id)
+            .any(|handle| !handle.retired && handle.branch == branch.id)
         {
             return Err(Error::new(
                 ErrorCode::MountBusy,
@@ -1034,7 +1045,7 @@ impl WorkingTree for FileService {
         self.handles
             .lock()
             .values()
-            .filter(|handle| handle.mount == mount)
+            .filter(|handle| !handle.retired && handle.mount == mount)
             .count()
     }
 }

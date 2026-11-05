@@ -2,7 +2,7 @@
 
 [English](integrations.md) | [简体中文](integrations.zh-CN.md)
 
-启动 `agentdrived`。原生目录需要 FUSE、FUSE-T/macFUSE 或 WinFsp。挂载路径必须位于 daemon 配置的 `mount_roots` 中。Agent 的执行环境需要能够访问该目录。
+启动 `agentdrived`。原生目录需要 FUSE、macOS 内置 NFS 或 WinFsp。挂载路径必须位于 daemon 配置的 `mount_roots` 中。Agent 的执行环境需要能够访问该目录。
 
 ## MCP 与挂载目录
 
@@ -90,21 +90,13 @@ agentdrive integrate --protocol codex-app-server --workspace "$WORKSPACE" \
 
 ## 自动协作
 
-共享分支启用自动协作之前，全部参与的 location 都需要升级到支持此功能的版本。
+启用全局自动协作并配置远端存储后，Agent 将共享分支挂载到本机目录，首次修改时申请写权限。通过 webhook 登记每个 turn，在结束时发送回调。发送结束回调之前请等待该轮文件写入完成，包含应用缓冲区中的内容。
 
-Linux FUSE、macFUSE、FUSE-T 和 WinFsp 都可以使用自动协作。daemon 根据各驱动提供的句柄信息判断交还时机。FUSE 无法完整获取 `O_PATH` 引用；FUSE-T 的 NFS backend 无法完整统计应用保留的目录引用。Dashboard 在配置和状态旁持续展示这一统计范围。
-
-FUSE-T 接收新版本时自动重新挂载相同目录。未挂载期间目录拒绝普通应用写入，挂载更新期间访问可能需要重试。目录仍被程序占用时，后台等待占用解除后自动继续。
-
-设置页面的“自动协作”开关统一管理整个 AgentDrive，默认开启（`collaboration.enabled: true`），需要配置远程存储。在挂载点管理页面选择分支和本机目录，创建读写挂载即可使用，也可以选择其他 location 的分支。目录空闲时跟随已发布内容，首次修改时自动申请写权限；持有权限期间执行本地自动保存与远端发布。Agent 继续使用普通文件操作。
-
-挂载点管理中的“自动协作”面板可以调整所选挂载对应分支的空闲释放和事件释放。两种触发方式都等待驱动报告该分支本机挂载没有打开的句柄。面板展示全局状态和设置链接、当前分支、写权限持有者、句柄数量及统计范围、登记任务、本地保存、远端确认和等待切换的恢复分支。无法读取句柄数量时显示未知。自动刷新保留尚未提交的配置输入。
+AgentDrive 提交这轮修改并上传。最后一个已登记的 turn 结束，且远端分支确认相同版本后，其他 location 可以接手续写。上传中断时，本地保留记录并重试。挂载点管理页面显示当前写入方、活动 turn、本机保存与远端确认状态。
 
 自动协作开启时，`mount_save`、`revision_commit`（正式提交或 checkpoint）、`branch_restore` 和 `merge_apply` 通过同一个协作服务申请写权限，也支持没有挂载目录的本机分支。受保护分支保留现有权限规则。申请前后都会检查请求指定的版本、generation 和可选的修改序号；内容条件仍然匹配时可以使用新的权限 epoch。尚未保存且允许重试的请求继续使用原 request_id，内容已经变化时需要重新读取分支并提交新请求。准备合并使用固定版本，不申请写权限；应用合并和继续恢复版本时会重新申请权限并检查目标内容。
 
 关闭全局开关后，稳定状态的分支保留当前权限，由手动管理；已经冻结写入的交还和恢复分支切换继续完成。新读写挂载根据请求指定分支、已有挂载、本机选择或工作区初始分支继续使用共享分支。只读挂载和仅使用本地存储的工作区保留普通挂载行为。
-
-`capabilities.handle_tracking_scope` 说明驱动的统计范围：`native` 表示驱动打开的文件与目录句柄；`protocol` 表示文件系统协议报告的句柄。数量为零表示当前未观察到打开的句柄。`automatic_collaboration` 表示驱动是否支持，`collaboration_enabled` 表示当前全局开关。没有编入所需挂载驱动的构建会拒绝自动模式。
 
 使用以下命令启动带有事件转发的 Codex App Server：
 
@@ -121,11 +113,27 @@ ACP 支持相同的 `--branch` 参数。集成程序读取 daemon 的协作配�
 | 接口 | 参数或结果 |
 | --- | --- |
 | `GET /api/workspaces/{workspace}/collaboration` | 返回分支协作状态及关联的本机 mount ID。 |
-| `PUT /api/collaboration` | `{mount, expected_binding_generation, enabled, idle_timeout_secs, release_on_event}`；`enabled` 必须与当前全局设置一致，`idle_timeout_secs` 为 `null` 时关闭空闲释放。 |
+| `PUT /api/collaboration` | `{mount, expected_binding_generation, enabled}`，`enabled` 与当前全局设置一致。 |
 | `POST /api/collaboration/events` | `{mount, source, thread_id, turn_id, phase}`；phase 支持 `started`、`completed`、`interrupted`、`failed`。 |
 | `POST /api/collaboration/codex` | 在 Codex 通知中加入 `mount` 和 `source`；支持 `turn/started` 与结束状态的 `turn/completed`。 |
 
 工作访问目录之前登记 `started`。结束时使用相同的 source、thread、turn 和 mount 标识。daemon 保存登记时的挂载版本和写权限代次；客户端无需提供解锁代次。重复结束事件复用已有处理结果，迟到事件不能释放后续取得的权限。事件请求成功表示后台已经接收处理状态，远端保存与权限交还需要查看协作状态。
+
+以下命令模拟一次 turn。将 `MOUNT_ID` 设为本机读写挂载 ID，并为每次新工作使用不同的 `turn_id`。
+
+```sh
+send_turn_event() {
+  curl --fail-with-body -sS http://127.0.0.1:7421/api/collaboration/events \
+    -H 'Content-Type: application/json' \
+    -d "{\"mount\":\"$MOUNT_ID\",\"source\":\"worker\",\"thread_id\":\"session-1\",\"turn_id\":\"$TURN_ID\",\"phase\":\"$1\"}"
+}
+TURN_ID="$(uuidgen)"
+send_turn_event started
+# 在挂载目录写入并刷新本轮文件。
+send_turn_event completed
+```
+
+Codex 通知格式示例：
 
 ```json
 {
@@ -139,7 +147,7 @@ ACP 支持相同的 `--branch` 参数。集成程序读取 daemon 的协作配�
 }
 ```
 
-`failed` 和 `interrupted` 同样保留已经接收的文件修改。如果发布时发现写权限已经改变，daemon 保存恢复分支，等待句柄关闭后切换相关本机读写挂载。目录路径保持不变；交给其他 location 使用之前，查看当前分支和远端确认状态。文件操作返回版本过期错误时，重新打开文件并读取最新内容后再生成修改。
+终止状态包括 `completed`、`failed` 和 `interrupted`。均保留已经写入的内容。交接后在原路径重新打开文件，可读取新版本。
 
 ## 分支与 Dashboard
 
@@ -185,17 +193,9 @@ Dashboard 默认进入 `/archive`，导航位于“分支与版本”上方。�
 
 远端确认要求已知远端记录的 owner、authority epoch、generation、durable sequence 和 working root 与本机一致，并且本机修改已保存；同步队列为空本身不表示远端已保存。页面展示最近一次确认，查看其他机器的新成果前，通过 MCP 拉取远端更新。
 
-## macOS FUSE-T
+## macOS 内置 NFS
 
-安装 FUSE-T 1.2.9 和 pkg-config，使用 `make -j "$(sysctl -n hw.ncpu)" build FEATURES=macos-fuse-t` 编译。AgentDrive 使用本机 NFS 后端并关闭属性缓存，无需内核扩展。FUSE-T 的[许可条款](https://github.com/macos-fuse-t/fuse-t)要求商业使用或随商业软件分发时取得商业许可。
-
-NFS 后端不支持缓存失效通知。自动协作接收新版本时，会在相同路径重新创建原生挂载。目录仍被程序占用时，操作保留并自动重试，daemon 使用正常卸载。未挂载期间目录拒绝普通应用写入，挂载更新期间访问可能需要重试。目录所有者仍可修改这些权限，提升权限的进程可以绕过这些限制。挂载目录存在额外写入授权时，挂载操作返回明确错误。
-
-macOS 可能生成 AppleDouble `._` 元数据文件，AgentDrive 会将这些文件作为普通文件保存。`branch_switch` 在一次调用中尝试正常卸载和重新挂载。运行中的 Agent、终端或 MCP stdio 代理可能占用目录。遇到 `MOUNT_BUSY`，退出相关进程或重启 Agent，通过目录之外的进程使用相同 request ID 重试 `branch_switch`。客户端允许时，将 MCP 代理的工作目录设置在挂载目录之外。
-
-文件写入和 `fsync` 遵循 binding 的 durability 设置。默认 `local` 设置下，使用 `mount_save` 的 `durability: "remote"` 并检查 `remote_confirmed`，确认内容已保存到 RustFS。仅凭本地文件写入成功无法确认远端保存。
-
-2026-10-18 的 FUSE-T 1.2.9 NFS 探针使用带有 xattr 回调的镜像文件系统，比较 `noattrcache`、默认缓存及 `nonamedattr`。默认缓存将该负载的 GETATTR 次数从 2028 减至 454，但三种设置下，外部 chmod 的可见延迟均约为 4.5–4.8 秒；通过挂载路径执行 chmod 后立即可见。xattr 回调调用次数均为零，自定义属性通过 `._` 文件保存，探针中的 ResourceFork 写入失败。因此 AgentDrive 保留当前缓存设置和 AppleDouble 文件。仅增加 xattr 方法尚未证明能在该后端消除配套文件。[FUSE-T 开发文档](https://github.com/macos-fuse-t/fuse-t/wiki)说明属性缓存由客户端管理、FUSE TTL 不生效，NFS 不支持通知。这些结果仅适用于本次 NFS 后端测试。
+每个工作目录通过本机 NFSv3 提供。交接时保持挂载目录，旧文件句柄的写入会被拒绝。
 
 ## 工作区发现与删除
 

@@ -5,6 +5,7 @@ use async_trait::async_trait;
 use std::sync::{Arc, OnceLock, Weak};
 
 mod collaboration;
+mod shutdown;
 
 pub struct MountService {
     runtime: Arc<Runtime>,
@@ -1282,7 +1283,8 @@ impl MountApi for MountService {
             let mut current = self.operations.get(&target.principal, target.id).await?;
             if let Some(guard) = prepared
                 && !current.local_saved
-                && let Some(PendingAction::ApplyRevision { target, .. }) = &mut current.pending
+                && let Some(PendingAction::ApplyRevision { target, mount, .. }) =
+                    &mut current.pending
             {
                 if (BranchGuard {
                     authority_epoch: guard.authority_epoch,
@@ -1293,6 +1295,21 @@ impl MountApi for MountService {
                         ErrorCode::TargetMoved,
                         "pending revision target changed",
                     ));
+                }
+                if let Some(bound) = mount
+                    && let Some(active) = self.runtime.state.mount(bound.id).await?
+                    && active.generation > bound.generation
+                {
+                    // Handoff rotates native handles even if the directory and branch contents
+                    // stay identical. Resume only the same mount after verifying the content guard.
+                    let mut prior = active.clone();
+                    prior.generation = bound.generation;
+                    if prior.state == MountState::RecoveryRequired {
+                        prior.state = bound.state;
+                    }
+                    if prior == *bound {
+                        bound.generation = active.generation;
+                    }
                 }
                 *target = guard;
                 let pending = current.pending.clone();

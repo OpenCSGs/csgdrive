@@ -31,6 +31,12 @@ impl CollaborationService {
             .operation_by_request(actor, &request_id)
             .await?;
         let current_binding = self.target(actor, request.mount, Permission::Write).await?;
+        if current_binding.access != AccessMode::ReadWrite || current_binding.revision.is_some() {
+            return Err(Error::new(
+                ErrorCode::ReadOnly,
+                "turn events require a writable branch mount",
+            ));
+        }
         let matches_execution = |execution: &CollaborationExecution| {
             execution.actor == *actor
                 && execution.mount == request.mount
@@ -69,6 +75,7 @@ impl CollaborationService {
                 Permission::Write,
             )
             .await?;
+        let _gate = self.runtime.lock_branch(record.branch).await;
         let branch = self.runtime.branch(record.branch).await?;
         let position = record.executions.iter().position(matches_execution);
         if request.phase == ExecutionPhase::Started {
@@ -79,6 +86,12 @@ impl CollaborationService {
             {
                 return self.describe(&record).await;
             }
+            if current_binding.state != MountState::Ready || current_binding.branch != branch_id {
+                return Err(Error::new(
+                    ErrorCode::StaleBinding,
+                    "execution mount is not ready on the registered branch",
+                ));
+            }
             if !record.settings.enabled || !self.automatic_enabled() {
                 return Err(Error::invalid("automatic collaboration is disabled"));
             }
@@ -88,7 +101,7 @@ impl CollaborationService {
                     "too many active executions for this branch",
                 ));
             }
-            if record.transition.is_some() || record.recovery.is_some() {
+            if record.release.is_some() || self.transition_active(&record) {
                 return Err(Error::new(
                     ErrorCode::BranchBusy,
                     "branch collaboration is completing a transition",
@@ -132,10 +145,6 @@ impl CollaborationService {
                     && branch.state == BranchState::Writable),
                 phase: ExecutionPhase::Started,
             });
-            record.release = None;
-            if record.phase == CollaborationPhase::WaitingForHandles {
-                record.phase = CollaborationPhase::Writing;
-            }
             self.runtime
                 .state
                 .commit(LocalCommit {
@@ -145,21 +154,20 @@ impl CollaborationService {
                 })
                 .await?;
         } else {
-            if previous.is_none() {
-                return Err(Error::new(
-                    ErrorCode::NotFound,
-                    "execution must be registered by this principal before its completion event",
-                ));
-            }
+            let registration = previous.filter(|operation| operation.phase == OperationPhase::Complete).ok_or_else(|| Error::new(
+                ErrorCode::NotFound,
+                "execution must be registered by this principal before its completion event",
+            ))?;
             let Some(position) = position else {
-                if previous.is_some() {
-                    return self.describe(&record).await;
-                }
-                return Err(Error::new(
-                    ErrorCode::NotFound,
-                    "execution must be registered before its completion event",
-                ));
+                return self.describe(&record).await;
             };
+            if record.recovery.is_some() || record.transition.is_some() {
+                return Err(Error::new(
+                    ErrorCode::BranchBusy,
+                    "retry the turn callback after the pending authority transition",
+                )
+                .retryable());
+            }
             let execution = record.executions.remove(position);
             let current_grant = !execution.pending_grant
                 && execution.authority_epoch == branch.authority_epoch
@@ -170,20 +178,32 @@ impl CollaborationService {
             });
             if record.settings.enabled
                 && self.automatic_enabled()
-                && record.settings.release_on_event
                 && current_grant
-                && !still_active
                 && branch.owner == self.runtime.location
                 && branch.state == BranchState::Writable
             {
-                record.release = Some(CollaborationRelease {
-                    operation: OperationId::new(),
-                    authority_epoch: branch.authority_epoch,
-                    mutation_seq: branch.mutation_seq,
-                    reason: ReleaseReason::ExecutionEnded,
-                });
+                let message = Some(format!(
+                    "Agent turn {} ({:?})",
+                    execution.turn_id, request.phase
+                ));
+                if !still_active {
+                    record.release = Some(CollaborationRelease {
+                        operation: registration.id,
+                        authority_epoch: branch.authority_epoch,
+                        reason: ReleaseReason::ExecutionEnded,
+                        message: message.clone(),
+                    });
+                    record.phase = CollaborationPhase::Saving;
+                    record.actor = actor.clone();
+                }
+                self.commit_turn_locked(&branch, &record, actor, registration.id, message)
+                    .await?;
+                if !still_active {
+                    self.runtime.publishing_turns.lock().insert(record.branch);
+                }
+            } else {
+                self.save_record(&record).await?;
             }
-            self.save_record(&record).await?;
         }
         self.describe(&record).await
     }

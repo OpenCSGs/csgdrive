@@ -18,7 +18,6 @@ use std::{
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 use tokio::runtime::Handle;
-#[cfg(target_os = "linux")]
 use {std::process::Stdio, tokio::process::Command};
 
 struct Mounted {
@@ -43,9 +42,6 @@ impl Driver {
         tokio::task::spawn_blocking(move || {
             let binding = spec.binding;
             std::fs::create_dir_all(&binding.path)?;
-            #[cfg(all(target_os = "macos", feature = "macos-fuse-t"))]
-            let _mount_point = crate::fuse_mount_point::prepare(&binding.path)?;
-            #[cfg(not(all(target_os = "macos", feature = "macos-fuse-t")))]
             if std::fs::read_dir(&binding.path)?.next().is_some() {
                 return Err(Error::new(
                     ErrorCode::MountBusy,
@@ -66,24 +62,12 @@ impl Driver {
                     MountOption::RW
                 },
             ];
-            #[cfg(all(target_os = "macos", feature = "macos-fuse-t"))]
-            config.mount_options.extend([
-                MountOption::CUSTOM("backend=nfs".into()),
-                MountOption::CUSTOM("noattrcache".into()),
-            ]);
-            #[cfg(target_os = "linux")]
-            {
-                config.n_threads = Some(
-                    std::thread::available_parallelism()
-                        .map(usize::from)
-                        .unwrap_or(2)
-                        .clamp(2, 8),
-                );
-            }
-            #[cfg(target_os = "macos")]
-            {
-                config.n_threads = Some(1);
-            }
+            config.n_threads = Some(
+                std::thread::available_parallelism()
+                    .map(usize::from)
+                    .unwrap_or(2)
+                    .clamp(2, 8),
+            );
             let native_binding = NativeBinding::new(binding.clone());
             let filesystem = Fuse {
                 binding: native_binding.clone(),
@@ -95,31 +79,20 @@ impl Driver {
                 directories: Mutex::new(BTreeMap::new()),
             };
             let session = fuser::spawn_mount(filesystem, &binding.path, &config)?;
-            #[cfg(target_os = "macos")]
-            {
-                let deadline = std::time::Instant::now() + Duration::from_secs(15);
-                loop {
-                    if session.guard.is_finished() {
-                        session.join()?;
-                        return Err(Error::new(ErrorCode::Io, "FUSE session ended before the directory was mounted"));
-                    }
-                    if native_source(&binding.path)?.is_some() {
-                        break;
-                    }
-                    if std::time::Instant::now() >= deadline {
-                        return Err(Error::new(ErrorCode::Io, "native mount did not appear within 15 seconds; check the filesystem driver logs"));
-                    }
-                    std::thread::sleep(Duration::from_millis(25));
-                }
-            }
             let source = native_source(&binding.path)?.ok_or_else(|| {
-                Error::new(ErrorCode::Io, "mounted filesystem is absent from the mount table")
+                Error::new(
+                    ErrorCode::Io,
+                    "mounted filesystem is absent from the mount table",
+                )
             })?;
-            mounts.lock().insert(binding.id, Mounted {
-                binding: native_binding,
-                session,
-                source,
-            });
+            mounts.lock().insert(
+                binding.id,
+                Mounted {
+                    binding: native_binding,
+                    session,
+                    source,
+                },
+            );
             Ok(())
         })
         .await
@@ -198,47 +171,26 @@ impl Driver {
                     .lock()
                     .get(&binding.id)
                     .is_none_or(|current| current.source == source);
-            #[cfg(all(target_os = "macos", feature = "macos-fuse-t"))]
-            let owned = owned
-                || self.mounts.lock().get(&binding.id).is_some_and(|current| {
-                    current.binding.snapshot().path == binding.path
-                        && current.binding.snapshot().generation == binding.generation
-                        && !current.session.guard.is_finished()
-                        && current.source == source
-                });
             if !owned {
                 return Err(Error::new(
                     ErrorCode::Conflict,
                     "mount path belongs to a different filesystem",
                 ));
             }
-            #[cfg(target_os = "linux")]
-            {
-                let program = if Path::new("/usr/bin/fusermount3").exists() {
-                    "/usr/bin/fusermount3"
-                } else {
-                    "/bin/fusermount"
-                };
-                let output = Command::new(program)
-                    .env("LC_ALL", "C")
-                    .arg("-u")
-                    .arg(&binding.path)
-                    .stdin(Stdio::null())
-                    .output()
-                    .await?;
-                if !output.status.success() {
-                    return Err(helper_unmount_error(&output));
-                }
-            }
-            #[cfg(target_os = "macos")]
-            {
-                let path = binding.path.clone();
-                tokio::task::spawn_blocking(move || {
-                    nix::mount::unmount(&path, nix::mount::MntFlags::empty())
-                        .map_err(|error| native_unmount_error(std::io::Error::from(error)))
-                })
-                .await
-                .map_err(|error| Error::new(ErrorCode::Io, error.to_string()))??;
+            let program = if Path::new("/usr/bin/fusermount3").exists() {
+                "/usr/bin/fusermount3"
+            } else {
+                "/bin/fusermount"
+            };
+            let output = Command::new(program)
+                .env("LC_ALL", "C")
+                .arg("-u")
+                .arg(&binding.path)
+                .stdin(Stdio::null())
+                .output()
+                .await?;
+            if !output.status.success() {
+                return Err(helper_unmount_error(&output));
             }
         }
         let session = self
@@ -255,22 +207,6 @@ impl Driver {
     }
 }
 
-#[cfg(target_os = "macos")]
-fn native_unmount_error(error: std::io::Error) -> Error {
-    if error.raw_os_error() == Some(libc::EBUSY) {
-        Error::new(
-            ErrorCode::MountBusy,
-            format!("native unmount failed: {error}"),
-        )
-        .retryable()
-    } else {
-        let mut error = Error::from(error);
-        error.message = format!("native unmount failed: {}", error.message);
-        error
-    }
-}
-
-#[cfg(any(target_os = "linux", test))]
 fn helper_unmount_error(output: &std::process::Output) -> Error {
     let reason = String::from_utf8_lossy(&output.stderr);
     let code = if reason.trim().ends_with(": Device or resource busy")
@@ -290,7 +226,6 @@ fn helper_unmount_error(output: &std::process::Output) -> Error {
     )
 }
 
-#[cfg(target_os = "linux")]
 fn native_source(path: &Path) -> Result<Option<String>> {
     use std::os::unix::ffi::OsStrExt;
     let table = std::fs::read_to_string("/proc/self/mountinfo")?;
@@ -330,23 +265,14 @@ fn native_source(path: &Path) -> Result<Option<String>> {
     }
     Ok(None)
 }
-#[cfg(target_os = "macos")]
-fn native_source(path: &Path) -> Result<Option<String>> {
-    let output = std::process::Command::new("/sbin/mount").output()?;
-    let marker = format!(" on {} (", path.display());
-    Ok(String::from_utf8_lossy(&output.stdout)
-        .lines()
-        .find_map(|line| {
-            line.split_once(&marker)
-                .map(|(source, _)| source.to_owned())
-        }))
-}
 
 struct DirectorySnapshot {
+    context: FsContext,
     entries: Vec<(String, Inode)>,
     _native: NativeHandle,
 }
 struct OpenFile {
+    context: FsContext,
     handle: HandleId,
     _native: NativeHandle,
 }
@@ -419,6 +345,7 @@ impl Fuse {
         self.handles.lock().insert(
             id,
             Arc::new(OpenFile {
+                context: context.clone(),
                 handle: handle.id,
                 _native: native,
             }),
@@ -879,7 +806,7 @@ impl Filesystem for Fuse {
     }
     fn release(
         &self,
-        request: &Request,
+        _: &Request,
         _: INodeNo,
         handle: fuser::FileHandle,
         _: OpenFlags,
@@ -894,22 +821,22 @@ impl Filesystem for Fuse {
             .ok_or_else(|| Error::new(ErrorCode::StaleBinding, "native file handle is closed"))
             .and_then(|handle| {
                 self.runtime
-                    .block_on(self.files.release(&self.context(request), handle.handle))
+                    .block_on(self.files.release(&handle.context, handle.handle))
             });
         self.empty(result, reply);
     }
     fn fsync(
         &self,
-        request: &Request,
+        _: &Request,
         _: INodeNo,
         handle: fuser::FileHandle,
         _: bool,
         reply: ReplyEmpty,
     ) {
         self.empty(
-            self.handle(handle).and_then(|_handle| {
+            self.handle(handle).and_then(|file| {
                 self.runtime
-                    .block_on(self.files.fsync(&self.context(request)))
+                    .block_on(self.files.fsync(&file.context))
                     .map(|_| ())
             }),
             reply,
@@ -931,6 +858,7 @@ impl Filesystem for Fuse {
             self.directories.lock().insert(
                 id,
                 Arc::new(DirectorySnapshot {
+                    context: context.clone(),
                     entries: snapshot,
                     _native: native,
                 }),
@@ -965,6 +893,10 @@ impl Filesystem for Fuse {
                 return;
             }
         };
+        if entries.context.generation != context.generation {
+            reply.error(Errno::ESTALE);
+            return;
+        }
         for (index, (name, inode)) in entries
             .entries
             .iter()
@@ -1002,16 +934,16 @@ impl Filesystem for Fuse {
     }
     fn fsyncdir(
         &self,
-        request: &Request,
+        _: &Request,
         _: INodeNo,
         handle: fuser::FileHandle,
         _: bool,
         reply: ReplyEmpty,
     ) {
         self.empty(
-            self.directory(handle).and_then(|_handle| {
+            self.directory(handle).and_then(|directory| {
                 self.runtime
-                    .block_on(self.files.fsync(&self.context(request)))
+                    .block_on(self.files.fsync(&directory.context))
                     .map(|_| ())
             }),
             reply,
@@ -1034,46 +966,5 @@ impl Filesystem for Fuse {
             ),
             Err(error) => reply.error(errno(error)),
         }
-    }
-}
-
-#[cfg(all(test, target_os = "macos"))]
-mod unmount_tests {
-    use super::*;
-
-    #[test]
-    fn helper_errors_keep_non_busy_causes() {
-        use std::os::unix::process::ExitStatusExt;
-        for (message, code) in [
-            (
-                "fusermount3: failed to unmount /test: Device or resource busy\n",
-                ErrorCode::MountBusy,
-            ),
-            (
-                "fusermount3: failed to unmount /target is busy: Permission denied\n",
-                ErrorCode::Io,
-            ),
-        ] {
-            let error = helper_unmount_error(&std::process::Output {
-                status: std::process::ExitStatus::from_raw(256),
-                stdout: vec![],
-                stderr: message.as_bytes().to_vec(),
-            });
-            assert_eq!(error.code, code);
-            assert!(error.message.contains(message.trim()));
-        }
-    }
-
-    #[test]
-    fn unmount_errors_distinguish_busy_from_other_causes() {
-        let busy = native_unmount_error(std::io::Error::from_raw_os_error(libc::EBUSY));
-        assert_eq!(busy.code, ErrorCode::MountBusy);
-        assert!(busy.retryable);
-        let denied = native_unmount_error(std::io::Error::from_raw_os_error(libc::EACCES));
-        assert_eq!(denied.code, ErrorCode::PermissionDenied);
-        assert!(denied.message.contains("Permission denied"));
-        let invalid = native_unmount_error(std::io::Error::from_raw_os_error(libc::EINVAL));
-        assert_eq!(invalid.code, ErrorCode::Io);
-        assert!(invalid.message.contains("Invalid argument"));
     }
 }

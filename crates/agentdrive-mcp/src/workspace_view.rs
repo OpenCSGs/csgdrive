@@ -280,7 +280,6 @@ mod tests {
             capabilities: agentdrive_ports::Capabilities {
                 format_version: FORMAT_VERSION,
                 platform_mount: "test".into(),
-                handle_tracking_scope: agentdrive_ports::HandleTrackingScope::Native,
                 automatic_collaboration: true,
                 collaboration_enabled: true,
                 file_operations: vec![],
