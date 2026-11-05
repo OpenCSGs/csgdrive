@@ -296,7 +296,8 @@ async fn turn_callback_releases_an_open_file_and_refreshes_the_existing_mount() 
     writer.event("third", ExecutionPhase::Started).await;
     let path = writer.binding.path.join("article.txt");
     tokio::task::spawn_blocking(move || {
-        // An open descriptor from the first turn must not keep the current inode busy.
+        // Unix permits reusing an unlinked name while the old descriptor remains open.
+        #[cfg(unix)]
         std::fs::remove_file(&path).unwrap();
         std::fs::write(&path, b"replacement").unwrap();
         assert_eq!(std::fs::read(path).unwrap(), b"replacement");
