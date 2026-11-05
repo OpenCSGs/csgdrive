@@ -310,6 +310,44 @@ async fn turn_callback_releases_an_open_file_and_refreshes_the_existing_mount() 
     }
 }
 
+#[cfg(target_os = "macos")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "requires permission to mount a native filesystem"]
+async fn native_create_waits_for_slow_remote_write_authority() {
+    let harness = Harness::open().await;
+    harness.event("publish", ExecutionPhase::Started).await;
+    std::fs::write(harness.binding.path.join("original"), b"first").unwrap();
+    harness.event("publish", ExecutionPhase::Completed).await;
+    harness.engine.collaborate_due().await.unwrap();
+    assert!(harness.reference().await.write_available);
+
+    harness.event("continue", ExecutionPhase::Started).await;
+    let (observed, resume) = harness.remote.pause_next_branch_cas();
+    let path = harness.binding.path.join("slow-create");
+    let writer = tokio::task::spawn_blocking(move || -> std::io::Result<()> {
+        let mut file = std::fs::File::create_new(&path)?;
+        file.write_all(b"complete")?;
+        file.sync_all()?;
+        assert_eq!(std::fs::read(path)?, b"complete");
+        Ok(())
+    });
+    tokio::time::timeout(Duration::from_secs(10), observed)
+        .await
+        .expect("CREATE did not request write authority")
+        .unwrap();
+    // Hold the authority response longer than Darwin's short soft-mount retry window.
+    tokio::time::sleep(Duration::from_secs(12)).await;
+    let returned_early = writer.is_finished();
+    resume.send(()).unwrap();
+    let result = writer.await.unwrap();
+    unmount_when_idle(&harness.engine, &harness.current().await).await;
+    assert!(
+        !returned_early,
+        "CREATE returned before write authority was confirmed: {result:?}"
+    );
+    result.unwrap();
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 #[ignore = "requires permission to mount a native filesystem"]
 async fn daemon_shutdown_waits_for_busy_volume_and_restores_original_binding() {
