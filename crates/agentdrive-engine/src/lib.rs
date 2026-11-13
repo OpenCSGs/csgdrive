@@ -52,3 +52,6 @@ pub(crate) use ownership::OwnershipService;
 pub(crate) use merge::MergeService;
 
 pub use engine::{Adapters, Engine, EngineConfig};
+
+mod sandbox;
+pub use sandbox::SandboxService;

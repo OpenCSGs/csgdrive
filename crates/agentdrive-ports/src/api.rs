@@ -516,6 +516,7 @@ pub struct ReadBranchFile {
 
 #[derive(Clone)]
 pub struct Services {
+    pub sandbox: Option<Arc<dyn crate::SandboxApi>>,
     pub collaboration: Arc<dyn crate::CollaborationApi>,
     pub workspace: Arc<dyn WorkspaceApi>,
     pub revisions: Arc<dyn RevisionApi>,

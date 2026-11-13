@@ -1,0 +1,13 @@
+[package]
+name = "agentdrive-sandbox-worker"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0"
+
+[workspace]
+
+[dependencies]
+cube-hypervisor = { git = "https://github.com/TencentCloud/CubeSandbox", rev = "4411c96ba8658a959de34693f54f4918db2a432f", features = ["lib_support"] }
+serde_json = "1"
+# CubeSandbox v0.7.3 uses vm-memory 0.16; linux-loader 0.13.2 uses 0.17.
+linux-loader = "=0.13.0"

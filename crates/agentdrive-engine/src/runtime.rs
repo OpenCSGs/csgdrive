@@ -14,6 +14,7 @@ pub struct Runtime {
     pub location: LocationId,
     pub(crate) objects: RwLock<()>,
     pub(crate) lifecycle: AsyncMutex<()>,
+    pub(crate) sandbox_pins: Mutex<BTreeSet<BranchId>>,
     pub(crate) stopped: Mutex<BTreeSet<BranchId>>,
     pub(crate) collaboration_blocked: Mutex<BTreeSet<BranchId>>,
     pub(crate) publishing_turns: Mutex<BTreeSet<BranchId>>,
@@ -45,6 +46,7 @@ impl Runtime {
             location,
             objects: RwLock::new(()),
             lifecycle: AsyncMutex::new(()),
+            sandbox_pins: Mutex::new(BTreeSet::new()),
             stopped: Mutex::new(BTreeSet::new()),
             collaboration_blocked: Mutex::new(BTreeSet::new()),
             publishing_turns: Mutex::new(BTreeSet::new()),
@@ -84,6 +86,16 @@ impl Runtime {
             branch.state = BranchState::Stopped;
         }
         Ok(branch)
+    }
+
+    pub(crate) fn check_sandbox(&self, branch: BranchId) -> Result<()> {
+        if self.sandbox_pins.lock().contains(&branch) {
+            return Err(Error::new(
+                ErrorCode::BranchBusy,
+                "Stop the branch Sandbox before changing its binding",
+            ));
+        }
+        Ok(())
     }
 
     pub(crate) fn check_mutation(&self, branch: BranchId) -> Result<()> {

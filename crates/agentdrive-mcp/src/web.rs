@@ -20,6 +20,33 @@ mod merge_history_tests;
 pub(crate) fn api(services: Services) -> Router {
     Router::new()
         .merge(crate::collaboration::api())
+        .route("/api/sandboxes", get(sandboxes))
+        .route(
+            "/api/workspaces/{workspace}/branches/{branch}/sandbox/force-stop",
+            post(sandbox_force_stop),
+        )
+        .route(
+            "/api/workspaces/{workspace}/branches/{branch}/sandbox/proxy",
+            get(sandbox_proxy_config).put(sandbox_set_proxy_config),
+        )
+        .route(
+            "/api/workspaces/{workspace}/branches/{branch}/sandbox/delete",
+            post(sandbox_delete),
+        )
+        .route(
+            "/api/workspaces/{workspace}/branches/{branch}/sandbox/desktop/{*path}",
+            get(sandbox_desktop),
+        )
+        .route(
+            "/api/workspaces/{workspace}/branches/{branch}/sandbox/mcp-config",
+            get(sandbox_mcp_config),
+        )
+        .route(
+            "/api/workspaces/{workspace}/branches/{branch}/sandbox",
+            get(sandbox_status)
+                .post(sandbox_create)
+                .delete(sandbox_stop),
+        )
         .route("/api/workspaces", get(workspaces))
         .route("/api/workspaces/{workspace}", get(workspace))
         .route("/api/workspaces/{workspace}/archive", get(archive))
@@ -114,6 +141,10 @@ async fn update_settings(
 
 pub(crate) fn assets() -> Router {
     Router::new()
+        .route("/sandboxes", get(|| async { Html(include_str!("../dashboard/index.html")) }))
+        .route("/sandboxes.js", get(|| async { ([(header::CONTENT_TYPE, "text/javascript; charset=utf-8")], include_str!("../dashboard/sandboxes.js")) }))
+        .route("/sandboxes.css", get(|| async { ([(header::CONTENT_TYPE, "text/css; charset=utf-8")], include_str!("../dashboard/sandboxes.css")) }))
+        .route("/sandbox.js", get(|| async { ([(header::CONTENT_TYPE, "text/javascript; charset=utf-8")], include_str!("../dashboard/sandbox.js")) }))
         .route("/favicon.svg", get(|| async { ([(header::CONTENT_TYPE, "image/svg+xml")], include_str!("../dashboard/favicon.svg")) }))
         .route("/", get(|| async { Html(include_str!("../dashboard/index.html")) }))
         .route("/archive", get(|| async { Html(include_str!("../dashboard/index.html")) }))
@@ -128,6 +159,8 @@ pub(crate) fn assets() -> Router {
         .route("/workspace-actions.js", get(|| async { ([(header::CONTENT_TYPE, "text/javascript; charset=utf-8")], include_str!("../dashboard/workspace-actions.js")) }))
         .route("/navigation.js", get(|| async { ([(header::CONTENT_TYPE, "text/javascript; charset=utf-8")], include_str!("../dashboard/navigation.js")) }))
         .route("/navigation.css", get(|| async { ([(header::CONTENT_TYPE, "text/css; charset=utf-8")], include_str!("../dashboard/navigation.css")) }))
+        .route("/ui.js", get(|| async { ([(header::CONTENT_TYPE, "text/javascript; charset=utf-8")], include_str!("../dashboard/ui.js")) }))
+        .route("/ui.css", get(|| async { ([(header::CONTENT_TYPE, "text/css; charset=utf-8")], include_str!("../dashboard/ui.css")) }))
         .route("/dashboard.js", get(|| async { ([(header::CONTENT_TYPE, "text/javascript; charset=utf-8")], include_str!("../dashboard/dashboard.js")) }))
         .route("/history.js", get(|| async { ([(header::CONTENT_TYPE, "text/javascript; charset=utf-8")], include_str!("../dashboard/history.js")) }))
         .route("/merges.js", get(|| async { ([(header::CONTENT_TYPE, "text/javascript; charset=utf-8")], include_str!("../dashboard/merges.js")) }))
@@ -576,4 +609,259 @@ async fn lifecycle(
         }
     };
     Ok(Json(value))
+}
+
+async fn sandboxes(
+    State(services): State<Services>,
+    Extension(actor): Extension<Principal>,
+) -> std::result::Result<Json<Value>, ApiError> {
+    let workspaces = services.workspace.list(&actor).await?;
+    let mut entries = Vec::new();
+    let mut errors = Vec::new();
+    let mut template = None;
+    let mut templates = Vec::new();
+    if let Some(runtime) = &services.sandbox {
+        match runtime.templates(&actor).await {
+            Ok(value) => templates = value,
+            Err(error) => errors.push(error.message),
+        }
+        match runtime.template(&actor).await {
+            Ok(value) => template = value,
+            Err(error) => errors.push(format!("模板信息：{}", error.message)),
+        }
+        for workspace in workspaces {
+            let status = match services.workspace.status(&actor, workspace.id).await {
+                Ok(value) => value,
+                Err(error) => {
+                    errors.push(format!("{}：{}", workspace.name, error.message));
+                    continue;
+                }
+            };
+            for branch in status.branches {
+                if branch.state == BranchState::Deleted {
+                    continue;
+                }
+                match runtime.status(&actor, workspace.id, branch.id).await {
+                    Ok(sandbox) => entries.push(json!({
+                        "workspace":workspace.id,"workspace_name":workspace.name,
+                        "branch":branch.id,"branch_name":branch.name,"sandbox":sandbox,
+                        "can_start":branch.state == BranchState::Writable && branch.owner == status.location,
+                    })),
+                    Err(error) if error.code == ErrorCode::PermissionDenied => {},
+                    Err(error) => errors.push(format!("{} / {}：{}", workspace.name, branch.name, error.message)),
+                }
+            }
+        }
+    }
+    Ok(Json(
+        json!({"enabled":services.sandbox.is_some(),"entries":entries,"template":template,"templates":templates,"errors":errors}),
+    ))
+}
+
+async fn sandbox_mcp_config(
+    State(services): State<Services>,
+    Extension(actor): Extension<Principal>,
+    Path((workspace, branch)): Path<(WorkspaceId, BranchId)>,
+) -> std::result::Result<Json<SandboxMcpConfig>, ApiError> {
+    let runtime = services
+        .sandbox
+        .ok_or_else(|| Error::new(ErrorCode::Unavailable, "Sandbox runtime is not configured"))?;
+    Ok(Json(runtime.mcp_config(&actor, workspace, branch).await?))
+}
+
+async fn sandbox_status(
+    State(services): State<Services>,
+    Extension(actor): Extension<Principal>,
+    Path((workspace, branch)): Path<(WorkspaceId, BranchId)>,
+) -> std::result::Result<Json<Value>, ApiError> {
+    services.workspace.status(&actor, workspace).await?;
+    match services.sandbox {
+        Some(runtime) => Ok(Json(
+            json!({"enabled":true,"sandbox":runtime.status(&actor, workspace, branch).await?}),
+        )),
+        None => Ok(Json(json!({"enabled":false,"sandbox":null}))),
+    }
+}
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct SandboxCreateRequest {
+    template_id: Option<String>,
+}
+
+async fn sandbox_create(
+    State(services): State<Services>,
+    Extension(actor): Extension<Principal>,
+    Path((workspace, branch)): Path<(WorkspaceId, BranchId)>,
+    request: Option<Json<SandboxCreateRequest>>,
+) -> std::result::Result<Json<SandboxStatus>, ApiError> {
+    let runtime = services
+        .sandbox
+        .ok_or_else(|| Error::new(ErrorCode::Unavailable, "Sandbox runtime is not configured"))?;
+    Ok(Json(
+        runtime
+            .create_with_template(
+                &actor,
+                workspace,
+                branch,
+                request.and_then(|request| request.0.template_id),
+            )
+            .await?,
+    ))
+}
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct SandboxDeleteRequest {
+    confirm_branch: BranchId,
+}
+
+async fn sandbox_delete(
+    State(services): State<Services>,
+    Extension(actor): Extension<Principal>,
+    Path((workspace, branch)): Path<(WorkspaceId, BranchId)>,
+    Json(request): Json<SandboxDeleteRequest>,
+) -> std::result::Result<Json<Value>, ApiError> {
+    if request.confirm_branch != branch {
+        return Err(Error::invalid("删除确认与目标分支不一致").into());
+    }
+    let runtime = services
+        .sandbox
+        .ok_or_else(|| Error::new(ErrorCode::Unavailable, "Sandbox runtime is not configured"))?;
+    runtime.delete(&actor, workspace, branch).await?;
+    Ok(Json(
+        json!({"deleted":true,"workspace":workspace,"branch":branch}),
+    ))
+}
+
+async fn sandbox_stop(
+    State(services): State<Services>,
+    Extension(actor): Extension<Principal>,
+    Path((workspace, branch)): Path<(WorkspaceId, BranchId)>,
+) -> std::result::Result<Json<SandboxStatus>, ApiError> {
+    let runtime = services
+        .sandbox
+        .ok_or_else(|| Error::new(ErrorCode::Unavailable, "Sandbox runtime is not configured"))?;
+    Ok(Json(runtime.stop(&actor, workspace, branch).await?))
+}
+
+async fn sandbox_force_stop(
+    State(services): State<Services>,
+    Extension(actor): Extension<Principal>,
+    Path((workspace, branch)): Path<(WorkspaceId, BranchId)>,
+    Json(request): Json<SandboxDeleteRequest>,
+) -> std::result::Result<Json<SandboxStatus>, ApiError> {
+    if request.confirm_branch != branch {
+        return Err(Error::invalid("强制停止确认与目标分支不一致").into());
+    }
+    let runtime = services
+        .sandbox
+        .ok_or_else(|| Error::new(ErrorCode::Unavailable, "Sandbox 尚未配置"))?;
+    Ok(Json(runtime.force_stop(&actor, workspace, branch).await?))
+}
+
+async fn sandbox_desktop(
+    State(services): State<Services>,
+    Extension(actor): Extension<Principal>,
+    Path((workspace, branch, path)): Path<(WorkspaceId, BranchId, String)>,
+    mut request: axum::extract::Request,
+) -> std::result::Result<Response, ApiError> {
+    let runtime = services
+        .sandbox
+        .ok_or_else(|| Error::new(ErrorCode::Unavailable, "Sandbox runtime is not configured"))?;
+    if path != "websockify" {
+        let content = runtime
+            .desktop_asset(&actor, workspace, branch, &path)
+            .await?;
+        let mime = match path.rsplit('.').next().unwrap_or("") {
+            "html" => "text/html; charset=utf-8",
+            "js" | "mjs" => "text/javascript; charset=utf-8",
+            "css" => "text/css; charset=utf-8",
+            "svg" => "image/svg+xml",
+            "png" => "image/png",
+            "ico" => "image/x-icon",
+            "json" => "application/json",
+            "woff" => "font/woff",
+            "woff2" => "font/woff2",
+            _ => "application/octet-stream",
+        };
+        return Ok((
+            [
+                (header::CONTENT_TYPE, mime),
+                (header::X_CONTENT_TYPE_OPTIONS, "nosniff"),
+            ],
+            content,
+        )
+            .into_response());
+    }
+    if !request
+        .headers()
+        .get(header::UPGRADE)
+        .is_some_and(|value| value.as_bytes().eq_ignore_ascii_case(b"websocket"))
+    {
+        return Err(Error::invalid("Desktop connection requires WebSocket").into());
+    }
+    request.headers_mut().remove(header::COOKIE);
+    request.headers_mut().remove(header::AUTHORIZATION);
+    let stream = runtime.desktop(&actor, workspace, branch).await?;
+    let client_upgrade = hyper::upgrade::on(&mut request);
+    let query = request
+        .uri()
+        .query()
+        .map(|q| format!("?{q}"))
+        .unwrap_or_default();
+    *request.uri_mut() = format!("/{path}{query}")
+        .parse()
+        .map_err(|_| Error::invalid("Invalid desktop path"))?;
+    let (mut sender, connection) =
+        hyper::client::conn::http1::handshake(hyper_util::rt::TokioIo::new(stream))
+            .await
+            .map_err(|error| Error::new(ErrorCode::Unavailable, error.to_string()))?;
+    tokio::spawn(async move {
+        let _ = connection.with_upgrades().await;
+    });
+    let mut response = sender
+        .send_request(request)
+        .await
+        .map_err(|error| Error::new(ErrorCode::Unavailable, error.to_string()))?;
+    if response.status() == StatusCode::SWITCHING_PROTOCOLS {
+        let guest_upgrade = hyper::upgrade::on(&mut response);
+        tokio::spawn(async move {
+            if let (Ok(client), Ok(guest)) = tokio::join!(client_upgrade, guest_upgrade) {
+                let _ = tokio::io::copy_bidirectional(
+                    &mut hyper_util::rt::TokioIo::new(client),
+                    &mut hyper_util::rt::TokioIo::new(guest),
+                )
+                .await;
+            }
+        });
+    }
+    Ok(response.map(axum::body::Body::new))
+}
+
+#[cfg(test)]
+#[path = "sandbox_tests.rs"]
+mod sandbox_tests;
+
+async fn sandbox_proxy_config(
+    State(services): State<Services>,
+    Extension(actor): Extension<Principal>,
+    Path((workspace, branch)): Path<(WorkspaceId, BranchId)>,
+) -> std::result::Result<Json<SandboxProxyConfig>, ApiError> {
+    let runtime = services
+        .sandbox
+        .ok_or_else(|| Error::new(ErrorCode::Unavailable, "Sandbox 尚未配置"))?;
+    Ok(Json(runtime.proxy_config(&actor, workspace, branch).await?))
+}
+async fn sandbox_set_proxy_config(
+    State(services): State<Services>,
+    Extension(actor): Extension<Principal>,
+    Path((workspace, branch)): Path<(WorkspaceId, BranchId)>,
+    Json(config): Json<SandboxProxyConfig>,
+) -> std::result::Result<Json<Value>, ApiError> {
+    let runtime = services
+        .sandbox
+        .ok_or_else(|| Error::new(ErrorCode::Unavailable, "Sandbox 尚未配置"))?;
+    runtime
+        .set_proxy_config(&actor, workspace, branch, config)
+        .await?;
+    Ok(Json(json!({"saved":true,"restart_required":true})))
 }

@@ -1,11 +1,15 @@
+import { icon } from './ui.js';
+
 export function createNavigation({element, $, navigate, deleteWorkspace}) {
   const pages = [
     ['archive-nav', '/archive', '档案室'],
     ['history-nav', '/dashboard', '分支与版本'],
     ['mounts-nav', '/mounts', '挂载点管理'],
     ['branches-nav', '/branches', '分支管理'],
+    ['sandboxes-nav', '/sandboxes', '沙盒'],
   ];
   let workspaces = [], selected = null, listKey = '';
+  let activePath = '';
   const compact = window.matchMedia('(max-width: 900px)');
   let collapsed = localStorage.getItem('agentdrive-workspaces-collapsed');
   collapsed = collapsed === null ? compact.matches : collapsed === 'true';
@@ -17,12 +21,15 @@ export function createNavigation({element, $, navigate, deleteWorkspace}) {
     $('workspace-toggle').setAttribute('aria-expanded', String(!value));
     $('workspace-toggle').setAttribute('aria-label', label);
     $('workspace-toggle').title = label;
-    $('workspace-toggle').textContent = value ? '›' : '‹';
+    $('workspace-toggle').replaceChildren(icon(value ? 'chevronRight' : 'chevronLeft'));
     $('workspace-backdrop').hidden = value;
     if (persist) localStorage.setItem('agentdrive-workspaces-collapsed', String(value));
     if (value) { $('workspace-search').value = ''; filter(); }
   }
-  compact.addEventListener('change', event => { if (event.matches) setCollapsed(true, false); });
+  function revealCurrentPage() {
+    if (compact.matches) requestAnimationFrame(() => $('workspace-menu').querySelector('[aria-current="page"]')?.scrollIntoView({block:'nearest', inline:'nearest'}));
+  }
+  compact.addEventListener('change', event => { if (event.matches) { setCollapsed(true, false); revealCurrentPage(); } });
   $('workspace-toggle').onclick = () => setCollapsed(!collapsed);
   $('workspace-backdrop').onclick = () => setCollapsed(true);
   $('workspace-sidebar').addEventListener('keydown', event => {
@@ -52,9 +59,9 @@ export function createNavigation({element, $, navigate, deleteWorkspace}) {
     if (link) follow(event, new URL(link.href));
   });
   for (const [id, path] of pages) $(id).addEventListener('click', event => {
-    if (!selected) { event.preventDefault(); return; }
+    if (!selected && path !== '/sandboxes') { event.preventDefault(); return; }
     const url = new URL(path, location.origin);
-    url.searchParams.set('workspace', selected.id);
+    if (selected) url.searchParams.set('workspace', selected.id);
     const branch = new URLSearchParams(location.search).get('branch');
     if (branch) url.searchParams.set('branch', branch);
     follow(event, url);
@@ -73,6 +80,7 @@ export function createNavigation({element, $, navigate, deleteWorkspace}) {
       if (current) $(id).setAttribute('aria-current', 'page'); else $(id).removeAttribute('aria-current');
     }
     $('page-name').textContent = active[2];
+    if (activePath !== location.pathname) { activePath = location.pathname; revealCurrentPage(); }
     document.title = `AgentDrive · ${settings ? '设置' : active[2]}`;
   }
   function update(items) {
@@ -116,10 +124,11 @@ export function createNavigation({element, $, navigate, deleteWorkspace}) {
     }
     $('workspace-total').textContent = items.length;
     $('workspace-menu-name').textContent = selected?.name || '暂无工作区';
+    $('workspace-menu-name').title = selected?.name || '';
     $('workspace-name').textContent = selected?.name || '暂无工作区';
     for (const [id,path] of pages) {
-      $(id).setAttribute('aria-disabled', String(!selected));
-      $(id).tabIndex = selected ? 0 : -1;
+      $(id).setAttribute('aria-disabled', String(!selected && path !== '/sandboxes'));
+      $(id).tabIndex = selected || path === '/sandboxes' ? 0 : -1;
       const url = new URL(path, location.origin);
       if (selected) url.searchParams.set('workspace', selected.id);
       $(id).href = url.pathname + url.search;

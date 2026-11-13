@@ -177,6 +177,10 @@ impl MountService {
                 "collaborative mount was changed by another operation",
             ));
         }
+        if old.branch != next.branch {
+            self.runtime.check_sandbox(old.branch)?;
+            self.runtime.check_sandbox(next.branch)?;
+        }
         let target = self.runtime.branch(next.branch).await?;
         if target.generation != next.branch_generation.unwrap_or(next.generation) {
             return Err(Error::new(
