@@ -1,0 +1,11 @@
+{
+  "browser": {
+    "browserName": "chromium",
+    "cdpEndpoint": "http://127.0.0.1:9222",
+    "cdpTimeout": 15000
+  },
+  "outputDir": "/workspace/Downloads",
+  "outputMaxSize": 0,
+  "webmcp": false,
+  "timeouts": {"action": 10000, "navigation": 60000}
+}

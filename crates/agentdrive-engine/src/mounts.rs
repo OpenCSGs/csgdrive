@@ -273,6 +273,7 @@ impl MountService {
     async fn pause_old(&self, old: &MountBinding) -> Result<()> {
         let _gate = self.runtime.lock_branch(old.branch).await;
         self.runtime.check_mutation(old.branch)?;
+        self.runtime.check_sandbox(old.branch)?;
         let mut current = self
             .runtime
             .state
@@ -649,6 +650,7 @@ impl MountService {
     ) -> Result<OperationRecord> {
         let _gate = self.runtime.lock_branch(target.branch).await;
         self.runtime.check_mutation(target.branch)?;
+        self.runtime.check_sandbox(target.branch)?;
         let _protection = self.runtime.objects.read().await;
         let branch = self.runtime.branch(target.branch).await?;
         check_guard(&branch, &target)?;
@@ -1411,6 +1413,7 @@ impl RevisionTransition for MountService {
         let record = {
             let _gate = self.runtime.lock_branch(target.branch).await;
             self.runtime.check_mutation(target.branch)?;
+            self.runtime.check_sandbox(target.branch)?;
             let branch = self.runtime.branch(target.branch).await?;
             check_guard(&branch, &target)?;
             self.revisions

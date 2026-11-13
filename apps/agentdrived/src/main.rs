@@ -1,3 +1,5 @@
+#[cfg(target_os = "linux")]
+mod sandbox;
 mod settings;
 use agentdrive_config::{ConfigStore, initialize};
 use agentdrive_engine::{Adapters, Engine, EngineConfig};
@@ -84,8 +86,26 @@ async fn serve(settings: Arc<ConfigStore>) -> Result<()> {
     let cancellation = CancellationToken::new();
     let listener = tokio::net::TcpListener::bind(config.listen).await?;
     let address = listener.local_addr()?;
+    let mut services = engine.services.clone();
+    #[cfg(target_os = "linux")]
+    let mut sandbox_monitor = None;
+    #[cfg(target_os = "linux")]
+    if let Some(path) = std::env::var_os("AGENTDRIVE_SANDBOX_CONFIG") {
+        let sandbox_config: sandbox::Config = serde_json::from_reader(std::fs::File::open(path)?)?;
+        let mount_root = sandbox_config.mount_root.clone();
+        let driver = sandbox::NativeSandbox::open(sandbox_config, address.port())?;
+        let service = agentdrive_engine::SandboxService::new(
+            engine.runtime.clone(),
+            services.clone(),
+            driver,
+            mount_root,
+        );
+        services.sandbox = Some(service.clone());
+        sandbox_monitor = Some(service);
+    }
+    let sandbox_service = services.sandbox.clone();
     let app = router(
-        engine.services.clone(),
+        services,
         GatewayConfig {
             allowed_hosts: vec![address.to_string(), format!("localhost:{}", address.port())],
             settings: settings.clone(),
@@ -94,6 +114,25 @@ async fn serve(settings: Arc<ConfigStore>) -> Result<()> {
     )?;
     tracing::info!(endpoint = %format!("http://{address}/mcp"), location = %engine.runtime.location, "AgentDrive is ready");
     let mut workers = tokio::task::JoinSet::new();
+    #[cfg(target_os = "linux")]
+    if let Some(sandbox) = sandbox_monitor {
+        let cancellation = cancellation.clone();
+        workers.spawn(async move {
+            let mut interval = tokio::time::interval(Duration::from_secs(1));
+            interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+            loop {
+                tokio::select! { _ = cancellation.cancelled() => break, _ = interval.tick() => {} }
+                tokio::select! {
+                    _ = cancellation.cancelled() => break,
+                    result = sandbox.reconcile_exited() => {
+                        if let Err(error) = result {
+                            tracing::warn!(%error, "Sandbox process reconciliation failed");
+                        }
+                    }
+                }
+            }
+        });
+    }
     {
         let cancellation = cancellation.clone();
         workers.spawn(async move {
@@ -174,6 +213,22 @@ async fn serve(settings: Arc<ConfigStore>) -> Result<()> {
     while let Some(result) = workers.join_next().await {
         if let Err(error) = result {
             tracing::error!(%error, "background worker stopped unexpectedly");
+        }
+    }
+    if let Some(sandbox) = sandbox_service {
+        for mount in local.mounts().await? {
+            if mount.state != MountState::Ready {
+                continue;
+            }
+            if sandbox
+                .status(&mount.principal, mount.workspace, mount.branch)
+                .await?
+                .is_some()
+            {
+                sandbox
+                    .stop(&mount.principal, mount.workspace, mount.branch)
+                    .await?;
+            }
         }
     }
     engine.flush_local().await?;

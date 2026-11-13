@@ -1,3 +1,4 @@
+import { createSandboxControl } from './sandbox.js';
 import { createCommandPanel } from './commands.js';
 import { createRevisionSource } from './history.js';
 import { createCollaborationPanel } from './collaboration.js';
@@ -41,6 +42,7 @@ export function createManagementPage({api, element, container, kind, changed, on
   content.append(operationHost, formPanel); if (!mounts) content.append(listing); container.append(heading, empty, content);
   const collaboration = mounts && createCollaborationPanel({api, element, container:content, changed});
   let snapshot = null, project = null, busy = false;
+  const sandboxControls = new Map();
   const source = !mounts && createRevisionSource({api, element, select:revisionInput, form, changed:updateBusy});
   const runner = createCommandPanel({api, element, container:operationHost, scope:kind, changed,
     setBusy:value => { busy = value; updateBusy(); onBusy(value); }});
@@ -106,7 +108,13 @@ export function createManagementPage({api, element, container, kind, changed, on
         link(buttons, '挂载到目录', '/mounts', item.id);
       }
       link(buttons, '版本历史', '/dashboard', item.id);
+      const sandboxKey = `${project}/${item.id}`;
+      if (!sandboxControls.has(sandboxKey)) sandboxControls.set(sandboxKey, createSandboxControl({api, element, workspace:project, branch:item.id, branchName:item.name, workspaceName:snapshot.status.workspace.name}));
+      const control = sandboxControls.get(sandboxKey); buttons.append(control); control.setBranchName(item.name, snapshot.status.workspace.name); control.refresh();
       row.append(copy, buttons); rows.append(row);
+    }
+    for (const [key, control] of sandboxControls) {
+      if (!control.isConnected) { control.dispose(); sandboxControls.delete(key); }
     }
     if (focusId) document.getElementById(focusId)?.focus({preventScroll:true});
   }
@@ -121,7 +129,7 @@ export function createManagementPage({api, element, container, kind, changed, on
     hint.textContent = mounts ? '目录位于当前 AgentDrive 所在机器。一个分支在本机只能有一个读写挂载点。' : '选择准确的来源内容；创建完成后，可以切换使用或挂载到本机目录。';
     sourceOptions(); if (!mounts) renderRows(); runner.show(project); updateBusy(); if (collaboration) collaboration.show(data);
   }
-  function clear() { snapshot = null; project = null; rows.replaceChildren(); form.reset(); if (source) source.clear(); if (collaboration) collaboration.clear(); runner.clear(); content.hidden = true; }
+  function clear() { for (const control of sandboxControls.values()) control.dispose(); sandboxControls.clear(); snapshot = null; project = null; rows.replaceChildren(); form.reset(); if (source) source.clear(); if (collaboration) collaboration.clear(); runner.clear(); content.hidden = true; }
   form.onsubmit = event => {
     event.preventDefault(); if (busy || !snapshot) return;
     const textInput = mounts ? inputs.path : inputs.name;

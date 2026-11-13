@@ -58,6 +58,9 @@ impl MountService {
     }
 
     pub(crate) async fn collaboration_open_handles(&self, branch: BranchId) -> Result<usize> {
+        if self.runtime.sandbox_pins.lock().contains(&branch) {
+            return Ok(1);
+        }
         let mut count = 0usize;
         for mount in self.runtime.state.mounts().await? {
             if mount.branch == branch && mount.state != MountState::Released {

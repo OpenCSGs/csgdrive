@@ -1,3 +1,4 @@
+import { createSandboxesPage } from './sandboxes.js';
 import { createWorkspaceActions } from './workspace-actions.js';
 import { createNavigation } from './navigation.js';
 import { createManagementPage } from './management.js';
@@ -124,6 +125,14 @@ async function refresh(force=false) {
     $('error').hidden = !catalogError;
     if (catalogError) $('error').textContent = `远端工作区发现失败，当前显示本机记录：${catalogError.message}`;
     if (isSettings()) return;
+    if (location.pathname === '/sandboxes') {
+      $('workspace-name').textContent = '所有工作区';
+      await sandboxesPage.load();
+      if (request !== generation) return;
+      $('updated').textContent = `${new Date().toLocaleTimeString('zh-CN', {hour12:false})} 已刷新`;
+      $('connection').textContent = '已连接本地服务';
+      return;
+    }
     if (currentWorkspace !== workspace) { clearWorkspace(); currentWorkspace = workspace; }
     $('empty').hidden = workspaces.length > 0; $('panels').hidden = !workspaces.length || isMerges(); $('merges-panel').hidden = !workspaces.length || !isMerges();
     if (!workspaces.length) { snapshot = null; historyList.clear(); revisionViewer.clear(); branchFileViewer.clear(); relationshipsView.clear(); mountsPage.show(null); branchesPage.show(null); archivePage.show(null); mergesView.clear(); $('workspace-name').textContent='暂无工作区'; ['branch-count','mount-count','mounted-branch-count'].forEach(id => $(id).textContent='0'); $('mount-detail').textContent='暂无挂载点'; $('sync-status').textContent='—'; $('sync-detail').textContent='暂无工作区'; }
@@ -159,6 +168,7 @@ const workspaceActions = createWorkspaceActions({api, element, changed: async id
   showPage();
 }});
 const navigation = createNavigation({element, $, navigate:showPage, deleteWorkspace:workspaceActions.show});
+const sandboxesPage = createSandboxesPage({api, element, container:$('sandboxes-page')});
 const settingsPage = createSettingsPage({api, element, $});
 const revisionViewer = createRevisionViewer({api, element, onMerge:openMergeRevision});
 const historyList = createHistoryList({api, element, list:$('revision-list'), count:$('history-count'), viewer:revisionViewer});
@@ -209,17 +219,18 @@ function clearWorkspace() {
 function showPage() {
   clearTimeout(remoteTimer);
   generation++; loading = false; snapshot = null; $('refresh').disabled = false; $('error').hidden = true;
-  clearWorkspace();
+  clearWorkspace(); sandboxesPage.clear();
   selectedBranch = new URLSearchParams(location.search).get('branch');
-  const settings = isSettings(), archive = isArchive(), mounts = location.pathname === '/mounts', branches = location.pathname === '/branches';
+  const settings = isSettings(), archive = isArchive(), mounts = location.pathname === '/mounts', branches = location.pathname === '/branches', sandboxes = location.pathname === '/sandboxes';
   $('archive-page').hidden = !archive;
-  $('history-page').hidden = settings || archive || mounts || branches;
+  $('history-page').hidden = settings || archive || mounts || branches || sandboxes;
   $('mounts-page').hidden = !mounts; $('branches-page').hidden = !branches;
   $('settings-page').hidden = !settings;
+  $('sandboxes-page').hidden = !sandboxes;
   $('history-breadcrumb').hidden = settings;
   $('settings-breadcrumb').hidden = !settings;
   navigation.page();
-  $('view-mode').textContent = settings ? '全局配置' : mounts || branches ? '工作区管理' : '只读浏览';
+  $('view-mode').textContent = sandboxes ? '所有工作区' : settings ? '全局配置' : mounts || branches ? '工作区管理' : '只读浏览';
   showHistoryTab();
   refreshPage();
 }
