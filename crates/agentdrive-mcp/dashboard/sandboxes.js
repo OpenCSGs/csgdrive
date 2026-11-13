@@ -142,23 +142,27 @@ export function createSandboxesPage({api, element, container}) {
       const title = element('div'); title.append(element('div', 'sandbox-eyebrow', value.id),element('h2', '', value.manifest?.name || value.id));
       const use = element('button', 'primary', '使用此模板创建'); use.type = 'button'; use.disabled = !data.enabled;
       use.onclick = () => { create.click(); targetTemplate.value = value.id; updateCreate(); };
-      header.append(element('div', 'sandbox-template-icon', '▧'),title,use); card.append(header);
+      header.append(element('div', 'sandbox-template-icon', '▧'),title); card.append(header);
       const capabilities = element('div', 'sandbox-capabilities');
       const labels = {desktop:'桌面',browser:'浏览器',mcp:'统一 MCP',openclaw:'OpenClaw',csgclaw:'CSGClaw',environment:'开发环境'};
       for (const capability of value.capabilities || ['desktop','browser','mcp']) capabilities.append(element('span','pill',labels[capability] || capability));
       card.append(capabilities);
+      const overview = element('dl', 'sandbox-template-overview');
       const fields = element('dl', 'sandbox-template-fields');
-      function field(name, content) { const group = element('div'); group.append(element('dt','',name),element('dd','',content)); fields.append(group); }
+      function field(name, content, target = fields) { const group = element('div'); group.append(element('dt','',name),element('dd','',content)); target.append(group); }
       const manifest = value.manifest;
       if (manifest) {
-        field('操作系统',manifest.os); field('桌面环境',manifest.desktop); field('默认浏览器',manifest.browser);
+        field('操作系统',manifest.os,overview); field('桌面环境',manifest.desktop,overview); field('默认浏览器',manifest.browser,overview);
         field('语言环境',manifest.locale); field('字体',manifest.fonts.join('\n')); field('桌面工具',manifest.tools.join('\n'));
         field('分支目录',manifest.workspace_path); field('清单生成时间',new Date(manifest.built_at).toLocaleString('zh-CN',{hour12:false}));
       }
-      field('每个实例的资源',`${value.vcpus} vCPU · ${value.memory_gib} GiB 内存 · ${value.disk_gib} GiB 系统磁盘`);
+      field('每个实例的资源',`${value.vcpus} vCPU · ${value.memory_gib} GiB 内存 · ${value.disk_gib} GiB 系统磁盘`,overview);
       field('模板版本',value.version || 'local');
       field('并发与网络',`最多 ${value.max_instances} 个运行实例 · ${value.network_slots} 个已配置网络接口`);
-      card.append(fields,element('p','sandbox-template-note','分支文件自动挂载到 /workspace。已有沙盒继续使用创建时的系统磁盘。')); template.append(card);
+      const details = element('details', 'sandbox-template-details');
+      details.append(element('summary', '', '查看完整配置'),fields,element('p','sandbox-template-note','分支文件自动挂载到 /workspace。已有沙盒继续使用创建时的系统磁盘。'));
+      const actions = element('div', 'sandbox-template-actions'); actions.append(use);
+      card.append(overview,details,actions); template.append(card);
     }
   }
   function render() {
