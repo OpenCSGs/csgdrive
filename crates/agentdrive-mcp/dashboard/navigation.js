@@ -4,6 +4,7 @@ export function createNavigation({element, $, navigate, deleteWorkspace}) {
     ['history-nav', '/dashboard', '分支与版本'],
     ['mounts-nav', '/mounts', '挂载点管理'],
     ['branches-nav', '/branches', '分支管理'],
+    ['sandboxes-nav', '/sandboxes', '沙盒'],
   ];
   let workspaces = [], selected = null, listKey = '';
   const compact = window.matchMedia('(max-width: 900px)');
@@ -52,9 +53,9 @@ export function createNavigation({element, $, navigate, deleteWorkspace}) {
     if (link) follow(event, new URL(link.href));
   });
   for (const [id, path] of pages) $(id).addEventListener('click', event => {
-    if (!selected) { event.preventDefault(); return; }
+    if (!selected && path !== '/sandboxes') { event.preventDefault(); return; }
     const url = new URL(path, location.origin);
-    url.searchParams.set('workspace', selected.id);
+    if (selected) url.searchParams.set('workspace', selected.id);
     const branch = new URLSearchParams(location.search).get('branch');
     if (branch) url.searchParams.set('branch', branch);
     follow(event, url);
@@ -118,8 +119,8 @@ export function createNavigation({element, $, navigate, deleteWorkspace}) {
     $('workspace-menu-name').textContent = selected?.name || '暂无工作区';
     $('workspace-name').textContent = selected?.name || '暂无工作区';
     for (const [id,path] of pages) {
-      $(id).setAttribute('aria-disabled', String(!selected));
-      $(id).tabIndex = selected ? 0 : -1;
+      $(id).setAttribute('aria-disabled', String(!selected && path !== '/sandboxes'));
+      $(id).tabIndex = selected || path === '/sandboxes' ? 0 : -1;
       const url = new URL(path, location.origin);
       if (selected) url.searchParams.set('workspace', selected.id);
       $(id).href = url.pathname + url.search;

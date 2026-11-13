@@ -8,6 +8,7 @@
   <link rel="stylesheet" href="/dashboard.css">
   <link rel="stylesheet" href="/archive.css">
   <link rel="stylesheet" href="/management.css">
+  <link rel="stylesheet" href="/sandboxes.css">
   <link rel="stylesheet" href="/merges.css">
   <script src="/dashboard.js" type="module"></script>
   <link rel="stylesheet" href="/navigation.css">
@@ -25,7 +26,7 @@
     <button id="workspace-backdrop" class="workspace-backdrop" type="button" aria-label="关闭工作区列表" hidden></button>
     <aside id="workspace-menu" class="workspace-menu" aria-label="工作区功能">
       <div class="workspace-menu-heading"><small>当前工作区</small><strong id="workspace-menu-name">加载中</strong></div>
-      <nav aria-label="工作区菜单"><a id="archive-nav" class="nav-link" href="/archive"><span class="branch-icon" aria-hidden="true">▤</span>档案室</a><a id="history-nav" class="nav-link" href="/dashboard"><span class="branch-icon" aria-hidden="true">⑂</span>分支与版本</a><a id="mounts-nav" class="nav-link" href="/mounts"><span class="branch-icon" aria-hidden="true">▣</span>挂载点管理</a><a id="branches-nav" class="nav-link" href="/branches"><span class="branch-icon" aria-hidden="true">⑂</span>分支管理</a></nav>
+      <nav aria-label="工作区菜单"><a id="archive-nav" class="nav-link" href="/archive"><span class="branch-icon" aria-hidden="true">▤</span>档案室</a><a id="history-nav" class="nav-link" href="/dashboard"><span class="branch-icon" aria-hidden="true">⑂</span>分支与版本</a><a id="mounts-nav" class="nav-link" href="/mounts"><span class="branch-icon" aria-hidden="true">▣</span>挂载点管理</a><a id="branches-nav" class="nav-link" href="/branches"><span class="branch-icon" aria-hidden="true">⑂</span>分支管理</a><a id="sandboxes-nav" class="nav-link" href="/sandboxes"><span class="branch-icon" aria-hidden="true">▧</span>沙盒</a></nav>
     </aside>
     <main>
       <header class="topbar"><div id="history-breadcrumb" class="breadcrumb">工作区 <span>/</span> <strong id="workspace-name">加载中</strong><span id="page-divider">/</span><strong id="page-name">档案室</strong></div><div id="settings-breadcrumb" class="breadcrumb" hidden>AgentDrive <span>/</span> <strong>设置</strong></div><div class="topbar-right"><span id="view-mode" class="read-only">只读浏览</span><span id="updated">正在连接</span><button id="refresh" class="refresh" aria-label="刷新数据">↻</button></div></header>
@@ -33,6 +34,7 @@
       <div id="archive-page" class="content archive-page" hidden></div>
       <div id="mounts-page" class="content management-page" hidden><div id="mounts-management"></div><section id="relationships-panel" class="panel" aria-label="分支与挂载关系"></section></div>
       <div id="branches-page" class="content management-page" hidden></div>
+      <div id="sandboxes-page" class="content sandboxes-page" hidden></div>
       <div id="history-page" class="content">
         <div class="page-heading"><div><div class="eyebrow">WORKSPACE HISTORY</div><h1>分支与版本<span class="heading-dot">.</span></h1><p>查看本机与其他节点已同步的分支、来源版本和本机挂载状态。</p></div><div class="location-label"><span class="connection-dot"></span><span id="location">本地存储</span></div></div>
         <section class="stats" aria-label="工作区统计">

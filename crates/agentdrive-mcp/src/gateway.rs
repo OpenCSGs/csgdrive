@@ -44,7 +44,7 @@ pub fn router(services: Services, config: GatewayConfig) -> Result<Router> {
             .with_json_response(true)
             .with_cancellation_token(config.cancellation.clone()),
     );
-    let api = crate::web::api(services)
+    let api = crate::web::api(services.clone())
         .merge(crate::web::settings_api(config.settings.clone()))
         .merge(
             Router::new()
@@ -53,10 +53,15 @@ pub fn router(services: Services, config: GatewayConfig) -> Result<Router> {
         )
         .layer(axum::extract::DefaultBodyLimit::max(8 * 1024 * 1024))
         .route_layer(axum::middleware::from_fn_with_state(
-            Arc::new(config),
+            Arc::new(config.clone()),
             local_request,
         ));
-    Ok(api.merge(crate::web::assets()))
+    Ok(api
+        .merge(crate::web::assets())
+        .layer(axum::middleware::from_fn_with_state(
+            (services, Arc::new(config)),
+            crate::sandbox_proxy::service_origin,
+        )))
 }
 
 async fn handle(State(transport): State<Arc<HttpService>>, request: Request) -> Response {
