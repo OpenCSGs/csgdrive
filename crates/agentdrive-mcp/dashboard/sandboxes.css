@@ -12,7 +12,7 @@
 .sandbox-filters { display:grid; grid-template-columns:minmax(0,1fr) minmax(140px,220px) minmax(120px,160px); gap:12px; margin-bottom:20px; }
 .sandbox-filters input,.sandbox-filters select { min-width:0; border:1px solid var(--line); background:var(--paper); border-radius:7px; padding:11px 13px; color:var(--ink); font:inherit; font-size:13px; }
 .sandbox-filters input { width:100%; }
-.sandbox-catalog { display:grid; grid-template-columns:repeat(auto-fill,minmax(min(100%,370px),1fr)); gap:18px; }
+.sandbox-catalog,.sandbox-template-list { display:grid; grid-template-columns:repeat(auto-fill,minmax(min(100%,370px),1fr)); gap:18px; }
 .sandbox-card { display:flex; flex-direction:column; padding:22px; min-width:0; }
 .sandbox-card .sandbox-controls { margin-top:auto; }
 .sandbox-card-heading { display:flex; align-items:flex-start; justify-content:space-between; gap:12px; }
@@ -23,15 +23,22 @@
 .sandbox-card-footer { display:flex; align-items:center; justify-content:space-between; padding-top:15px; margin-top:18px; border-top:1px solid var(--line); }
 .sandbox-card-footer code { font-size:12px; color:var(--muted); }
 .sandbox-empty { padding:48px 24px; text-align:center; font-size:13px; line-height:1.8; color:var(--muted); }
-.sandbox-template { padding:28px; }
-.sandbox-template-heading { display:flex; align-items:center; gap:14px; margin-bottom:26px; flex-wrap:wrap; }
-.sandbox-template-heading h2 { font-size:20px; margin:0; }
-.sandbox-template-icon { font-size:28px; color:var(--accent); background:var(--line); border-radius:10px; padding:8px 14px; }
-.sandbox-template-fields { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:24px 40px; }
-.sandbox-template-fields > div { border-top:1px solid var(--line); padding-top:16px; min-width:0; }
-.sandbox-template-fields dt { font-size:12px; color:var(--muted); margin-bottom:10px; }
-.sandbox-template-fields dd { font-size:13px; margin:0; line-height:1.8; white-space:pre-line; overflow-wrap:anywhere; }
-.sandbox-template-note { margin:26px 0 0; padding:16px; border-radius:7px; background:var(--surface-muted); color:var(--muted); font-size:12px; line-height:1.9; }
+.sandbox-template { display:flex; flex-direction:column; min-width:0; padding:24px; }
+.sandbox-template-heading { display:flex; align-items:center; gap:14px; }
+.sandbox-template-heading h2 { font-size:18px; margin:4px 0; overflow-wrap:anywhere; }
+.sandbox-template-heading .sandbox-eyebrow { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.sandbox-template-icon { flex-shrink:0; font-size:28px; color:var(--accent); background:var(--line); border-radius:10px; padding:8px 14px; }
+.sandbox-template-overview,.sandbox-template-fields { display:grid; gap:16px; margin:0; }
+.sandbox-template-overview { padding:20px 0; border-top:1px solid var(--line); }
+.sandbox-template-overview > div,.sandbox-template-fields > div { min-width:0; }
+.sandbox-template-overview dt,.sandbox-template-fields dt { font-size:12px; color:var(--muted); margin-bottom:4px; }
+.sandbox-template-overview dd,.sandbox-template-fields dd { font-size:13px; color:var(--ink); margin:0; line-height:1.6; white-space:pre-line; overflow-wrap:anywhere; font-variant-numeric:tabular-nums; }
+.sandbox-template-details { border-top:1px solid var(--line); margin-bottom:20px; }
+.sandbox-template-details summary { padding:14px 0; font-size:13px; color:var(--secondary-ink); cursor:pointer; }
+.sandbox-template-details summary:hover { color:var(--accent); }
+.sandbox-template-note { margin:16px 0 0; padding:14px; border-radius:8px; background:var(--surface-muted); color:var(--muted); font-size:12px; line-height:1.8; }
+.sandbox-template-actions { margin-top:auto; }
+.sandbox-template-actions button { width:100%; }
 .sandbox-create-dialog { width:min(560px,calc(100% - 32px)); }
 .sandbox-create-dialog h2 { font-size:20px; margin:0; }
 .sandbox-create-form { display:grid; gap:20px; padding:24px; }
@@ -44,14 +51,11 @@
   .sandbox-summary > div { padding:18px; }
   .sandbox-summary > div:nth-child(3) { border-left:0; }
   .sandbox-summary > div:nth-child(n+3) { border-top:1px solid var(--line); }
-  .sandbox-template-fields { grid-template-columns:1fr; }
   .sandbox-template { padding:20px; }
   .sandbox-filters select { flex:1; max-width:100%; }
 }
 
-.sandbox-template-list { display:grid; gap:20px; }
 .sandbox-template-heading > div:nth-child(2) { flex:1; min-width:0; }
-.sandbox-template-heading h2 { margin:4px 0; }
 .sandbox-capabilities { display:flex; flex-wrap:wrap; gap:8px; margin:18px 0; }
 .sandbox-service-actions { display:contents; }
 .sandbox-service-link { text-decoration:none; }
