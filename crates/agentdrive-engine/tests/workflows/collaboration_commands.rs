@@ -4,11 +4,14 @@ async fn branch(h: &Harness, id: BranchId) -> Branch {
     h.local.branch(id).await.unwrap().unwrap()
 }
 
-async fn idle(h: &Harness, id: BranchId) {
+async fn handoff(h: &Harness, mount: MountId) {
+    finish_turn(h, mount).await;
     h.engine.collaborate_due().await.unwrap();
-    h.clock.advance(1_001);
-    h.engine.collaborate_due().await.unwrap();
-    assert_eq!(branch(h, id).await.state, BranchState::Available);
+    let binding = h.local.mount(mount).await.unwrap().unwrap();
+    assert_eq!(
+        branch(h, binding.branch).await.state,
+        BranchState::Available
+    );
 }
 
 async fn released_work(remote: Arc<MemoryRemote>) -> (Harness, Workspace, MountBinding, FsContext) {
@@ -16,8 +19,10 @@ async fn released_work(remote: Arc<MemoryRemote>) -> (Harness, Workspace, MountB
     let workspace = h.workspace().await;
     let (mount, fs) = h.branch_mount(workspace.id, "work", None).await;
     h.write_new(&fs, "work.txt", b"preserved work").await;
-    configure(&h, &mount, Some(1)).await;
-    idle(&h, mount.branch).await;
+    configure(&h, &mount).await;
+    handoff(&h, mount.id).await;
+    let fs = current_context(&h, mount.id).await;
+    let mount = h.local.mount(mount.id).await.unwrap().unwrap();
     (h, workspace, mount, fs)
 }
 
@@ -54,7 +59,7 @@ async fn commit_and_checkpoint_acquire_authority_and_completed_replays_do_not() 
             CommitKind::Commit => assert!(!after.dirty),
             CommitKind::Checkpoint => assert_eq!(after.formal_head, before.formal_head),
         }
-        idle(&h, mount.branch).await;
+        handoff(&h, mount.id).await;
         let released = branch(&h, mount.branch).await;
         let repeated = success(
             h.engine
@@ -71,7 +76,7 @@ async fn commit_and_checkpoint_acquire_authority_and_completed_replays_do_not() 
 }
 
 #[tokio::test]
-async fn unmounted_branch_commands_can_acquire_and_release_authority() {
+async fn unmounted_branch_commands_hold_authority_until_an_execution_ends() {
     let (h, _, mount, _) = released_work(Arc::new(MemoryRemote::default())).await;
     success(
         h.engine
@@ -91,7 +96,9 @@ async fn unmounted_branch_commands_can_acquire_and_release_authority() {
             .unwrap(),
     );
     assert!(saved.remote_confirmed);
-    idle(&h, mount.branch).await;
+    h.clock.advance(60_001);
+    h.engine.collaborate_due().await.unwrap();
+    assert_eq!(branch(&h, mount.branch).await.state, BranchState::Writable);
 }
 
 #[tokio::test]
@@ -142,7 +149,7 @@ async fn command_contending_with_a_file_writer_retries_without_changing_its_requ
         .release(&fs, handle.id)
         .await
         .unwrap();
-    idle(&first, mount.branch).await;
+    handoff(&first, mount.id).await;
     let saved = success(
         second
             .engine
@@ -157,7 +164,7 @@ async fn command_contending_with_a_file_writer_retries_without_changing_its_requ
 }
 
 #[tokio::test]
-async fn concurrent_commit_retries_create_one_revision() {
+async fn concurrent_commit_retries_reuse_the_formal_turn_revision() {
     let remote = Arc::new(MemoryRemote::default());
     let (h, workspace, mount, _) = released_work(remote.clone()).await;
     let before = h.local.revisions(workspace.id).await.unwrap().len();
@@ -188,10 +195,7 @@ async fn concurrent_commit_retries_create_one_revision() {
     resume.send(()).unwrap();
     let saved = success(task.await.unwrap().unwrap());
     assert_eq!(saved.id, duplicate.id);
-    assert_eq!(
-        h.local.revisions(workspace.id).await.unwrap().len(),
-        before + 1
-    );
+    assert_eq!(h.local.revisions(workspace.id).await.unwrap().len(), before);
     let repeated = success(
         h.engine
             .services
@@ -212,7 +216,7 @@ async fn stale_command_content_is_rejected_before_and_after_following_updates() 
     automatic_mount(&second, workspace.id, mount.branch).await;
     let request = commit_request(&branch(&second, mount.branch).await, CommitKind::Commit);
     first.write_new(&fs, "latest.txt", b"keep latest").await;
-    idle(&first, mount.branch).await;
+    handoff(&first, mount.id).await;
     let retry = context();
     let error = command_error(
         second
@@ -268,7 +272,7 @@ async fn restore_reacquires_after_authority_is_released_during_mount_handoff() {
             .unwrap(),
     );
     assert_eq!(pending.phase, OperationPhase::WaitingForQuiesce);
-    idle(&h, mount.branch).await;
+    handoff(&h, mount.id).await;
     let Harness {
         directory,
         local,
@@ -333,12 +337,7 @@ async fn restore_reacquires_after_authority_is_released_during_mount_handoff() {
             .unwrap(),
     );
     assert_eq!(repeated.result, saved.result);
-    let old = h
-        .local
-        .revision(before.autosave_head.unwrap())
-        .await
-        .unwrap()
-        .unwrap();
+    let old = h.local.revision(before.formal_head).await.unwrap().unwrap();
     assert_eq!(old.root, before.working_root);
 }
 
@@ -353,8 +352,8 @@ async fn prepared_merge() -> (Harness, MountBinding, FsContext, RevisionId, Merg
     let source_mount = h.local.mount(source_fs.mount).await.unwrap().unwrap();
     let source = h.commit(source_mount.branch).await;
     h.sync(workspace.id, SyncDirection::Push).await;
-    configure(&h, &target, Some(1)).await;
-    idle(&h, target.branch).await;
+    configure(&h, &target).await;
+    handoff(&h, target.id).await;
     let before = branch(&h, target.branch).await;
     let prepared = success(
         h.engine
@@ -377,6 +376,8 @@ async fn prepared_merge() -> (Harness, MountBinding, FsContext, RevisionId, Merg
         panic!("missing candidate")
     };
     assert!(candidate.conflicts.is_empty());
+    let fs = current_context(&h, target.id).await;
+    let target = h.local.mount(target.id).await.unwrap().unwrap();
     (h, target, fs, head, candidate)
 }
 
@@ -399,7 +400,7 @@ async fn merge_preview_leaves_authority_available_and_apply_reacquires_after_wai
             .unwrap(),
     );
     assert_eq!(pending.phase, OperationPhase::WaitingForQuiesce);
-    idle(&h, mount.branch).await;
+    handoff(&h, mount.id).await;
     success(
         h.engine
             .services
@@ -555,8 +556,8 @@ async fn command_authority_respects_configuration_permissions_and_branch_protect
     let workspace = h.workspace().await;
     let (mount, fs) = h.branch_mount(workspace.id, "work", None).await;
     h.write_new(&fs, "work.txt", b"preserved work").await;
-    configure(&h, &mount, Some(1)).await;
-    idle(&h, mount.branch).await;
+    configure(&h, &mount).await;
+    handoff(&h, mount.id).await;
     let before = branch(&h, mount.branch).await;
     let request = commit_request(&before, CommitKind::Commit);
     let denied = command_error(
@@ -607,7 +608,7 @@ async fn command_authority_respects_configuration_permissions_and_branch_protect
             .unwrap(),
     );
     assert_eq!(saved.id, failed.id);
-    idle(&h, mount.branch).await;
+    handoff(&h, mount.id).await;
 
     let mut protected = branch(&h, mount.branch).await;
     protected.protected = true;
@@ -639,8 +640,18 @@ async fn a_new_remote_head_with_identical_files_rejects_a_stale_command_without_
     automatic_mount(&second, workspace.id, mount.branch).await;
     let before = branch(&second, mount.branch).await;
     let request = commit_request(&before, CommitKind::Commit);
+    let fs = current_context(&first, mount.id).await;
+    first.write_new(&fs, "temporary.txt", b"temporary").await;
     first.commit(mount.branch).await;
-    idle(&first, mount.branch).await;
+    first
+        .engine
+        .services
+        .files
+        .unlink(&fs, InodeId::ROOT, "temporary.txt", false)
+        .await
+        .unwrap();
+    first.commit(mount.branch).await;
+    handoff(&first, mount.id).await;
     let latest = branch(&first, mount.branch).await;
     assert_eq!(latest.working_root, before.working_root);
     assert_ne!(latest.formal_head, before.formal_head);

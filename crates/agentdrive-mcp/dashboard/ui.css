@@ -98,7 +98,7 @@
   .stat,.sandbox-summary > div { padding:20px; }
   .stat strong { font-size:26px; }
   .panel-heading,.revision-dialog-heading,.sandbox-body,.sandbox-overview,.management-row,.sandbox-card,.sandbox-template,.sandbox-create-form { padding:20px; }
-  .management-form,.collaboration-form { padding:0 20px 20px; }
+  .management-form { padding:0 20px 20px; }
   .sandbox-filters { flex-direction:column; }
   .sandbox-filters input,.sandbox-filters select { width:100%; }
   .sandbox-actions { gap:8px; }

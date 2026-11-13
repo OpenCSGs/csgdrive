@@ -16,7 +16,6 @@ pub struct WorkspaceService {
     revisions: Arc<RevisionService>,
     operations: Arc<OperationService>,
     directories: Arc<dyn DirectoryAccess>,
-    mount_capability: String,
     mounts: Arc<dyn MountApi>,
     driver: Arc<dyn MountDriver>,
     live: Arc<agentdrive_config::LiveConfig>,
@@ -47,7 +46,6 @@ impl WorkspaceService {
             revisions,
             operations,
             directories,
-            mount_capability: driver.capability().to_owned(),
             mounts,
             driver,
             live,
@@ -280,12 +278,6 @@ impl WorkspaceApi for WorkspaceService {
         if !request.restart_agent {
             return Err(Error::invalid(
                 "restart_agent must be true: pause file writes now and restart the Agent and its terminals after conversion",
-            ));
-        }
-        if self.mount_capability == "macos-macfuse-feature-required" {
-            return Err(Error::new(
-                ErrorCode::Unsupported,
-                "directory conversion requires FUSE-T with macos-fuse-t, or macFUSE with macos-mount",
             ));
         }
         request.path = self.driver.normalize_path(&request.path).await?;
@@ -583,8 +575,7 @@ impl WorkspaceApi for WorkspaceService {
             pending_jobs,
             capabilities: Capabilities {
                 format_version: FORMAT_VERSION,
-                platform_mount: self.mount_capability.clone(),
-                handle_tracking_scope: self.driver.handle_tracking_scope(),
+                platform_mount: self.driver.capability().to_owned(),
                 automatic_collaboration: self.driver.supports_automatic_collaboration(),
                 collaboration_enabled: self.live.load().values.collaboration.enabled,
                 file_operations: [

@@ -57,26 +57,6 @@ impl MountService {
         Ok(())
     }
 
-    pub(crate) async fn collaboration_open_handles(&self, branch: BranchId) -> Result<usize> {
-        if self.runtime.sandbox_pins.lock().contains(&branch) {
-            return Ok(1);
-        }
-        let mut count = 0usize;
-        for mount in self.runtime.state.mounts().await? {
-            if mount.branch == branch && mount.state != MountState::Released {
-                // Native file handles also appear in FileService; directory and metadata
-                // handles only appear in the driver. Both sources must report zero.
-                let native = match self.driver.open_handles(&mount).await {
-                    Ok(count) => count,
-                    Err(_) if self.driver.status(&mount).await? == NativeMountState::Absent => 0,
-                    Err(error) => return Err(error),
-                };
-                count = count.saturating_add(native.max(self.files.open_handles(mount.id)));
-            }
-        }
-        Ok(count)
-    }
-
     pub(crate) async fn rebind_collaboration(
         &self,
         source: BranchId,
@@ -197,15 +177,9 @@ impl MountService {
                 "collaborative mount was changed by another operation",
             ));
         }
-        if self.collaboration_open_handles(old.branch).await? != 0
-            || (old.branch != next.branch
-                && self.collaboration_open_handles(next.branch).await? != 0)
-        {
-            return Err(Error::new(
-                ErrorCode::MountBusy,
-                "close all file and directory handles before switching the working branch",
-            )
-            .retryable());
+        if old.branch != next.branch {
+            self.runtime.check_sandbox(old.branch)?;
+            self.runtime.check_sandbox(next.branch)?;
         }
         let target = self.runtime.branch(next.branch).await?;
         if target.generation != next.branch_generation.unwrap_or(next.generation) {
@@ -224,10 +198,6 @@ impl MountService {
             let old_state = self.driver.status(old).await?;
             match (next_state, old_state) {
                 (NativeMountState::Mounted, _) => (),
-                (_, NativeMountState::Mounted) if self.driver.requires_remount_for_rebind() => {
-                    self.driver.unmount(old).await?;
-                    self.install_new(next).await?;
-                }
                 (_, NativeMountState::Mounted) => self.driver.rebind(old, next).await?,
                 (NativeMountState::Absent, NativeMountState::Absent) => {
                     self.install_new(next).await?;
@@ -268,6 +238,7 @@ impl MountService {
                     ..Default::default()
                 })
                 .await?;
+            self.files.retire_handles(old);
             Ok(operation)
         }
         .await;

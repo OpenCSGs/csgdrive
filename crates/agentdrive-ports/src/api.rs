@@ -40,8 +40,6 @@ pub struct Capabilities {
     pub format_version: u32,
     pub platform_mount: String,
     #[serde(default)]
-    pub handle_tracking_scope: crate::HandleTrackingScope,
-    #[serde(default)]
     pub automatic_collaboration: bool,
     #[serde(default)]
     pub collaboration_enabled: bool,

@@ -107,7 +107,7 @@ Agent 可以通过 `mount_save` 请求远端保存，并通过操作结果检查
 
 ## 开始使用
 
-目前从源码构建，支持 Linux、macOS 和 Windows。原生目录挂载分别需要 FUSE、FUSE-T / macFUSE 或 WinFsp。[安装、平台依赖与启动命令](docs/installation.zh-CN.md)
+目前从源码构建，支持 Linux、macOS 和 Windows。原生目录挂载分别需要 Linux FUSE、macOS 内置 NFS 或 Windows WinFsp。[安装、平台依赖与启动命令](docs/installation.zh-CN.md)
 
 - [配置远程存储](docs/configuration.zh-CN.md)：本地模式、S3、RustFS、OpenCSG Codes 与多台机器配置。
 - [操作与恢复](docs/operations.zh-CN.md)：远端确认、交接、分支合并及异常恢复。

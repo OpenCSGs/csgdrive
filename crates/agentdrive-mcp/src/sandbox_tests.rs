@@ -2,10 +2,13 @@ use super::*;
 use agentdrive_config::{LiveConfig, RuntimeConfig};
 use agentdrive_engine::{Adapters, Engine, EngineConfig, SandboxService};
 use agentdrive_local::LocalBackend;
-use agentdrive_test_support::{ManualClock, MemoryMountDriver, NoHostDirectories};
+use agentdrive_test_support::{ManualClock, MemoryMountDriver, MemoryRemote, NoHostDirectories};
 use async_trait::async_trait;
 use std::collections::BTreeMap;
 use tokio::sync::Mutex;
+
+#[path = "sandbox_collaboration_tests.rs"]
+mod collaboration;
 
 #[derive(Default)]
 struct RuntimeStub {
@@ -99,6 +102,9 @@ struct Fixture {
     sandbox: Arc<SandboxService>,
 }
 async fn fixture() -> Fixture {
+    fixture_with_remote(None).await
+}
+async fn fixture_with_remote(remote: Option<Arc<MemoryRemote>>) -> Fixture {
     let directory = tempfile::tempdir().unwrap();
     let local = Arc::new(LocalBackend::open(directory.path()).unwrap());
     let engine = Engine::open(
@@ -106,8 +112,10 @@ async fn fixture() -> Fixture {
             state: local.clone(),
             objects: local.clone(),
             working: local.clone(),
-            remote_objects: None,
-            remote_refs: None,
+            remote_objects: remote
+                .clone()
+                .map(|remote| remote as Arc<dyn RemoteObjectStore>),
+            remote_refs: remote.map(|remote| remote as Arc<dyn RemoteRefStore>),
             clock: Arc::new(ManualClock::default()),
             mounts: Arc::new(MemoryMountDriver::default()),
             directories: Arc::new(NoHostDirectories),
@@ -378,6 +386,46 @@ async fn unmount(f: &Fixture) -> Result<OperationRecord> {
             mount.generation,
         )
         .await
+}
+
+#[tokio::test]
+async fn sandbox_restarts_with_restored_native_mount() {
+    let f = fixture().await;
+    f.sandbox
+        .create(&f.owner, f.workspace, f.branch)
+        .await
+        .unwrap();
+    let original = f.local.mounts().await.unwrap().remove(0);
+    f.sandbox
+        .stop(&f.owner, f.workspace, f.branch)
+        .await
+        .unwrap();
+    f.engine.suspend_native_mounts().await.unwrap();
+    assert_eq!(
+        f.local.mounts().await.unwrap()[0].state,
+        MountState::Suspended
+    );
+    f.engine.flush_local().await.unwrap();
+    f.engine.restore_native_mounts().await.unwrap();
+    let restored = f.local.mounts().await.unwrap().remove(0);
+    assert_eq!(restored.state, MountState::Ready);
+    assert_eq!(restored.id, original.id);
+    assert_eq!(restored.path, original.path);
+    assert_eq!(restored.branch, original.branch);
+    f.sandbox
+        .create(&f.owner, f.workspace, f.branch)
+        .await
+        .unwrap();
+    match unmount(&f).await {
+        Err(error) => assert_eq!(error.code, ErrorCode::BranchBusy),
+        Ok(record) => assert_eq!(record.error.unwrap().code, ErrorCode::BranchBusy),
+    }
+    f.sandbox
+        .stop(&f.owner, f.workspace, f.branch)
+        .await
+        .unwrap();
+    let record = unmount(&f).await.unwrap();
+    assert!(record.error.is_none(), "{record:?}");
 }
 
 #[tokio::test]

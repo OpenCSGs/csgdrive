@@ -40,7 +40,7 @@ export function createManagementPage({api, element, container, kind, changed, on
   listHeader.append(element('h2', '', mounts ? '本机挂载点' : '工作区分支'), count);
   const rows = element('div', 'management-rows'); rows.id = `${kind}-list`; listing.append(listHeader, rows);
   content.append(operationHost, formPanel); if (!mounts) content.append(listing); container.append(heading, empty, content);
-  const collaboration = mounts && createCollaborationPanel({api, element, container:content, changed});
+  const collaboration = mounts && createCollaborationPanel({api, element, container:content});
   let snapshot = null, project = null, busy = false;
   const sandboxControls = new Map();
   const source = !mounts && createRevisionSource({api, element, select:revisionInput, form, changed:updateBusy});
@@ -71,7 +71,7 @@ export function createManagementPage({api, element, container, kind, changed, on
     const branch = snapshot.branches.find(branch => branch.id === branchInput.value);
     if (mounts) {
       hint.textContent = automatic()
-        ? '跟随所选分支，首次修改时申请写权限。持有权限后自动保存，可跟踪的文件与目录句柄关闭后按空闲时间或事件交还。'
+        ? '跟随所选分支，首次修改时申请写权限。Agent 工作结束时发送回调，文件提交并经远端确认后交还写权限。'
         : inputs.access.value === 'read_only' && branch && !branch.local
         ? `只读挂载固定到保存版本 ${(branch.autosave_head || branch.formal_head).slice(0,8)}。`
         : '目录位于当前 AgentDrive 所在机器。一个分支在本机只能有一个读写挂载点。';

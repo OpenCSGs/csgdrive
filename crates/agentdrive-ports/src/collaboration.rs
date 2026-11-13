@@ -9,8 +9,6 @@ pub struct ConfigureCollaboration {
     #[serde(default)]
     pub expected_binding_generation: Option<u64>,
     pub enabled: bool,
-    pub idle_timeout_secs: Option<u64>,
-    pub release_on_event: bool,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, schemars::JsonSchema)]
@@ -32,7 +30,6 @@ pub struct CollaborationStatus {
     pub writer: Option<LocationId>,
     pub authority_epoch: u64,
     pub mounts: Vec<MountId>,
-    pub open_handles: Option<usize>,
     pub active_executions: usize,
     pub local_saved: bool,
     pub remote_confirmed: bool,

@@ -228,7 +228,7 @@ pub struct MemoryMountDriver {
     pub unmount_error: Mutex<Option<Error>>,
     pub busy: AtomicBool,
     pub automatic_collaboration_disabled: AtomicBool,
-    pub remount_on_rebind: AtomicBool,
+    pub fail_rebind: AtomicBool,
     mount_pause: Mutex<
         Option<(
             tokio::sync::oneshot::Sender<()>,
@@ -251,10 +251,6 @@ impl MemoryMountDriver {
 }
 #[async_trait]
 impl MountDriver for MemoryMountDriver {
-    fn requires_remount_for_rebind(&self) -> bool {
-        self.remount_on_rebind.load(Ordering::SeqCst)
-    }
-
     fn supports_automatic_collaboration(&self) -> bool {
         !self.automatic_collaboration_disabled.load(Ordering::SeqCst)
     }
@@ -271,8 +267,11 @@ impl MountDriver for MemoryMountDriver {
     }
 
     async fn rebind(&self, previous: &MountBinding, next: &MountBinding) -> Result<()> {
-        if self.busy.load(Ordering::SeqCst) {
-            return Err(Error::new(ErrorCode::MountBusy, "injected busy mount"));
+        if self.fail_rebind.swap(false, Ordering::SeqCst) {
+            return Err(Error::new(
+                ErrorCode::Unavailable,
+                "injected rebind failure",
+            ));
         }
         let mut mounts = self.mounts.lock();
         let current = mounts

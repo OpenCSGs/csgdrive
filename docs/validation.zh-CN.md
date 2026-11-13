@@ -46,7 +46,7 @@ CLI 与 MCP 集成测试明确使用 UTF-8 读取进程输出和 daemon 文件�
 make -j "$(getconf _NPROCESSORS_ONLN)" test CARGO_FLAGS='-p agentdrive-platform --test native_mount -- --ignored --nocapture'
 ```
 
-macOS 在 `CARGO_FLAGS` 中添加 `--features macos-fuse-t`。Windows 在 PowerShell 中使用 `make -j $env:NUMBER_OF_PROCESSORS`。集成测试管理自己的临时状态和挂载目录，覆盖大于 3 MiB 的文件、截断、随机位置写入、原子追加、重命名、fsync、超过 128 个目录项、历史版本只读访问，以及卸载。
+Windows 在 PowerShell 中使用 `make -j $env:NUMBER_OF_PROCESSORS`。集成测试管理自己的临时状态和挂载目录，覆盖大于 3 MiB 的文件、截断、随机位置写入、原子追加、重命名、fsync、超过 128 个目录项、历史版本只读访问，以及卸载。
 
 WinFsp wrapper 的空指针卷 flush 回归测试在 Windows 上单独执行：
 
@@ -76,13 +76,12 @@ python3 tests/storage_smoke.py
 | 检查 | 已验证环境 |
 | --- | --- |
 | Workspace 测试和 Clippy | macOS、Linux、Windows |
-| 原生挂载文件操作和版本访问 | Linux root 用户与普通用户；安装 WinFsp 2.1 的 Windows；macOS 26.5 与 FUSE-T 1.2.9 |
+| 原生挂载文件操作和版本访问 | Linux root 用户与普通用户；安装 WinFsp 2.1 的 Windows；macOS 26.5 内置 NFSv3 客户端 |
 | CLI、stdio MCP、目录元数据、重启恢复 | macOS、Linux、Windows |
 | S3 条件写入和分段内容 | 隔离的 RustFS 实例 |
 | 两个守护进程之间的 S3 同步和所有权交接 | macOS 和 Linux |
-| macFUSE 回调编译 | macOS |
 
-[GitHub Actions](https://github.com/GatewayJ/agentdrive/actions) 会为每次提交运行仓库内的测试矩阵。macOS 26.5 使用 FUSE-T 1.2.9 已通过三项原生挂载测试，覆盖原目录转换、独占创建、持有打开句柄时重命名、超过 128 个目录项、历史版本只读访问及正常卸载。目录项数量断言会排除 macOS 生成的 AppleDouble 元数据文件。
+macOS 的原生挂载测试覆盖打开文件时的 turn 交接、交接后的目录与文件读取、旧句柄写入保护、等待 12 秒取得写权限，以及正常重启后恢复挂载。各平台的测试均可在 [GitHub Actions](https://github.com/OpenCSGs/csgdrive/actions) 查看。
 
 [CLI 使用](cli.zh-CN.md)中的创建、导入、读取、导出和挂载示例已通过临时守护进程执行验证。[MCP 参数表](mcp.zh-CN.md)已与运行中的守护进程返回的 30 个工具 schema 核对。S3 配置已根据守护进程配置加载器、适配器，以及锁定版本 `object_store` 的凭据和 endpoint 选择逻辑检查。上述文档检查不代表已经在 AWS S3 部署环境完成验证。
 

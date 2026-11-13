@@ -5,7 +5,7 @@ impl CollaborationService {
         record.transition.is_some()
             || record.recovery.is_some()
             || record.phase == CollaborationPhase::Switching
-            || (record.phase == CollaborationPhase::Saving && record.release.is_some())
+            || record.release.is_some()
             || self
                 .runtime
                 .collaboration_blocked
@@ -22,7 +22,7 @@ impl CollaborationService {
             record.release = None;
             record.phase = CollaborationPhase::Disabled;
             record.error = None;
-            self.activity.lock().remove(&record.branch);
+            self.last_refresh.lock().remove(&record.branch);
             self.save_record(record).await?;
         }
         Ok(())

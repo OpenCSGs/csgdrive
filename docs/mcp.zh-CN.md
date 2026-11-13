@@ -123,10 +123,9 @@ jq '.tools[] | select(.name == "mount_prepare") | .inputSchema' tools.json
 | 字段 | 当前含义 |
 | --- | --- |
 | `format_version` | 持久化格式版本，当前为 `1`。 |
-| `automatic_collaboration` | 已编入的驱动是否支持自动协作。Linux FUSE、macOS FUSE 和 WinFsp 提供该能力，同时需要配置远端存储。 |
+| `automatic_collaboration` | 已编入的驱动是否支持自动协作。Linux FUSE、macOS NFS 和 WinFsp 提供该能力，同时需要配置远端存储。 |
 | `collaboration_enabled` | 整个 AgentDrive 的 `collaboration.enabled` 当前设置，默认开启，通过设置页面或配置文件修改。 |
-| `handle_tracking_scope` | `native` 表示原生打开与关闭回调，`protocol` 表示协议回调。该字段说明句柄数量的统计范围，功能支持情况查询 `automatic_collaboration`。 |
-| `platform_mount` | 根据构建结果返回 `linux-fuse`、`windows-winfsp`、`macos-macfuse`、`macos-fuse-t` 或 `macos-macfuse-feature-required`。该值表示已编译的适配器；挂载成功还需要操作系统驱动和权限。 |
+| `platform_mount` | 本机挂载实现为 `linux-fuse`、`macos-nfs` 或 `windows-winfsp`。 |
 | `file_operations` | `lookup`、`getattr`、`readdir`、`create`、`mkdir`、`read`、`write`、`truncate`、`chmod`、`rename`、`unlink`、`rmdir`、`fsync`，表示挂载文件系统支持的操作。 |
 | `remote_configured` | 当前是否启用 S3 或 OpenCSG；保存的配置为 `enabled: false` 时返回 `false`。此字段不会测试连接或凭据。 |
 | `automatic_text_merge` | `false`，冲突需要明确解决。 |

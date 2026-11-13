@@ -1,8 +1,4 @@
-#![cfg(any(
-    target_os = "linux",
-    windows,
-    all(target_os = "macos", feature = "macos-mount")
-))]
+#![cfg(any(target_os = "linux", target_os = "macos", windows))]
 use agentdrive_config::{LiveConfig, RuntimeConfig};
 use agentdrive_engine::{Adapters, Engine, EngineConfig};
 use agentdrive_local::LocalBackend;
@@ -345,15 +341,6 @@ async fn native_mount_supports_file_io_durable_snapshots_and_read_only_history()
     if driver.handle_tracking_scope() == HandleTrackingScope::Native {
         assert!(directory_handles > 0);
     }
-    if directory_handles > 0 {
-        assert_eq!(
-            driver.rebind(&binding, &next).await.unwrap_err().code,
-            ErrorCode::MountBusy
-        );
-    }
-    tokio::task::spawn_blocking(move || drop(directory))
-        .await
-        .unwrap();
     let file_path = path.join("directory/Renamed");
     let file = tokio::task::spawn_blocking(move || {
         let mut file = std::fs::File::open(file_path).unwrap();
@@ -370,22 +357,6 @@ async fn native_mount_supports_file_io_durable_snapshots_and_read_only_history()
     if driver.handle_tracking_scope() == HandleTrackingScope::Native {
         assert!(file_handles > 0);
     }
-    if file_handles > 0 {
-        assert_eq!(
-            driver.rebind(&binding, &next).await.unwrap_err().code,
-            ErrorCode::MountBusy
-        );
-    }
-    tokio::task::spawn_blocking(move || drop(file))
-        .await
-        .unwrap();
-    for _ in 0..100 {
-        if driver.open_handles(&binding).await.unwrap() == 0 {
-            break;
-        }
-        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-    }
-    assert_eq!(driver.open_handles(&binding).await.unwrap(), 0);
     local
         .commit(LocalCommit {
             mounts: vec![next.clone()],
@@ -395,6 +366,8 @@ async fn native_mount_supports_file_io_durable_snapshots_and_read_only_history()
         .unwrap();
     driver.rebind(&binding, &next).await.unwrap();
     driver.rebind(&binding, &next).await.unwrap();
+    drop(directory);
+    drop(file);
     assert_eq!(
         driver.status(&next).await.unwrap(),
         NativeMountState::Mounted

@@ -7,6 +7,7 @@ impl CollaborationService {
             .collaboration_blocked
             .lock()
             .insert(record.branch);
+        self.runtime.publishing_turns.lock().remove(&record.branch);
         if record.recovery.is_none() {
             record.recovery = self
                 .runtime
@@ -22,7 +23,6 @@ impl CollaborationService {
                 });
         }
         record.transition = None;
-        record.release = None;
         record.phase = CollaborationPhase::Recovering;
         record.error = Some(Error::new(
             ErrorCode::StaleAuthority,
@@ -116,16 +116,6 @@ impl CollaborationService {
                 .await?;
         }
         self.publisher.drain(record.workspace, Some(target)).await?;
-        if self
-            .mounts
-            .collaboration_open_handles(record.branch)
-            .await?
-            != 0
-            || self.mounts.collaboration_open_handles(target).await? != 0
-        {
-            record.phase = CollaborationPhase::WaitingForHandles;
-            return self.save_record(record).await;
-        }
         record.phase = CollaborationPhase::Switching;
         self.save_record(record).await?;
         self.mounts
@@ -152,15 +142,18 @@ impl CollaborationService {
                 next.executions.push(execution);
             }
         }
-        if self.automatic_enabled()
-            && next.executions.is_empty()
-            && next.settings.idle_timeout_secs.is_none()
+        // A turn that already ended before authority was lost still hands off its recovered
+        // contents. Recovery without a terminal callback keeps the branch writable.
+        if next.executions.is_empty()
+            && let Some(prior) = record.release.take()
+            && prior.reason == ReleaseReason::ExecutionEnded
         {
+            next.phase = CollaborationPhase::Saving;
             next.release = Some(CollaborationRelease {
-                operation: OperationId::new(),
+                operation: recovery.operation,
                 authority_epoch: target_branch.authority_epoch,
-                mutation_seq: target_branch.mutation_seq,
                 reason: ReleaseReason::ExecutionEnded,
+                message: prior.message,
             });
         }
         record.executions.retain(|execution| {
@@ -178,6 +171,7 @@ impl CollaborationService {
         record.transition = None;
         record.release = None;
         record.error = None;
+        let release_target = next.release.is_some();
         self.runtime
             .state
             .commit(LocalCommit {
@@ -185,6 +179,9 @@ impl CollaborationService {
                 ..Default::default()
             })
             .await?;
+        if release_target {
+            self.runtime.publishing_turns.lock().insert(target);
+        }
         self.runtime.collaboration_blocked.lock().remove(&target);
         self.runtime
             .collaboration_blocked

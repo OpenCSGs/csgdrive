@@ -13,7 +13,7 @@
 | `agentdrive-local` | 进程锁定、SQLite 元数据、不可变对象、工作文件、租约和读取验证 |
 | `agentdrive-s3` | 不可变对象的流式传输和引用的条件更新 |
 | `agentdrive-opencsg` | Codes HTTP 对象传输、数据块验证和引用的条件更新 |
-| `agentdrive-platform` | FUSE/WinFsp 回调、受目录范围限制的主机目录访问和时钟 |
+| `agentdrive-platform` | NFS/FUSE/WinFsp 回调、受目录范围限制的主机目录访问和时钟 |
 | `agentdrive-mcp` | 具有明确类型的工具、本地 HTTP 路由、Dashboard 与设置接口、客户端和 stdio 转发 |
 | `agentdrive-test-support` | 可控时钟、挂载和存储测试替代对象、服务中断和确认丢失的故障注入 |
 | `agentdrived` / `agentdrive` | 守护进程生命周期和命令行客户端 |
@@ -69,7 +69,7 @@ HTTP 工作区展示模块 `mcp/workspace_view` 通过 `WorkspaceApi::status` �
 
 ```mermaid
 flowchart TD
-    Platform[platform: FUSE / WinFsp] --> Files[engine/files: 文件语义与权限]
+    Platform[platform: NFS / FUSE / WinFsp] --> Files[engine/files: 文件语义与权限]
     Files --> State[LocalStateStore: 查询与原子提交]
     Files --> Working[WorkingTreeStore: 工作文件读写]
     Files --> Content[ContentResolver: 内容获取与验证]
@@ -108,15 +108,11 @@ SQLite 中的 `parent` 查询列和 `node_usage` 统计由 local 管理。新建
 
 ## 自动协作
 
-整个 AgentDrive 共用 `collaboration.enabled` 开关，默认开启。配置远端存储后，读写工作挂载沿用本机选择或使用共享工作区根分支。按分支持久保存计时、执行与恢复状态。关闭开关后停止新申请、跟随和自动交还，稳定的写权限继续供手动操作使用，已经冻结的发布或恢复继续完成。`WriteAccess` 在文件操作取得分支锁之前执行；`FileService` 接受修改之前再次检查授权、挂载 generation 和修改限制。协调服务复用现有快照、发布队列、条件提交与操作记录。协议适配器转换配置和事件，原生驱动统计句柄及更新挂载关联。
+MCP 和 HTTP webhook 都通过应用接口调用 engine。工作目录的 NFS、FUSE 和 WinFsp 请求共用 `FileSystem`，由 engine 检查挂载版本与写权限。`agentdrive-local` 管理 SQLite、工作文件与不可变对象。发布程序使用同一套对象上传和条件更新接口连接 OpenCSG Git 或 S3。
 
-远端可接续的分支同时设置 `write_available: true` 和 `write_stopped: true`。申请与交还权限通过远端条件更新完成，并递增 `authority_epoch`。本机在远端确认之后应用新权限；结果未知时继续执行同一条持久化操作。申请之前发现内容变化时，当前修改返回错误，后台等待已统计的句柄关闭后更新目录。持有写权限期间保留本机工作内容并执行 autosave，同时观察远端权限是否变化。系统不会根据远端超时自动接管权限。
+登记 turn 后，同一分支由一个 location 写入。匹配的终止回调保存该轮已经写入的内容。最后一个有效 turn 结束时，协调程序暂停该分支的新修改。确认远端分支引用包含相同的正式 revision、内容根和保存序号后，通过条件更新交还写权限。上传失败会保留交接记录，后台重试；重复回调复用已登记的结果。
 
-空闲计时和已经登记的工作结束事件共用交还流程：检查当前 epoch 与修改序号，等待原生驱动和 engine 的句柄关闭，暂停新修改，保存内容，确认远端发布，然后有条件地交还权限。元数据修改也更新修改序号。原生打开请求在进入 engine 之前计入句柄数量。挂载 generation 与分支 generation 分别管理；内容切换后的旧 FUSE inode 引用返回 `ESTALE`。
-
-确认权限失效后，尚未发布的修改通过同一条恢复操作保存到恢复分支。远端确认恢复分支之后，相关读写挂载在原路径切换分支。中断后继续执行已有记录，原发布任务通过错误信息指向恢复分支。已经完整确认且内容相同的本机副本可以直接跟随新持有者。执行登记关联 principal、mount、source、thread、turn 与当时的写权限，重复事件或旧权限期间的结束事件无法交还后续取得的权限。
-
-全部已编入的原生挂载后端支持自动协作。句柄数量依据可观察的回调：FUSE-T 可能在应用关闭目录描述符之前发送 `releasedir`；Unix FUSE 无法跟踪全部描述符和目录引用，包括 Linux `O_PATH`。WinFsp 将原生句柄计数保留到最终关闭。FUSE-T 的 NFS 后端不支持缓存失效通知，因此接收新视图时在相同路径重新创建原生挂载；正常卸载遇到目录占用时，持久操作保留并自动重试。未挂载期间目录拒绝普通应用写入，挂载更新期间访问可能需要重试。其他后端继续原位更新挂载，缓存的 FUSE inode 引用通过 generation 检查保护。Dashboard 展示实际统计范围及 FUSE-T 切换行为。更换远端存储位置之前，需要关闭自动协作并完成待处理的交接；同一位置的凭据可以在恢复期间更新。配置方法见[集成说明](integrations.zh-CN.md)。
+交接在原挂载上更新视图。普通文件句柄绑定打开时的挂载版本，旧句柄不能写入新视图。Agent 可以在原路径重新打开文件。异常失去写权限时，通过恢复分支保留尚未发布的内容。
 
 ## 配置生命周期
 

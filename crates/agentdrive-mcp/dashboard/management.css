@@ -38,22 +38,15 @@
 .relationship-advanced summary { cursor:pointer; margin:4px 0 12px; }
 .relationship-advanced-fields { display:flex; flex-wrap:wrap; gap:12px; }
 .collaboration-panel { padding-bottom:24px; }
-.collaboration-description,.collaboration-feedback,.collaboration-panel > .command-error { margin:0 24px 18px; font-size:13px; line-height:1.7; color:var(--muted); }
+.collaboration-description,.collaboration-panel > .command-error { margin:0 24px 18px; font-size:13px; line-height:1.7; color:var(--muted); }
 .collaboration-settings-link { display:inline-block; margin:0 24px 18px; color:var(--green); }
 .collaboration-panel > .command-error { color:var(--danger); }
-.collaboration-form { padding:0 24px 20px; display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:18px; align-items:end; }
-.collaboration-form .management-field:first-child { grid-column:1 / -1; }
-.collaboration-form .collaboration-description { grid-column:1 / -1; margin:0; }
-.collaboration-check { display:flex; align-items:center; gap:10px; font-size:13px; line-height:1.6; }
-.collaboration-check input { width:16px; height:16px; }
-.collaboration-form small { line-height:1.6; }
-.collaboration-form .primary { justify-self:start; }
+.collaboration-mount { margin:0 24px 20px; }
 .collaboration-state { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:14px 24px; margin:0 24px; padding-top:20px; border-top:1px solid var(--line); }
 .collaboration-detail { min-width:0; display:flex; flex-direction:column; gap:7px; font-size:13px; overflow-wrap:anywhere; }
 .collaboration-detail > span { color:var(--muted); font-size:12px; }
 .collaboration-detail > strong { font-weight:600; }
 .collaboration-state > p { grid-column:1 / -1; margin:0; font-size:13px; line-height:1.7; }
-.collaboration-notice { color:var(--muted); }
 .collaboration-help { margin:20px 24px 0; color:var(--muted); font-size:12px; line-height:1.7; }
 .collaboration-help summary { cursor:pointer; }
 @media(max-width:850px) {
@@ -62,8 +55,7 @@
   .management-row { align-items:stretch; flex-direction:column; padding:18px 16px; }
   .management-actions { flex-shrink:1; }
   .command-panel { padding:18px 16px; }
-  .collaboration-form { grid-template-columns:1fr; padding:0 16px 20px; }
-  .collaboration-description,.collaboration-feedback,.collaboration-panel > .command-error,.collaboration-state,.collaboration-help,.collaboration-settings-link { margin-left:16px; margin-right:16px; }
+  .collaboration-mount,.collaboration-description,.collaboration-panel > .command-error,.collaboration-state,.collaboration-help,.collaboration-settings-link { margin-left:16px; margin-right:16px; }
 }
 .sandbox-controls { display:inline-flex; }
 .sandbox-trigger { display:inline-flex; align-items:center; gap:8px; }

@@ -7,7 +7,7 @@ use agentdrive_local::LocalBackend;
 use agentdrive_mcp::{GatewayConfig, router};
 use agentdrive_model::*;
 use agentdrive_platform::{HostDirectories, NativeMountDriver, SystemClock, local_identity};
-use agentdrive_ports::*;
+use agentdrive_ports::LocalStateStore;
 use clap::{Parser, Subcommand};
 use std::{net::SocketAddr, path::PathBuf, sync::Arc, time::Duration};
 use tokio_util::sync::CancellationToken;
@@ -112,6 +112,7 @@ async fn serve(settings: Arc<ConfigStore>) -> Result<()> {
             cancellation: cancellation.clone(),
         },
     )?;
+    engine.restore_native_mounts().await?;
     tracing::info!(endpoint = %format!("http://{address}/mcp"), location = %engine.runtime.location, "AgentDrive is ready");
     let mut workers = tokio::task::JoinSet::new();
     #[cfg(target_os = "linux")]
@@ -231,31 +232,17 @@ async fn serve(settings: Arc<ConfigStore>) -> Result<()> {
             }
         }
     }
-    engine.flush_local().await?;
-    for mount in local.mounts().await? {
-        if mount.state == MountState::Ready {
-            let context = RequestContext {
-                principal: mount.principal.clone(),
-                request_id: format!("shutdown-{}", OperationId::new()),
-            };
-            match engine
-                .services
-                .mounts
-                .unmount(context, mount.id, mount.generation)
-                .await
-            {
-                Ok(record)
-                    if record.error.is_none()
-                        && record.phase != OperationPhase::WaitingForQuiesce => {}
-                Ok(record) => {
-                    tracing::warn!(mount = %mount.id, phase = ?record.phase, "mount requires recovery on next startup")
-                }
-                Err(error) => {
-                    tracing::warn!(mount = %mount.id, %error, "mount requires recovery on next startup")
-                }
-            }
+    let mut last_error = None;
+    while let Err(error) = engine.suspend_native_mounts().await {
+        let detail = error.to_string();
+        if last_error.as_ref() != Some(&detail) {
+            tracing::warn!(%error, "shutdown is waiting for native mounts; close files and leave occupied directories");
+            last_error = Some(detail);
         }
+        // Keep the filesystems available while the kernel still has clients.
+        tokio::time::sleep(Duration::from_secs(1)).await;
     }
+    engine.flush_local().await?;
     server_result.map_err(Into::into)
 }
 async fn shutdown_signal() {
