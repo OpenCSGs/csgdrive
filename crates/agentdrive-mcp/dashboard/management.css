@@ -70,10 +70,10 @@
 .sandbox-identity { margin:8px 0 0; color:var(--muted); font-size:13px; overflow-wrap:anywhere; }
 .sandbox-body { padding:24px; }
 .sandbox-overview { padding:20px; background:var(--surface-muted); border:1px solid var(--line); border-radius:12px; }
-.sandbox-badge { display:inline-flex; align-items:center; font-size:12px; font-weight:600; padding:4px 9px; border-radius:6px; background:var(--line); color:var(--muted); }
-.sandbox-badge[data-state="ready"] { background:var(--line); color:var(--accent-hover); }
-.sandbox-badge[data-state="starting"],.sandbox-badge[data-state="creating"] { background:var(--surface-muted); color:var(--muted); }
-.sandbox-badge[data-state="error"] { background:var(--surface-muted); color:var(--danger); }
+.sandbox-badge { display:inline-flex; align-items:center; font-size:12px; font-weight:600; padding:4px 9px; color:var(--muted); }
+.sandbox-badge[data-state="ready"] { color:var(--accent-hover); }
+.sandbox-badge[data-state="starting"],.sandbox-badge[data-state="creating"] { color:var(--muted); }
+.sandbox-badge[data-state="error"] { color:var(--danger); }
 .sandbox-status { margin:12px 0 18px; font-size:13px; line-height:1.8; color:var(--muted); overflow-wrap:anywhere; }
 .sandbox-actions,.sandbox-config-actions { display:flex; flex-wrap:wrap; align-items:center; gap:10px; }
 .sandbox-actions button,.sandbox-desktop { font-size:13px; padding:10px 16px; border-radius:7px; }

@@ -32,7 +32,7 @@
 .merge-inline-revisions { display:flex; gap:8px; margin-top:7px; color:var(--muted); }
 .merge-revision { font-size:12px; color:var(--muted); overflow-wrap:anywhere; }
 .merge-state { white-space:normal; line-height:1.5; }
-.merge-state-error { color:var(--danger); background:var(--surface-muted); }
+.merge-state-error { color:var(--danger); }
 .merge-confirmed { color:var(--green); }
 .merge-error-code,.merge-event-error { color:var(--danger); }
 .merge-empty { padding:30px; text-align:center; color:var(--muted); }
