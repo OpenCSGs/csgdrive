@@ -4,7 +4,11 @@
   --bg:#F8FAFC;
   --paper:#FFFFFF;
   --ink:#0F172A;
-  --muted:#64748B;
+  --muted:#475569;
+  --secondary-ink:#334155;
+  --panel-padding:24px;
+  --radius-control:8px;
+  --radius-panel:calc(var(--radius-control) + var(--panel-padding));
   --line:#E2E8F0;
   --surface-muted:#F1F5F9;
   --accent:#047857;
@@ -131,9 +135,6 @@ main {
 }
 .read-only {
   color:var(--muted);
-  background:var(--surface-muted);
-  border:1px solid var(--line);
-  border-radius:4px;
   padding:4px 7px;
 }
 .refresh {
@@ -262,9 +263,7 @@ h1 {
 }
 .count-badge {
   display:inline-block;
-  background:var(--surface-muted);
   color:var(--muted);
-  border-radius:5px;
   min-width:24px;
   padding:3px 6px;
   text-align:center;
@@ -299,17 +298,17 @@ h1 {
 .branch-copy { min-width:0; flex:1; }
 .branch-name { display:block; font-size:12px; overflow-wrap:anywhere; line-height:1.6; font-weight:600; }
 .branch-badges { display:flex; gap:5px; flex-wrap:wrap; justify-content:flex-end; max-width:80px; }
-.default-mark,.mount-mark,.branch-unavailable { display:inline-block; font-size:12px; border-radius:4px; padding:3px 5px; white-space:nowrap; }
-.default-mark { background:var(--surface-muted); color:var(--muted); }
-.mount-mark { background:var(--line); color:var(--accent); }
-.branch-unavailable { background:var(--line); color:var(--muted); }
+.default-mark,.mount-mark,.branch-unavailable { display:inline-block; font-size:12px; padding:3px 5px; white-space:nowrap; }
+.default-mark { color:var(--muted); }
+.mount-mark { color:var(--accent); }
+.branch-unavailable { color:var(--muted); }
 .tree-footer { padding:14px 20px; border-top:1px solid var(--line); font-size:12px; line-height:1.8; color:var(--muted); background:var(--surface-muted); }
 .mounts-panel { grid-column:1/-1; }
 .mount-table-wrap { overflow:auto; }
 .mount-path { display:block; font:12px/1.8 ui-monospace,monospace; color:var(--muted); overflow-wrap:anywhere; }
-.mount-state { display:inline-block; border-radius:4px; padding:4px 6px; font-size:12px; color:var(--warning); background:var(--surface-muted); white-space:nowrap; }
-.mount-state.ready { color:var(--accent); background:var(--line); }
-.mount-state.recovery_required { color:var(--danger); background:var(--surface-muted); }
+.mount-state { display:inline-block; padding:4px 6px; font-size:12px; color:var(--warning); white-space:nowrap; }
+.mount-state.ready { color:var(--accent); }
+.mount-state.recovery_required { color:var(--danger); }
 .panel-empty { padding:12px 22px 26px; margin:0; font-size:12px; color:var(--muted); }
 .history-heading {
   padding:23px 25px 20px;
@@ -344,21 +343,14 @@ h1 {
 .pill {
   white-space:nowrap;
   display:inline-block;
-  background:var(--green-bg);
-  border:1px solid var(--line);
   color:var(--accent);
-  border-radius:5px;
   font-size:12px;
   padding:5px 8px;
 }
 .pill.paused {
-  background:var(--surface-muted);
-  border-color:var(--warning-line);
   color:var(--warning);
 }
 .pill.autosaved {
-  background:var(--surface-muted);
-  border-color:var(--line);
   color:var(--muted);
 }
 .history-toolbar {
@@ -810,6 +802,6 @@ body:has(.revision-dialog[open]) { overflow:hidden; }
 .relationship-table th,.relationship-table td { padding:12px 16px; border-bottom:1px solid var(--line); vertical-align:top; }
 .relationship-table th { color:var(--muted); font-size:12px; font-weight:500; }
 .relationship-table td { max-width:280px; font-size:13px; overflow-wrap:anywhere; }
-.relationship-table small,.relationship-table .relationship-id,.relationship-table .mount-state { display:block; margin-top:5px; }
+.relationship-table small,.relationship-table .relationship-id { display:block; margin-top:5px; }
 .relationship-table small,.relationship-id { color:var(--muted); font-size:12px; }
 .relationship-more { margin:12px 20px 20px; }
