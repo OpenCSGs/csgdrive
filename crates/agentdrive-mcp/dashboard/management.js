@@ -30,6 +30,7 @@ export function createManagementPage({api, element, container, kind, changed, on
     field('access', '访问方式');
     for (const [value, label] of [['read_write','读写'],['read_only','只读']]) inputs.access.append(new Option(label, value));
   } else { field('name', '分支名称', 'text').placeholder = 'feat/new-task'; inputs.name.maxLength = 256; }
+  if (!mounts) form.insertBefore(inputs.name.closest('label'), revisionInput.closest('label'));
   const hint = element('p', 'management-hint');
   const submit = element('button', 'primary', mounts ? '创建挂载点' : '创建分支'); submit.type = 'submit';
   form.append(hint, submit); formPanel.append(formHeader, form);

@@ -50,7 +50,6 @@
 .sandbox-card { padding:var(--panel-padding); }
 .sandbox-card:hover { border-color:#CBD5E1; }
 .sandbox-card-message { margin-bottom:20px; }
-.sandbox-card .sandbox-actions { align-items:center; }
 .sandbox-overview { background:var(--bg); border-radius:var(--radius-control); }
 .sandbox-step.active,.sandbox-step.active .sandbox-step-marker { color:var(--accent); }
 .sandbox-step.active .sandbox-step-marker { background:var(--green-bg); border-color:var(--accent-line); }
@@ -58,7 +57,7 @@
 .sandbox-template-icon .ui-icon { width:24px; height:24px; }
 .sandbox-template-heading h2 { font-size:18px; }
 .sandbox-card-footer { gap:12px; }
-.sandbox-filters input { min-width:min(100%,180px); }
+.sandbox-filters input { min-width:0; }
 .sandbox-section summary { list-style:none; display:flex; align-items:center; gap:8px; }
 .sandbox-section summary::-webkit-details-marker { display:none; }
 .sandbox-section summary:after { content:""; width:6px; height:6px; border-right:1.75px solid currentColor; border-bottom:1.75px solid currentColor; transform:rotate(45deg); margin-left:4px; transition:var(--motion); }
@@ -101,7 +100,6 @@
   .stat strong { font-size:26px; }
   .panel-heading,.revision-dialog-heading,.sandbox-body,.sandbox-overview,.management-row,.sandbox-card,.sandbox-template,.sandbox-create-form { padding:20px; }
   .management-form { padding:0 20px 20px; }
-  .sandbox-filters { flex-direction:column; }
   .sandbox-filters input,.sandbox-filters select { width:100%; }
   .sandbox-actions { gap:8px; }
   .sandbox-actions button,.sandbox-desktop { min-height:40px; }
@@ -120,7 +118,6 @@
 .sandbox-dot[data-state="ready"] { background:var(--status); }
 .sandbox-card-message { min-height:0; }
 .sandbox-card .sandbox-controls { width:100%; }
-.sandbox-service-actions { padding-top:0; }
 .error-banner { color:var(--danger); background:var(--danger-bg); border-color:var(--danger-line); }
 .archive-branch.active { color:var(--ink); background:var(--paper); border-color:var(--line); }
 .branch-button.selected { color:var(--ink); background:var(--paper); border-color:var(--accent); }
