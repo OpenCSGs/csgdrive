@@ -111,6 +111,22 @@ test('creation dialog explains unavailable branches and capacity without sending
 test('template shows installed versions, resources, and stays selected across refresh',async t=>{
   const {page}=await setup(t);
   await page.getByRole('tab',{name:'模板内容'}).click();
+  const details=page.getByRole('button',{name:'查看详情',exact:true});
+  await details.click();
+  const dialog=page.getByRole('dialog',{name:'Ubuntu Desktop · 模板详情',exact:true});
+  assert(await dialog.isVisible());
+  assert(await dialog.getByText('computer-use-linux 0.7.53',{exact:true}).isVisible());
+  assert(await dialog.getByText('Chromium 160',{exact:true}).isVisible());
+  await page.waitForTimeout(2200);
+  assert(await dialog.isVisible());
+  await page.setViewportSize({width:320,height:700});
+  assert(await dialog.evaluate(e=>e.scrollWidth<=e.clientWidth));
+  await page.keyboard.press('Escape');
+  assert.equal(await dialog.isVisible(),false);
+  assert(await details.evaluate(e=>e===document.activeElement));
+  await details.click();
+  await dialog.getByRole('button',{name:'关闭模板详情'}).click();
+  assert.equal(await dialog.isVisible(),false);
   await page.getByRole('button',{name:'刷新数据'}).click();
   assert(await page.getByRole('tabpanel',{name:'模板内容'}).isVisible());
   assert.match(await page.locator('#sandbox-template').textContent(),/Chromium 160/);
