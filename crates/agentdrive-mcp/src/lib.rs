@@ -8,3 +8,5 @@ mod workspace_view;
 pub use client::{Client, stdio_proxy};
 pub use gateway::{GatewayConfig, router};
 pub use server::{McpServer, tool_catalog};
+
+mod sandbox_proxy;

@@ -144,6 +144,7 @@ impl Engine {
         versions.set_write_access(Arc::downgrade(&write_access));
         collaboration.initialize().await?;
         let services = Services {
+            sandbox: None,
             collaboration: collaboration.clone(),
             workspace: workspace.clone(),
             revisions: versions,

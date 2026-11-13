@@ -1,0 +1,17 @@
+{
+  "providers": [
+    {
+      "id": "desktop",
+      "prefix": "",
+      "command": "/usr/bin/python3",
+      "args": ["/usr/local/bin/desktop_mcp.py"]
+    },
+    {
+      "id": "browser",
+      "prefix": "",
+      "command": "/usr/local/bin/node",
+      "args": ["/opt/agentdrive-mcp/node_modules/@playwright/mcp/cli.js", "--config", "/opt/agentdrive-mcp/playwright.json"],
+      "prepare": ["/usr/bin/python3", "/usr/local/bin/browser-session.py", "--ensure"]
+    }
+  ]
+}

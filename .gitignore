@@ -10,3 +10,7 @@
 /vendor/winfsp_wrs/Cargo.lock
 
 /tests/dashboard/node_modules/
+/build/sandbox/mcp/node_modules/
+/build/sandbox/.cache/
+/build/sandbox/**/__pycache__/
+/tests/sandbox/__pycache__/
