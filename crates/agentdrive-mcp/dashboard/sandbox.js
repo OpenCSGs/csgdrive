@@ -29,21 +29,28 @@ export function createSandboxControl({api, element, workspace, branch, branchNam
   const badge = element('span', 'sandbox-badge', '读取状态中');
   const status = element('p', 'sandbox-status'); status.setAttribute('role', 'status'); status.setAttribute('aria-live', 'polite');
   overviewText.append(badge, status);
-  const actions = element('div', 'sandbox-actions');
+  const actions = element('div', 'sandbox-instance-actions');
+  const launchActions = element('div', 'sandbox-launch-actions');
+  const manageActions = element('div', 'sandbox-manage-actions');
   const create = element('button', 'primary', '启动 Sandbox'); create.type = 'button'; create.disabled = true;
   const stop = element('button', 'secondary sandbox-stop', '停止 Sandbox'); stop.type = 'button'; stop.hidden = true;
   const force = element('button', 'secondary sandbox-stop', '强制停止'); force.type = 'button'; force.hidden = true;
   const desktop = element('a', 'primary sandbox-desktop', '打开桌面'); desktop.hidden = true;
   desktop.target = '_blank'; desktop.rel = 'noopener';
   const remove = element('button', 'secondary sandbox-stop', '删除 Sandbox'); remove.type = 'button'; remove.hidden = true;
-  const serviceActions = element("div", "sandbox-service-actions");
-  actions.append(create, desktop, stop, force, remove, serviceActions); overview.append(overviewText, actions);
-  const quickActions = inline ? element('div', 'sandbox-actions') : null;
+  const serviceActions = element('div', 'sandbox-service-actions');
+  launchActions.append(create, desktop, serviceActions); manageActions.append(stop, force, remove);
+  actions.append(launchActions, manageActions); overview.append(overviewText, actions);
+  const quickActions = inline ? element('div', 'sandbox-instance-actions') : null;
+  const quickLaunch = element('div', 'sandbox-launch-actions');
+  const quickManage = element('div', 'sandbox-manage-actions');
   const quickCreate = create.cloneNode(true), quickStop = stop.cloneNode(true), quickForce = force.cloneNode(true), quickDesktop = desktop.cloneNode(true), quickRemove = remove.cloneNode(true);
   if (quickActions) {
     trigger.querySelector('span:last-child').textContent = '详情与 MCP';
     trigger.setAttribute('aria-label', '详情与 MCP');
-    quickActions.append(quickCreate, quickDesktop, quickStop, quickForce, quickRemove, trigger); root.append(quickActions);
+    quickLaunch.append(quickCreate, quickDesktop);
+    quickManage.append(trigger, quickStop, quickForce, quickRemove);
+    quickActions.append(quickLaunch, quickManage); root.append(quickActions);
   }
   const templateChoice = element('label', 'management-field sandbox-template-choice');
   const templateSelect = element('select'); templateSelect.setAttribute('aria-label', 'Sandbox 模板');
@@ -152,7 +159,7 @@ export function createSandboxControl({api, element, workspace, branch, branchNam
     serviceActions.hidden = !serviceActions.childElementCount;
     if (quickActions) {
       quickActions.querySelector('.sandbox-service-actions')?.remove();
-      quickActions.prepend(serviceActions.cloneNode(true));
+      quickLaunch.append(serviceActions.cloneNode(true));
     }
     const active = ['creating', 'starting', 'stopping'].includes(state);
     create.disabled = !enabled || !canStart || busy || active;
@@ -173,6 +180,8 @@ export function createSandboxControl({api, element, workspace, branch, branchNam
         desktop.href = url.href;
       } catch { desktop.hidden = true; invalidDesktop = true; }
     }
+    launchActions.hidden = quickLaunch.hidden = create.hidden && desktop.hidden && serviceActions.hidden;
+    manageActions.hidden = stop.hidden && force.hidden && remove.hidden;
     const labels = {creating:'正在准备',starting:'启动中',ready:'运行中',stopping:'停止中',stopped:'已停止',error:'启动失败'};
     const label = !enabled ? '未配置' : labels[state] || '未启动';
     badge.textContent = label; badge.dataset.state = state || 'idle'; dot.dataset.state = state || 'idle';
