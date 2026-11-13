@@ -159,10 +159,23 @@ export function createSandboxesPage({api, element, container}) {
       field('每个实例的资源',`${value.vcpus} vCPU · ${value.memory_gib} GiB 内存 · ${value.disk_gib} GiB 系统磁盘`,overview);
       field('模板版本',value.version || 'local');
       field('并发与网络',`最多 ${value.max_instances} 个运行实例 · ${value.network_slots} 个已配置网络接口`);
-      const details = element('details', 'sandbox-template-details');
-      details.append(element('summary', '', '查看完整配置'),fields,element('p','sandbox-template-note','分支文件自动挂载到 /workspace。已有沙盒继续使用创建时的系统磁盘。'));
-      const actions = element('div', 'sandbox-template-actions'); actions.append(use);
-      card.append(overview,details,actions); template.append(card);
+      const details = element('button', 'secondary', '查看详情'); details.type = 'button'; details.setAttribute('aria-haspopup', 'dialog');
+      const dialog = element('dialog', 'revision-dialog sandbox-template-dialog');
+      dialog.setAttribute('aria-label', `${manifest?.name || value.id} · 模板详情`);
+      const dialogHeader = element('div', 'revision-dialog-heading');
+      const dialogTitle = element('div'); dialogTitle.append(element('div', 'sandbox-eyebrow', '模板详情'),element('h2', '', manifest?.name || value.id));
+      const close = element('button', 'revision-dialog-close', '×'); close.type = 'button'; close.setAttribute('aria-label', '关闭模板详情');
+      dialogHeader.append(dialogTitle,close);
+      const body = element('div', 'sandbox-template-dialog-body');
+      const configuration = element('dl', 'sandbox-template-fields');
+      configuration.append(...Array.from(overview.children, group => group.cloneNode(true)),...fields.children);
+      body.append(configuration,element('p','sandbox-template-note','分支文件自动挂载到 /workspace。已有沙盒继续使用创建时的系统磁盘。'));
+      dialog.append(dialogHeader,body);
+      details.onclick = () => dialog.showModal();
+      close.onclick = () => dialog.close();
+      dialog.addEventListener('close', () => { if (details.isConnected && !template.hidden) details.focus(); });
+      const actions = element('div', 'sandbox-template-actions'); actions.append(details,use);
+      card.append(overview,actions,dialog); template.append(card);
     }
   }
   function render() {
@@ -213,6 +226,6 @@ export function createSandboxesPage({api, element, container}) {
     try { const result = await api('/api/sandboxes'); if (request === generation) { data = result; render(); } }
     catch (error) { if (request === generation) { notice.hidden = false; notice.textContent = `沙盒数据刷新失败：${error.message}`; if (!data) empty.textContent = '暂时无法读取沙盒，请点击页面右上方刷新按钮重试。'; } }
   }
-  function clear() { generation++; createDialog.close(); createDialog.remove(); for (const card of cards.values()) card.control.dispose(); cards.clear(); list.replaceChildren(); data = null; templateKey = ''; workspaceKey = ''; }
+  function clear() { generation++; createDialog.close(); createDialog.remove(); for (const dialog of template.querySelectorAll('dialog')) dialog.close(); template.replaceChildren(); for (const card of cards.values()) card.control.dispose(); cards.clear(); list.replaceChildren(); data = null; templateKey = ''; workspaceKey = ''; }
   return {load, clear};
 }
