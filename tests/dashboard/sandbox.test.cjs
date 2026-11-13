@@ -60,7 +60,7 @@ test('Sandbox creation targets its branch and exposes desktop and stop actions',
 test('Deletion requires stopped state and exact confirmation, supports cancellation and retry', async t => {
   const page = await setup(t);
   await page.getByRole('button', {name:'启动 Sandbox', exact:true}).click();
-  assert(await page.getByRole('button', {name:'删除 Sandbox', exact:true}).isDisabled());
+  assert.equal(await page.getByRole('button', {name:'删除 Sandbox', exact:true}).count(),0);
   await page.getByRole('button', {name:'停止 Sandbox'}).click();
   await page.getByRole('button', {name:'删除 Sandbox', exact:true}).click();
   const modal = page.getByRole('dialog', {name:'删除 Sandbox', exact:true});
@@ -101,6 +101,8 @@ test('Unavailable runtime disables creation',async t=>{
 test('Failed normal stop offers explicit force confirmation and preserves restart', async t => {
   const page = await setup(t);
   await page.getByRole('button', {name:'启动 Sandbox', exact:true}).click();
+  assert.equal(await page.getByRole('button', {name:'强制停止', exact:true}).count(), 0);
+  assert.equal(await page.getByRole('button', {name:'删除 Sandbox', exact:true}).count(), 0);
   await page.evaluate(() => { window.failStop = true; });
   await page.getByRole('button', {name:'停止 Sandbox', exact:true}).click();
   await page.getByRole('button', {name:'强制停止', exact:true}).click();
