@@ -1,4 +1,4 @@
-.sandboxes-page { max-width:1500px; margin:auto; }
+.sandboxes-page { max-width:1280px; margin:auto; }
 .sandboxes-page .page-heading { align-items:center; gap:24px; }
 .sandboxes-page .page-heading > button { flex-shrink:0; width:auto; padding:11px 18px; border-radius:7px; }
 .sandbox-summary { display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); border:1px solid var(--line); border-radius:10px; background:var(--paper); margin-bottom:28px; }
@@ -22,22 +22,22 @@
 .sandbox-card .sandbox-actions { gap:8px; }
 .sandbox-card .sandbox-actions button,.sandbox-card .sandbox-desktop { padding:8px 11px; font-size:12px; }
 .sandbox-card-footer { display:flex; align-items:center; justify-content:space-between; padding-top:15px; margin-top:18px; border-top:1px solid var(--line); }
-.sandbox-card-footer code { font-size:11px; color:var(--muted); }
+.sandbox-card-footer code { font-size:12px; color:var(--muted); }
 .sandbox-empty { padding:48px 24px; text-align:center; font-size:13px; line-height:1.8; color:var(--muted); }
 .sandbox-template { padding:28px; }
 .sandbox-template-heading { display:flex; align-items:center; gap:14px; margin-bottom:26px; flex-wrap:wrap; }
 .sandbox-template-heading h2 { font-size:20px; margin:0; }
-.sandbox-template-icon { font-size:28px; color:var(--accent); background:#e7f2ec; border-radius:10px; padding:8px 14px; }
+.sandbox-template-icon { font-size:28px; color:var(--accent); background:var(--line); border-radius:10px; padding:8px 14px; }
 .sandbox-template-fields { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:24px 40px; }
 .sandbox-template-fields > div { border-top:1px solid var(--line); padding-top:16px; min-width:0; }
 .sandbox-template-fields dt { font-size:12px; color:var(--muted); margin-bottom:10px; }
 .sandbox-template-fields dd { font-size:13px; margin:0; line-height:1.8; white-space:pre-line; overflow-wrap:anywhere; }
-.sandbox-template-note { margin:26px 0 0; padding:16px; border-radius:7px; background:#f5f8f6; color:var(--muted); font-size:12px; line-height:1.9; }
+.sandbox-template-note { margin:26px 0 0; padding:16px; border-radius:7px; background:var(--surface-muted); color:var(--muted); font-size:12px; line-height:1.9; }
 .sandbox-create-dialog { width:min(560px,calc(100% - 32px)); }
 .sandbox-create-dialog h2 { font-size:20px; margin:0; }
 .sandbox-create-form { display:grid; gap:20px; padding:24px; }
 .sandbox-create-form p { margin:0; font-size:13px; line-height:1.8; color:var(--muted); }
-.sandbox-create-form .sandbox-create-template { padding:12px 14px; background:#f5f8f6; border-radius:7px; }
+.sandbox-create-form .sandbox-create-template { padding:12px 14px; background:var(--surface-muted); border-radius:7px; }
 .sandbox-create-form .sandbox-actions { justify-content:flex-end; padding-top:8px; }
 @media(max-width:650px) {
   .sandboxes-page .page-heading { flex-direction:column; align-items:flex-start; }

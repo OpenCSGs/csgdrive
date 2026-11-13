@@ -1,3 +1,4 @@
+import { decorateIcon, initializeIcons } from './ui.js';
 import { createSandboxesPage } from './sandboxes.js';
 import { createWorkspaceActions } from './workspace-actions.js';
 import { createNavigation } from './navigation.js';
@@ -12,6 +13,8 @@ import { createHistoryList } from './history.js';
 import { workspaceSyncStatus } from './sync-status.js';
 import { createMergesView } from './merges.js';
 const $ = (id) => document.getElementById(id);
+initializeIcons();
+document.querySelector('.skip-link').onclick = event => { event.preventDefault(); $('main-content').focus(); };
 sessionStorage.removeItem('agentdrive-token');
 if (new URLSearchParams(location.hash.slice(1)).has('token')) history.replaceState(null, '', location.pathname + location.search);
 let snapshot = null;
@@ -27,6 +30,8 @@ function element(tag, className, text) {
   const node = document.createElement(tag);
   if (className) node.className = className;
   if (text !== undefined) node.textContent = text;
+  if (tag === 'h3' && text) node.title = text;
+  decorateIcon(node, className, text);
   return node;
 }
 function short(id) { return id ? id.slice(0, 8) : '—'; }
@@ -161,7 +166,7 @@ async function refresh(force=false) {
   } catch (error) {
     if (request !== generation) return;
     $('error').textContent = error.message; $('error').hidden = false; $('connection').textContent = '连接需要检查';
-  } finally { if (request === generation) { loading = false; $('refresh').disabled = false; } }
+  } finally { if (request === generation) { loading = false; $('refresh').disabled = false; $('app').classList.remove('is-loading'); $('main-content').setAttribute('aria-busy', 'false'); } }
 }
 const workspaceActions = createWorkspaceActions({api, element, changed: async id => {
   if (!isSettings() && currentWorkspace === id) history.replaceState(null, '', '/archive');
@@ -217,6 +222,8 @@ function clearWorkspace() {
   historyList.clear(); revisionViewer.clear(); branchFileViewer.clear(); archivePage.clear(); relationshipsView.clear(); mountsPage.clear(); branchesPage.clear(); mergesView.clear();
 }
 function showPage() {
+  $('app').classList.add('is-loading');
+  $('main-content').setAttribute('aria-busy', 'true');
   clearTimeout(remoteTimer);
   generation++; loading = false; snapshot = null; $('refresh').disabled = false; $('error').hidden = true;
   clearWorkspace(); sandboxesPage.clear();

@@ -128,6 +128,7 @@ export function createSandboxControl({api, element, workspace, branch, branchNam
     confirmationLabel, deleteError, deleteActions);
   let busy = false, deleting = false, reading = false, disposed = false, timer = null, current = null, enabled = true, epoch = 0, configLoading = false;
   let confirmationAction = 'delete';
+  let stopFailed = false;
   function updateConfirmation() { confirmDelete.disabled = busy || (confirmationAction === 'delete' ? remove.disabled : force.disabled) || confirmation.value !== branchName; }
   function schedule() {
     clearTimeout(timer);
@@ -148,6 +149,7 @@ export function createSandboxControl({api, element, workspace, branch, branchNam
       const url = new URL(location.href); url.hostname = `${service.id}.${workspace}.${branch}.localhost`; url.pathname = '/'; url.search = ''; url.hash = '/new?agent=agent-agentdrive';
       link.href = url.href; link.target = '_blank'; link.rel = 'noopener'; serviceActions.append(link);
     }
+    serviceActions.hidden = !serviceActions.childElementCount;
     if (quickActions) {
       quickActions.querySelector('.sandbox-service-actions')?.remove();
       quickActions.prepend(serviceActions.cloneNode(true));
@@ -158,8 +160,8 @@ export function createSandboxControl({api, element, workspace, branch, branchNam
     create.hidden = ['creating', 'starting', 'ready', 'stopping'].includes(state);
     create.textContent = state === 'error' ? '重试启动' : '启动 Sandbox';
     stop.hidden = state !== 'ready'; stop.disabled = busy;
-    force.hidden = !['ready', 'error'].includes(state); force.disabled = busy || !enabled || force.hidden;
-    remove.hidden = !value; remove.disabled = !enabled || busy || !['stopped', 'error'].includes(state);
+    force.hidden = state !== 'error' && !(state === 'ready' && (stopFailed || value?.message?.startsWith('正常停止失败'))); force.disabled = busy || !enabled || force.hidden;
+    remove.hidden = !['stopped', 'error'].includes(state); remove.disabled = !enabled || busy || remove.hidden;
     remove.title = ['stopped', 'error'].includes(state) ? '删除系统磁盘，保留分支文件' : '请先停止 Sandbox';
     updateConfirmation();
     desktop.hidden = state !== 'ready' || !value?.desktop_url;
@@ -204,6 +206,7 @@ export function createSandboxControl({api, element, workspace, branch, branchNam
   }
   async function run(method, templateId) {
     if (busy || disposed) return;
+    stopFailed = false;
     busy = true; epoch++;
     show(method === 'POST' ? {...current,state:'creating',startup_step:'prepare_branch'} : {...current,state:'stopping'});
     try { const result = await api(endpoint, {method, ...(templateId ? {headers:{"Content-Type":"application/json"}, body:JSON.stringify({template_id:templateId})} : {})}); busy = false; epoch++; if (!disposed) show(result); }
@@ -211,6 +214,7 @@ export function createSandboxControl({api, element, workspace, branch, branchNam
       busy = false; epoch++;
       if (disposed) return;
       if (method === 'DELETE') {
+        stopFailed = true;
         try { const result = await api(endpoint); if (!disposed) show({...result.sandbox,message:error.message}, result.enabled); return; }
         catch { /* 状态无法读取时保留失败信息和强制停止入口。 */ }
       }
