@@ -64,6 +64,11 @@ test('root opens the first workspace archive without sign-in or remembered selec
   assert.equal(await page.locator('#archive-nav').getAttribute('aria-current'),'page');
   assert.equal(await page.locator('[data-workspace=first]').getAttribute('aria-current'),'true');
   assert(requests.some(url => url.pathname === '/api/workspaces/first/archive'));
+  const beforeSkip = page.url();
+  await page.locator('.skip-link').focus();
+  await page.keyboard.press('Enter');
+  assert.equal(await page.locator('#main-content').evaluate(node => node === document.activeElement),true);
+  assert.equal(page.url(),beforeSkip);
 });
 
 test('workspace selection resets the view and browser history restores workspace and page', async t => {
@@ -210,4 +215,54 @@ test('failed remote discovery keeps local workspaces usable and cancel does not 
   await page.getByRole('button',{name:'删除工作区 项目 Alpha',exact:true}).click();
   await page.locator('.workspace-delete-dialog').getByRole('button',{name:'取消',exact:true}).click();
   assert.equal(data.deletions,undefined);
+});
+
+test('initial loading has a reduced-motion placeholder and background refresh preserves content', async t => {
+  const {page,data} = await setup(t);
+  let release;
+  const gate = new Promise(resolve => { release = resolve; });
+  t.after(() => release());
+  data.pending = () => gate;
+  await page.emulateMedia({reducedMotion:'reduce'});
+  await page.goto(endpoint+'/archive?workspace=first');
+  await page.locator('.page-loading').waitFor({state:'visible'});
+  assert.equal(await page.locator('#main-content').getAttribute('aria-busy'),'true');
+  assert.equal(await page.locator('.skeleton').first().evaluate(node => getComputedStyle(node).animationName),'none');
+  release(); await settled(page);
+  assert.equal(await page.locator('.page-loading').isVisible(),false);
+  assert.equal(await page.locator('#main-content').getAttribute('aria-busy'),'false');
+  await page.locator('#workspace-search').fill('Alpha');
+  const refreshed = page.waitForResponse(response => new URL(response.url()).pathname === '/api/workspaces');
+  await page.locator('#refresh').click(); await refreshed; await settled(page);
+  assert.equal(await page.locator('#workspace-search').inputValue(),'Alpha');
+  assert.equal(await page.locator('.page-loading').isVisible(),false);
+});
+
+test('long workspace names fit all page layouts and compact navigation reveals the current page', async t => {
+  const name = '工作区名称与跨机器协作资料'.repeat(12);
+  const {page} = await setup(t,{workspaces:[{id:'first',name}]});
+  for (const width of [320,390,768,1280,1920]) {
+    await page.setViewportSize({width,height:900});
+    for (const route of ['/archive','/dashboard','/branches','/mounts','/settings']) {
+      await page.goto(endpoint+route+'?workspace=first'); await settled(page);
+      assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth <= innerWidth),true,`${route} at ${width}px`);
+      const content = await page.locator('.content:visible:not(.page-loading)').first().boundingBox();
+      assert(content.width <= 1280,`${route} exceeds the content width limit`);
+      if (width <= 900 && route !== '/settings') {
+        const link = await page.locator('#workspace-menu [aria-current="page"]').boundingBox();
+        assert(link.x >= 56 && link.x + link.width <= width + 1,`${route} current navigation is outside the viewport`);
+      }
+    }
+  }
+});
+
+test('loading failure leaves an actionable refresh control and an accessible error', async t => {
+  const {page} = await setup(t,{listError:true});
+  await page.goto(endpoint+'/archive');
+  await page.locator('#error').filter({hasText:'Workspaces unavailable'}).waitFor();
+  await page.waitForFunction(()=>!document.querySelector('#refresh').disabled);
+  assert.equal(await page.locator('.page-loading').isVisible(),false);
+  assert.equal(await page.locator('#main-content').getAttribute('aria-busy'),'false');
+  assert(await page.getByRole('alert').filter({hasText:'Workspaces unavailable'}).isVisible());
+  assert(await page.getByRole('button',{name:'刷新数据'}).isEnabled());
 });
