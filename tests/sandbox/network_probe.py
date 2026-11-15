@@ -52,10 +52,13 @@ def call(name, arguments, screenshot=None):
 
 initialization = rpc('initialize', dict(protocolVersion='2024-11-05', capabilities={},
                        clientInfo=dict(name='agentdrive-network-test', version='1')))
-assert all(value in initialization['instructions'] for value in ('chromium', 'xdg-open', '/workspace'))
+assert initialization['serverInfo']['name'] == 'agentdrive-sandbox', initialization
+assert all(value in initialization['instructions'].lower()
+           for value in ('chromium', 'browser_*', '/workspace')), initialization
 stream.write(b'{"jsonrpc":"2.0","method":"notifications/initialized"}\n')
 tools = rpc('tools/list', {})['tools']
-assert 'chromium' in next(tool['description'] for tool in tools if tool['name'] == 'list_apps')
+desktop_description = next(tool['description'] for tool in tools if tool['name'] == 'list_apps')
+assert all(value in desktop_description for value in ('chromium', 'xdg-open', '/workspace')), desktop_description
 call('get_app_state', {'include_screenshot': False})
 call('list_apps', {})
 call('setup_accessibility', {})
@@ -65,26 +68,29 @@ time.sleep(1)
 call('type_text', {'text': 'xdg-open https://example.com'})
 call('press_key', {'key': 'Return'})
 time.sleep(8)
-call('list_windows', {})
+windows = json.loads(call('list_windows', {}))['windows']
+browser = next(window for window in windows
+               if 'chromium' in window.get('wm_class', '').lower())
+target_window = {'window_id': browser['window_id']}
 for index, (url, expected) in enumerate([
     ('https://example.com', 'Example Domain'),
     ('https://www.python.org/', 'Welcome to Python.org'),
     ('https://opencsg.com/', 'OpenCSG'),
 ]):
-    call('press_key', {'key': 'ctrl+l', 'wm_class': 'chromium'})
+    call('press_key', {'key': 'ctrl+l', **target_window})
     target = url + ('&' if '?' in url else '?') + 'agentdrive_probe=' + uuid.uuid4().hex
-    call('type_text', {'text': target, 'wm_class': 'chromium'})
-    call('press_key', {'key': 'Return', 'wm_class': 'chromium'})
+    call('type_text', {'text': target, **target_window})
+    call('press_key', {'key': 'Return', **target_window})
     deadline = time.monotonic() + 60
     while True:
         time.sleep(3)
-        state = call('get_app_state', {'app_name_or_bundle_identifier': 'chromium',
+        state = call('get_app_state', {**target_window,
                                       'include_screenshot': False})
         tree = json.loads(state).get('accessibility_tree', [])
         if any(node.get('role') == 'frame' and expected.lower() in node.get('name', '').lower() for node in tree):
             break
         assert time.monotonic() < deadline, f'Browser did not load {url}: {state}'
-    call('get_app_state', {'app_name_or_bundle_identifier': 'chromium',
+    call('get_app_state', {**target_window,
                           'include_screenshot': True}, f'website-{index + 1}.png')
 (artifacts / 'report.json').write_text(json.dumps(dict(
     verified=True, websites=['https://example.com', 'https://www.python.org/', 'https://opencsg.com/'],

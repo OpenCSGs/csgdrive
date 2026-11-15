@@ -1,7 +1,7 @@
 [workspace]
 members = ["apps/*", "crates/*"]
 resolver = "3"
-exclude = ["vendor/winfsp_wrs"]
+exclude = ["vendor/winfsp_wrs", "vendor/cube-hypervisor"]
 
 [workspace.package]
 version = "0.1.0"

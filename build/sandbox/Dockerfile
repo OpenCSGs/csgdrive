@@ -1,3 +1,4 @@
+# AgentDrive 修改及来源见 SOURCES.md。
 ARG CUBE_BASE_IMAGE=ghcr.io/tencentcloud/cubesandbox-base:2026.16
 FROM node:22-bookworm-slim@sha256:e9f565d32859f0cbfb52125eafe8be39390f24dac302dc3cdf566e8ba3ab21ee AS mcp-build
 WORKDIR /opt/agentdrive-mcp
@@ -110,7 +111,7 @@ RUN chmod 755 /usr/local/bin/guest-init.sh /usr/local/bin/guest-helper.py
 
 RUN apt-get -o Acquire::Retries=3 update \
     && apt-get -y --no-install-recommends install \
-        fonts-noto-cjk fonts-noto-color-emoji \
+        fonts-noto-cjk fonts-noto-color-emoji eog \
         libnss3 libnspr4 libasound2 libgbm1 libcups2 libatk-bridge2.0-0 libxkbcommon0 \
     && rm -rf /var/lib/apt/lists/*
 
@@ -123,6 +124,7 @@ RUN python3 /tmp/chromium-install/install-chromium.py /tmp/chromium.zip /tmp/chr
 COPY chromium /usr/local/bin/chromium
 COPY chromium.desktop /usr/share/applications/chromium.desktop
 COPY 64-agentdrive-fonts.conf /etc/fonts/conf.d/64-agentdrive-fonts.conf
+COPY mimeapps.list /etc/xdg/mimeapps.list
 RUN chmod 755 /usr/local/bin/chromium \
     && update-desktop-database /usr/share/applications \
     && fc-cache -f
@@ -132,4 +134,5 @@ COPY --from=mcp-build /opt/agentdrive-mcp /opt/agentdrive-mcp
 COPY mcp/gateway.mjs mcp/providers.json mcp/playwright.json /opt/agentdrive-mcp/
 COPY browser-session.py /usr/local/bin/browser-session.py
 COPY template-manifest.py /usr/local/bin/template-manifest.py
+COPY SOURCES.md licenses/ /usr/share/doc/agentdrive-sandbox/
 RUN python3 /usr/local/bin/template-manifest.py "${COMPUTER_USE_VERSION}" > /opt/agentdrive-template.json

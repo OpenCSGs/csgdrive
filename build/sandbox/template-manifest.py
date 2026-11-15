@@ -28,7 +28,7 @@ print(json.dumps({
     "tools": ["computer-use-linux " + sys.argv[1],
               "Playwright MCP " + json.load(open('/opt/agentdrive-mcp/node_modules/@playwright/mcp/package.json'))['version'],
               "Node.js " + command('node', '--version'),
-              *[package(name) for name in ["gnome-terminal", "nautilus", "gedit", "xdg-utils", "xclip"]]],
+              *[package(name) for name in ["gnome-terminal", "nautilus", "gedit", "eog", "xdg-utils", "xclip"]]],
     "fonts": [package(name) for name in ["fonts-noto-cjk", "fonts-noto-color-emoji"]],
     "locale": os.environ.get("LANG", "C.UTF-8"),
     "workspace_path": "/workspace",

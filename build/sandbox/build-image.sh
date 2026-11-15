@@ -7,7 +7,11 @@ if [[ -e "$output" ]]; then echo 'Output directory must not exist' >&2; exit 1; 
 mkdir -p -- "$output"
 output=$(realpath -- "$output")
 bash "$source_dir/install-kernels.sh" "$kernel" "$output" "${@:3}"
-docker build --build-arg "CUBE_BASE_IMAGE=${CUBE_BASE_IMAGE:-ghcr.io/tencentcloud/cubesandbox-base:2026.16}" -t agentdrive-ubuntu:local "$source_dir"
+build_args=(--build-arg "CUBE_BASE_IMAGE=${CUBE_BASE_IMAGE:-ghcr.io/tencentcloud/cubesandbox-base:2026.16}")
+if [[ -n "${CHROMIUM_ARCHIVE:-}" ]]; then
+    build_args+=(--build-arg "CHROMIUM_ARCHIVE=$CHROMIUM_ARCHIVE")
+fi
+docker build "${build_args[@]}" -t agentdrive-ubuntu:local "$source_dir"
 container=$(docker create agentdrive-ubuntu:local)
 trap 'docker rm -f "$container" >/dev/null 2>&1 || true' EXIT
 docker cp -L "$container:/usr/share/novnc" "$output/novnc"
