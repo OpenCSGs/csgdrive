@@ -8,7 +8,7 @@ ROOT = Path(__file__).resolve().parents[2]
 
 
 def main():
-    vendor = ROOT / 'vendor/cube-hypervisor'
+    vendor = ROOT / 'sandbox/hypervisor'
     source = json.loads((vendor / 'UPSTREAM.json').read_text())
     failures = []
     for name, expected in source['files_sha256'].items():
