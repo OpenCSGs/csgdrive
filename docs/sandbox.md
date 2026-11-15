@@ -69,7 +69,7 @@ Chromium 在 Ubuntu 的 `DISPLAY=:0` 运行，用户目录固定为 `/home/user/
 
 ```bash
 cargo build --release -p agentdrived -p agentdrive
-cargo build --release --locked --manifest-path runtime/sandbox-worker/Cargo.toml
+cargo build --release --locked --manifest-path sandbox/worker/Cargo.toml
 ```
 
 worker 使用 `sandbox/hypervisor` 中的本地源码，通过独立 Cargo workspace 构建。源码来自 CubeSandbox commit `4411c96ba8658a959de34693f54f4918db2a432f`，原文件、PVM/KVM 支持及内置 virtio-fs 实现均保留。来源、文件校验值和许可证位于该目录，`make sandbox-verify` 检查来源记录、worker 编译和模板相关测试。linux-loader 固定为 0.13.0。
@@ -100,7 +100,7 @@ CSGClaw 模板通过 `build/sandbox/build-assistant-image.sh` 在本地构建的
 
 ```json
 {
-  "worker": "/absolute/path/csgdrive/runtime/sandbox-worker/target/release/agentdrive-sandbox-worker",
+  "worker": "/absolute/path/csgdrive/sandbox/worker/target/release/agentdrive-sandbox-worker",
   "kernel": "/absolute/path/template/vmlinux",
   "image": "/absolute/path/template/ubuntu.ext4",
   "directory": "/absolute/path/agentdrive/sandboxes",
