@@ -23,7 +23,7 @@ architecture:
 verify: fmt-check clippy test architecture
 sandbox-verify:
 	$(PYTHON) tests/sandbox/check_sources.py
-	+$(CARGO) check --locked --manifest-path runtime/sandbox-worker/Cargo.toml
+	+$(CARGO) check --locked --manifest-path sandbox/worker/Cargo.toml
 	$(PYTHON) -m unittest discover -s tests/sandbox -p 'test_*.py'
 clean:
 	$(CARGO) clean

@@ -19,7 +19,7 @@ def main():
                  'virtiofsd/LICENSE-APACHE', 'virtiofsd/LICENSE-BSD-3-Clause']:
         if name not in source['files_sha256']:
             failures.append(f'来源记录缺少许可证：{name}')
-    worker = ROOT / 'runtime/sandbox-worker'
+    worker = ROOT / 'sandbox/worker'
     metadata = json.loads(subprocess.check_output([
         'cargo', 'metadata', '--locked', '--offline', '--no-deps', '--format-version=1',
         '--manifest-path', str(worker / 'Cargo.toml'),
