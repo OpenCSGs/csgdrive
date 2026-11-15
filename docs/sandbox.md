@@ -200,6 +200,8 @@ python3 -m unittest discover -s tests/sandbox -p 'test_*.py'
 
 启动页面展示四个步骤：准备分支目录、准备 Ubuntu 系统磁盘、启动 Ubuntu 实例、等待桌面启动。就绪检查只确认 GNOME 会话、窗口管理器、VNC 和 noVNC 服务以及 `/workspace` 挂载。启动期间跳过浏览器、字体和 MCP 软件检查，也不执行截图或预先打开 Chromium。桌面辅助功能在模板中默认启用，Playwright 连接时按需打开共用的 Chromium。软件功能通过模板验证脚本单独测试。
 
+启动 Sandbox 时，已有分支挂载处于 `recovery_required` 或 `suspended` 状态会自动尝试恢复，继续使用原目录和持久化配置。恢复流程检查挂载所属用户、分支版本及本机目录状态；存在未完成的分支操作时，需要先在挂载管理中处理该操作。挂载失败会显示目录和具体原因，页面提供“恢复挂载”按钮，处理问题后点击即可重新恢复并继续启动 Ubuntu。无法确认本机挂载身份时保留 `recovery_required` 状态。
+
 
 ## Ubuntu GNOME 与 CSGClaw
 
