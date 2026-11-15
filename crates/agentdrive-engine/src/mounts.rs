@@ -403,6 +403,15 @@ impl MountService {
                 }
             }
             NativeMountState::Unknown => {
+                let mut failed = ready;
+                failed.state = MountState::RecoveryRequired;
+                self.runtime
+                    .state
+                    .commit(LocalCommit {
+                        mounts: vec![failed],
+                        ..Default::default()
+                    })
+                    .await?;
                 return Err(Error::new(
                     ErrorCode::MountBusy,
                     "native mount identity cannot be confirmed",

@@ -57,6 +57,21 @@ test('Sandbox creation targets its branch and exposes desktop and stop actions',
   assert(calls.every(c=>c.url==='/api/workspaces/workspace-a/branches/branch-a/sandbox'));
 });
 
+test('Mount recovery shows the failure reason and retries startup for the same branch',async t=>{
+  const page=await setup(t);
+  await page.evaluate(()=>document.querySelector('.sandbox-controls').update({
+    state:'error',startup_step:'prepare_branch',message:'分支目录挂载失败：目录被占用。处理后点击“恢复挂载”重试。',
+  },true));
+  const recover=page.getByRole('button',{name:'恢复挂载',exact:true});
+  assert(await recover.isVisible());
+  assert.match(await page.getByRole('status').textContent(),/目录被占用/);
+  await recover.click();
+  assert(await page.getByRole('link',{name:'打开桌面'}).isVisible());
+  assert.deepEqual((await page.evaluate(()=>window.calls)).filter(c=>c.method==='POST'),[
+    {url:'/api/workspaces/workspace-a/branches/branch-a/sandbox',method:'POST'},
+  ]);
+});
+
 test('Deletion requires stopped state and exact confirmation, supports cancellation and retry', async t => {
   const page = await setup(t);
   await page.getByRole('button', {name:'启动 Sandbox', exact:true}).click();

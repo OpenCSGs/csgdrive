@@ -355,6 +355,31 @@ impl Drop for PendingPin {
 }
 
 impl SandboxService {
+    async fn check_pending_mount_operations(
+        &self,
+        workspace: WorkspaceId,
+        branch: BranchId,
+    ) -> Result<()> {
+        if self
+            .runtime
+            .state
+            .operations(workspace)
+            .await?
+            .iter()
+            .any(|record| {
+                record.pending.is_some()
+                    && (record.branch == Some(branch)
+                        || matches!(record.pending, Some(PendingAction::BranchSwitch { .. })))
+            })
+        {
+            return Err(Error::new(
+                ErrorCode::Busy,
+                "当前分支有未完成操作，请在挂载管理中完成该操作后重试",
+            ));
+        }
+        Ok(())
+    }
+
     async fn create_inner(
         &self,
         actor: &Principal,
@@ -431,8 +456,22 @@ impl SandboxService {
                 && m.access == AccessMode::ReadWrite
                 && m.state != MountState::Released
         });
-        if binding.is_none() {
-            self.services
+        let needs_recovery = binding.as_ref().is_some_and(|binding| {
+            matches!(
+                binding.state,
+                MountState::RecoveryRequired | MountState::Suspended
+            )
+        });
+        if binding.is_none() || needs_recovery {
+            if needs_recovery {
+                self.check_pending_mount_operations(workspace, branch)
+                    .await?;
+            }
+            let path = binding
+                .as_ref()
+                .map_or_else(|| self.mount_root.join(&id), |binding| binding.path.clone());
+            let prepared = self
+                .services
                 .mounts
                 .prepare(
                     RequestContext {
@@ -444,14 +483,36 @@ impl SandboxService {
                         workspace,
                         branch: Some(branch),
                         revision: None,
-                        path: self.mount_root.join(&id),
+                        path: path.clone(),
                         access: AccessMode::ReadWrite,
-                        durability: Durability::Local,
+                        durability: binding
+                            .as_ref()
+                            .map_or(Durability::Local, |binding| binding.durability),
                     },
                 )
-                .await?;
+                .await;
+            let prepared = prepared.and_then(|record| match record.error {
+                Some(error) => Err(error),
+                None if record.mount_ready == Some(true) => Ok(record),
+                None => Err(Error::new(
+                    ErrorCode::MountBusy,
+                    "挂载操作尚未完成，请在挂载管理中检查操作状态",
+                )),
+            });
+            prepared.map_err(|mut error| {
+                error.message = format!(
+                    "分支目录挂载失败（{}）：{}。处理后点击“恢复挂载”重试。",
+                    path.display(),
+                    error.message
+                );
+                error
+            })?;
         }
         let _lifecycle = self.runtime.lifecycle.lock().await;
+        if needs_recovery {
+            self.check_pending_mount_operations(workspace, branch)
+                .await?;
+        }
         let binding = self
             .runtime
             .state
@@ -463,7 +524,12 @@ impl SandboxService {
                     && m.access == AccessMode::ReadWrite
                     && m.state == MountState::Ready
             })
-            .ok_or_else(|| Error::new(ErrorCode::MountBusy, "Branch mount is not ready"))?;
+            .ok_or_else(|| {
+                Error::new(
+                    ErrorCode::MountBusy,
+                    "分支挂载尚未就绪，请在挂载管理中完成未结束的操作，再点击“恢复挂载”重试",
+                )
+            })?;
         {
             let _branch = self.runtime.lock_branch(branch).await;
             let current = self.runtime.branch(branch).await?;

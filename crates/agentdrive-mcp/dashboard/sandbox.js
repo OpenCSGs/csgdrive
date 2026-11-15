@@ -165,7 +165,9 @@ export function createSandboxControl({api, element, workspace, branch, branchNam
     create.disabled = !enabled || !canStart || busy || active;
     create.title = canStart ? '' : '当前分支尚未取得本机写入权限';
     create.hidden = ['creating', 'starting', 'ready', 'stopping'].includes(state);
-    create.textContent = state === 'error' ? '重试启动' : '启动 Sandbox';
+    const recoverMount = state === 'error' && value?.startup_step === 'prepare_branch';
+    create.textContent = recoverMount ? '恢复挂载' : state === 'error' ? '重试启动' : '启动 Sandbox';
+    if (recoverMount && canStart) create.title = '恢复当前分支挂载后继续启动 Sandbox';
     stop.hidden = state !== 'ready'; stop.disabled = busy;
     force.hidden = state !== 'error' && !(state === 'ready' && (stopFailed || value?.message?.startsWith('正常停止失败'))); force.disabled = busy || !enabled || force.hidden;
     remove.hidden = !['stopped', 'error'].includes(state); remove.disabled = !enabled || busy || remove.hidden;

@@ -58,7 +58,10 @@ impl SandboxRuntime for RuntimeStub {
                 .lock()
                 .await
                 .insert(request.id, status.clone())
-                .is_none_or(|previous| matches!(previous.state, SandboxState::Stopped)),
+                .is_none_or(|previous| matches!(
+                    previous.state,
+                    SandboxState::Stopped | SandboxState::Creating
+                )),
             "duplicate runtime launch"
         );
         Ok(status)
@@ -89,6 +92,9 @@ impl SandboxRuntime for RuntimeStub {
             .cloned()
             .ok_or_else(|| Error::new(ErrorCode::NotFound, "missing"))
     }
+    async fn report_progress(&self, status: SandboxStatus) {
+        self.states.lock().await.insert(status.id.clone(), status);
+    }
 }
 
 struct Fixture {
@@ -100,6 +106,7 @@ struct Fixture {
     branch: BranchId,
     driver: Arc<RuntimeStub>,
     sandbox: Arc<SandboxService>,
+    mounts: Arc<MemoryMountDriver>,
 }
 async fn fixture() -> Fixture {
     fixture_with_remote(None).await
@@ -107,6 +114,7 @@ async fn fixture() -> Fixture {
 async fn fixture_with_remote(remote: Option<Arc<MemoryRemote>>) -> Fixture {
     let directory = tempfile::tempdir().unwrap();
     let local = Arc::new(LocalBackend::open(directory.path()).unwrap());
+    let mounts = Arc::new(MemoryMountDriver::default());
     let engine = Engine::open(
         Adapters {
             state: local.clone(),
@@ -117,7 +125,7 @@ async fn fixture_with_remote(remote: Option<Arc<MemoryRemote>>) -> Fixture {
                 .map(|remote| remote as Arc<dyn RemoteObjectStore>),
             remote_refs: remote.map(|remote| remote as Arc<dyn RemoteRefStore>),
             clock: Arc::new(ManualClock::default()),
-            mounts: Arc::new(MemoryMountDriver::default()),
+            mounts: mounts.clone(),
             directories: Arc::new(NoHostDirectories),
         },
         EngineConfig {
@@ -157,7 +165,254 @@ async fn fixture_with_remote(remote: Option<Arc<MemoryRemote>>) -> Fixture {
         branch,
         driver,
         sandbox,
+        mounts,
     }
+}
+
+async fn interrupted_mount(f: &Fixture, state: MountState) -> MountBinding {
+    let prepared = f
+        .engine
+        .services
+        .mounts
+        .prepare(
+            RequestContext {
+                principal: f.owner.clone(),
+                request_id: OperationId::new().to_string(),
+            },
+            PrepareMount {
+                automatic: false,
+                workspace: f.workspace,
+                branch: Some(f.branch),
+                revision: None,
+                path: f._directory.path().join("custom-branch"),
+                access: AccessMode::ReadWrite,
+                durability: Durability::Local,
+            },
+        )
+        .await
+        .unwrap();
+    assert!(prepared.error.is_none());
+    let mut binding = f.local.mounts().await.unwrap().pop().unwrap();
+    f.mounts.unmount(&binding).await.unwrap();
+    binding.state = state;
+    f.local
+        .commit(LocalCommit {
+            mounts: vec![binding.clone()],
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    binding
+}
+
+#[tokio::test]
+async fn sandbox_recovers_interrupted_and_suspended_mounts_at_the_original_path() {
+    for state in [MountState::RecoveryRequired, MountState::Suspended] {
+        let f = fixture().await;
+        let binding = interrupted_mount(&f, state).await;
+        let started = f
+            .sandbox
+            .create(&f.owner, f.workspace, f.branch)
+            .await
+            .unwrap();
+        assert!(matches!(started.state, SandboxState::Ready));
+        let mounts = f.local.mounts().await.unwrap();
+        assert_eq!(mounts.len(), 1);
+        assert_eq!(mounts[0].id, binding.id);
+        assert_eq!(mounts[0].path, binding.path);
+        assert_eq!(mounts[0].generation, binding.generation);
+        assert_eq!(mounts[0].state, MountState::Ready);
+        assert_eq!(
+            f.mounts.status(&mounts[0]).await.unwrap(),
+            NativeMountState::Mounted
+        );
+    }
+}
+
+#[tokio::test]
+async fn sandbox_mount_recovery_reports_the_native_error_and_can_retry() {
+    let f = fixture().await;
+    let binding = interrupted_mount(&f, MountState::RecoveryRequired).await;
+    f.mounts
+        .fail_mount
+        .store(true, std::sync::atomic::Ordering::SeqCst);
+    let error = f
+        .sandbox
+        .create(&f.owner, f.workspace, f.branch)
+        .await
+        .unwrap_err();
+    assert!(error.message.contains("injected mount failure"));
+    assert!(error.message.contains(binding.path.to_str().unwrap()));
+    let status = f
+        .sandbox
+        .status(&f.owner, f.workspace, f.branch)
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(matches!(status.state, SandboxState::Error));
+    assert_eq!(status.startup_step.as_deref(), Some("prepare_branch"));
+    assert_eq!(status.message.as_deref(), Some(error.message.as_str()));
+    assert_eq!(
+        f.local.mount(binding.id).await.unwrap().unwrap().state,
+        MountState::RecoveryRequired
+    );
+    assert!(matches!(
+        f.sandbox
+            .create(&f.owner, f.workspace, f.branch)
+            .await
+            .unwrap()
+            .state,
+        SandboxState::Ready
+    ));
+}
+
+#[tokio::test]
+async fn sandbox_initial_mount_failure_reports_the_operation_error() {
+    let f = fixture().await;
+    f.mounts
+        .fail_mount
+        .store(true, std::sync::atomic::Ordering::SeqCst);
+    let error = f
+        .sandbox
+        .create(&f.owner, f.workspace, f.branch)
+        .await
+        .unwrap_err();
+    assert_eq!(error.code, ErrorCode::Unavailable);
+    assert!(error.message.contains("injected mount failure"));
+    let status = f
+        .sandbox
+        .status(&f.owner, f.workspace, f.branch)
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(matches!(status.state, SandboxState::Error));
+    assert_eq!(status.message.as_deref(), Some(error.message.as_str()));
+}
+
+#[tokio::test]
+async fn sandbox_mount_recovery_checks_binding_owner_and_generation() {
+    for owner_changed in [true, false] {
+        let f = fixture().await;
+        let mut binding = interrupted_mount(&f, MountState::RecoveryRequired).await;
+        if owner_changed {
+            binding.principal = "other".to_string().try_into().unwrap();
+        } else {
+            binding.branch_generation = Some(100);
+        }
+        f.local
+            .commit(LocalCommit {
+                mounts: vec![binding.clone()],
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        let error = f
+            .sandbox
+            .create(&f.owner, f.workspace, f.branch)
+            .await
+            .unwrap_err();
+        assert_eq!(
+            error.code,
+            if owner_changed {
+                ErrorCode::PermissionDenied
+            } else {
+                ErrorCode::StaleBinding
+            }
+        );
+        assert_eq!(
+            f.mounts.status(&binding).await.unwrap(),
+            NativeMountState::Absent
+        );
+        assert_eq!(f.local.mount(binding.id).await.unwrap().unwrap(), binding);
+    }
+}
+
+#[tokio::test]
+async fn sandbox_mount_recovery_preserves_pending_branch_operations() {
+    let f = fixture().await;
+    let binding = interrupted_mount(&f, MountState::RecoveryRequired).await;
+    let mut pending = f
+        .local
+        .operations(f.workspace)
+        .await
+        .unwrap()
+        .into_iter()
+        .find(|r| r.name == "mount_prepare")
+        .unwrap();
+    pending.phase = OperationPhase::RecoveryRequired;
+    pending.pending = Some(PendingAction::Transfer {
+        target: LocationId::new(),
+        guard: BranchGuard::from(&f.local.branch(f.branch).await.unwrap().unwrap()),
+    });
+    f.local
+        .commit(LocalCommit {
+            operations: vec![pending.clone()],
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    let error = f
+        .sandbox
+        .create(&f.owner, f.workspace, f.branch)
+        .await
+        .unwrap_err();
+    assert_eq!(error.code, ErrorCode::Busy);
+    assert!(error.message.contains("未完成操作"));
+    assert_eq!(
+        f.mounts.status(&binding).await.unwrap(),
+        NativeMountState::Absent
+    );
+    assert_eq!(
+        f.local.mount(binding.id).await.unwrap().unwrap().state,
+        MountState::RecoveryRequired
+    );
+    assert_eq!(
+        f.local
+            .operations(f.workspace)
+            .await
+            .unwrap()
+            .into_iter()
+            .find(|r| r.id == pending.id)
+            .unwrap()
+            .pending,
+        pending.pending
+    );
+}
+
+#[tokio::test]
+async fn sandbox_mount_recovery_rejects_an_unrecognized_native_binding() {
+    let f = fixture().await;
+    let binding = interrupted_mount(&f, MountState::RecoveryRequired).await;
+    let mut other = binding.clone();
+    other.generation += 1;
+    f.mounts
+        .mount(
+            MountSpec {
+                binding: other.clone(),
+            },
+            f.engine.services.files.clone(),
+        )
+        .await
+        .unwrap();
+    let error = f
+        .sandbox
+        .create(&f.owner, f.workspace, f.branch)
+        .await
+        .unwrap_err();
+    assert_eq!(error.code, ErrorCode::MountBusy);
+    assert!(
+        error
+            .message
+            .contains("native mount identity cannot be confirmed")
+    );
+    assert_eq!(
+        f.mounts.status(&other).await.unwrap(),
+        NativeMountState::Mounted
+    );
+    assert_eq!(
+        f.local.mount(binding.id).await.unwrap().unwrap().state,
+        MountState::RecoveryRequired
+    );
 }
 
 #[tokio::test]
