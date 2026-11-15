@@ -119,6 +119,8 @@ sudo bash build/sandbox/prepare-network.sh "$(id -u)"
 
 `mount_root` 必须位于 AgentDrive 配置的 `mount_roots` 内。运行用户需要访问 `/dev/kvm` 与 `/dev/fuse`。
 
+文件共享和助手会使用较多文件句柄。通过 systemd 运行时，在服务的 `[Service]` 中设置 `LimitNOFILE=65536`；通过终端启动时，执行 `ulimit -n 65536`。worker 继承该限制。上限过低会导致 `Too many open files`，影响桌面和 MCP 连接。
+
 ```bash
 AGENTDRIVE_SANDBOX_CONFIG=/absolute/path/sandbox.json \
   target/release/agentdrived serve --config /absolute/path/agentdrive.json
@@ -201,6 +203,8 @@ python3 -m unittest discover -s tests/sandbox -p 'test_*.py'
 启动页面展示四个步骤：准备分支目录、准备 Ubuntu 系统磁盘、启动 Ubuntu 实例、等待桌面启动。就绪检查只确认 GNOME 会话、窗口管理器、VNC 和 noVNC 服务以及 `/workspace` 挂载。启动期间跳过浏览器、字体和 MCP 软件检查，也不执行截图或预先打开 Chromium。桌面辅助功能在模板中默认启用，Playwright 连接时按需打开共用的 Chromium。软件功能通过模板验证脚本单独测试。
 
 启动 Sandbox 时，已有分支挂载处于 `recovery_required` 或 `suspended` 状态会自动尝试恢复，继续使用原目录和持久化配置。恢复流程检查挂载所属用户、分支版本及本机目录状态；存在未完成的分支操作时，需要先在挂载管理中处理该操作。挂载失败会显示目录和具体原因，页面提供“恢复挂载”按钮，处理问题后点击即可重新恢复并继续启动 Ubuntu。无法确认本机挂载身份时保留 `recovery_required` 状态。
+
+未完成的挂载操作按照挂载 ID 和版本检查，已被新挂载替代的旧卸载记录会保留为历史记录。Linux 下，恢复流程会确认残留挂载的文件系统类型为 `fuse.agentdrive`、来源为当前挂载 ID，且目录访问返回 `ENOTCONN`，随后正常卸载并重新挂载。运行中的挂载和身份不匹配的挂载会保留；目录被占用时会显示具体错误，关闭占用后可以重试。
 
 
 ## Ubuntu GNOME 与 CSGClaw

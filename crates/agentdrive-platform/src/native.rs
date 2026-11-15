@@ -170,6 +170,18 @@ impl MountDriver for NativeMountDriver {
         }
     }
 
+    async fn detach_disconnected(&self, binding: &MountBinding) -> Result<bool> {
+        self.normalize_path(&binding.path).await?;
+        #[cfg(target_os = "linux")]
+        {
+            self.implementation.detach_disconnected(binding).await
+        }
+        #[cfg(not(target_os = "linux"))]
+        {
+            Ok(false)
+        }
+    }
+
     fn capability(&self) -> &'static str {
         #[cfg(target_os = "linux")]
         {

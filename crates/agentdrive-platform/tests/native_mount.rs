@@ -13,6 +13,10 @@ use std::{
 #[path = "native_mount/collaboration.rs"]
 mod collaboration;
 
+#[cfg(target_os = "linux")]
+#[path = "native_mount/disconnected.rs"]
+mod disconnected;
+
 fn user_entries(path: &std::path::Path) -> usize {
     std::fs::read_dir(path)
         .unwrap()

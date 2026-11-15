@@ -416,6 +416,67 @@ async fn sandbox_mount_recovery_rejects_an_unrecognized_native_binding() {
 }
 
 #[tokio::test]
+async fn sandbox_mount_recovery_checks_the_binding_referenced_by_pending_unmounts() {
+    for current_binding in [false, true] {
+        let f = fixture().await;
+        let binding = interrupted_mount(&f, MountState::RecoveryRequired).await;
+        let mut old = binding.clone();
+        if !current_binding {
+            old.id = MountId::new();
+        }
+        old.state = MountState::Ready;
+        let mut pending = f
+            .local
+            .operations(f.workspace)
+            .await
+            .unwrap()
+            .into_iter()
+            .find(|r| r.name == "mount_prepare")
+            .unwrap();
+        pending.name = "mount_unmount".into();
+        pending.id = OperationId::new();
+        pending.request_id = OperationId::new().to_string();
+        pending.phase = OperationPhase::WaitingForQuiesce;
+        pending.pending = Some(PendingAction::MountChange {
+            old: Some(old),
+            new: None,
+        });
+        f.local
+            .commit(LocalCommit {
+                operations: vec![pending.clone()],
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        let result = f.sandbox.create(&f.owner, f.workspace, f.branch).await;
+        if current_binding {
+            assert_eq!(result.unwrap_err().code, ErrorCode::Busy);
+            assert_eq!(
+                f.mounts.status(&binding).await.unwrap(),
+                NativeMountState::Absent
+            );
+        } else {
+            assert!(matches!(result.unwrap().state, SandboxState::Ready));
+            assert_eq!(
+                f.local.mount(binding.id).await.unwrap().unwrap().state,
+                MountState::Ready
+            );
+        }
+        assert_eq!(
+            f.local
+                .operations(f.workspace)
+                .await
+                .unwrap()
+                .into_iter()
+                .find(|r| r.id == pending.id)
+                .unwrap()
+                .pending,
+            pending.pending
+        );
+    }
+}
+
+#[tokio::test]
 async fn sandbox_authorizes_branch_and_pins_binding_until_stop() {
     let Fixture {
         _directory,
