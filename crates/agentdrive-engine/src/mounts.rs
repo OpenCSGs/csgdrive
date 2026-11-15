@@ -377,46 +377,40 @@ impl MountService {
                 ..Default::default()
             })
             .await?;
-        match self.driver.status(&ready).await? {
-            NativeMountState::Mounted => (),
-            NativeMountState::Absent => {
-                if let Err(error) = self
-                    .driver
-                    .mount(
-                        MountSpec {
-                            binding: ready.clone(),
-                        },
-                        self.files.clone(),
-                    )
-                    .await
-                {
-                    let mut failed = ready.clone();
-                    failed.state = MountState::RecoveryRequired;
-                    self.runtime
-                        .state
-                        .commit(LocalCommit {
-                            mounts: vec![failed],
-                            ..Default::default()
-                        })
-                        .await?;
-                    return Err(error);
-                }
+        let installed = async {
+            let state = self.driver.status(&ready).await?;
+            if state == NativeMountState::Mounted {
+                return Ok(());
             }
-            NativeMountState::Unknown => {
-                let mut failed = ready;
-                failed.state = MountState::RecoveryRequired;
-                self.runtime
-                    .state
-                    .commit(LocalCommit {
-                        mounts: vec![failed],
-                        ..Default::default()
-                    })
-                    .await?;
+            if state == NativeMountState::Unknown
+                && !self.driver.detach_disconnected(&ready).await?
+            {
                 return Err(Error::new(
                     ErrorCode::MountBusy,
                     "native mount identity cannot be confirmed",
                 ));
             }
+            self.driver
+                .mount(
+                    MountSpec {
+                        binding: ready.clone(),
+                    },
+                    self.files.clone(),
+                )
+                .await
+        }
+        .await;
+        if let Err(error) = installed {
+            let mut failed = ready;
+            failed.state = MountState::RecoveryRequired;
+            self.runtime
+                .state
+                .commit(LocalCommit {
+                    mounts: vec![failed],
+                    ..Default::default()
+                })
+                .await?;
+            return Err(error);
         }
         Ok(ready)
     }

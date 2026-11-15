@@ -355,21 +355,24 @@ impl Drop for PendingPin {
 }
 
 impl SandboxService {
-    async fn check_pending_mount_operations(
-        &self,
-        workspace: WorkspaceId,
-        branch: BranchId,
-    ) -> Result<()> {
+    async fn check_pending_mount_operations(&self, binding: &MountBinding) -> Result<()> {
         if self
             .runtime
             .state
-            .operations(workspace)
+            .operations(binding.workspace)
             .await?
             .iter()
-            .any(|record| {
-                record.pending.is_some()
-                    && (record.branch == Some(branch)
-                        || matches!(record.pending, Some(PendingAction::BranchSwitch { .. })))
+            .any(|record| match &record.pending {
+                Some(PendingAction::MountChange { old, new }) => old
+                    .iter()
+                    .chain(new.iter())
+                    .any(|mount| mount.id == binding.id && mount.generation == binding.generation),
+                Some(PendingAction::BranchSwitch { .. }) => true,
+                Some(PendingAction::ApplyRevision { target, .. }) => {
+                    target.branch == binding.branch
+                }
+                Some(PendingAction::Transfer { .. }) => record.branch == Some(binding.branch),
+                None => false,
             })
         {
             return Err(Error::new(
@@ -463,9 +466,8 @@ impl SandboxService {
             )
         });
         if binding.is_none() || needs_recovery {
-            if needs_recovery {
-                self.check_pending_mount_operations(workspace, branch)
-                    .await?;
+            if let Some(binding) = binding.as_ref().filter(|_| needs_recovery) {
+                self.check_pending_mount_operations(binding).await?;
             }
             let path = binding
                 .as_ref()
@@ -509,10 +511,6 @@ impl SandboxService {
             })?;
         }
         let _lifecycle = self.runtime.lifecycle.lock().await;
-        if needs_recovery {
-            self.check_pending_mount_operations(workspace, branch)
-                .await?;
-        }
         let binding = self
             .runtime
             .state
@@ -530,6 +528,9 @@ impl SandboxService {
                     "分支挂载尚未就绪，请在挂载管理中完成未结束的操作，再点击“恢复挂载”重试",
                 )
             })?;
+        if needs_recovery {
+            self.check_pending_mount_operations(&binding).await?;
+        }
         {
             let _branch = self.runtime.lock_branch(branch).await;
             let current = self.runtime.branch(branch).await?;

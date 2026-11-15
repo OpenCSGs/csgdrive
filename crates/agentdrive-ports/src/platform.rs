@@ -64,6 +64,11 @@ pub trait MountDriver: Send + Sync {
         ))
     }
     async fn unmount(&self, binding: &MountBinding) -> Result<()>;
+    /// 仅解除能够确认属于此绑定、且连接已经中断的本机挂载。
+    /// 返回 false 时保留原挂载，由调用方报告无法恢复。
+    async fn detach_disconnected(&self, _binding: &MountBinding) -> Result<bool> {
+        Ok(false)
+    }
     async fn status(&self, binding: &MountBinding) -> Result<NativeMountState>;
     fn capability(&self) -> &'static str;
 }

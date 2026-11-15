@@ -135,6 +135,36 @@ impl Driver {
         Ok(current.binding.open_handles())
     }
 
+    pub async fn detach_disconnected(&self, binding: &MountBinding) -> Result<bool> {
+        if self
+            .mounts
+            .lock()
+            .get(&binding.id)
+            .is_some_and(|current| !current.session.guard.is_finished())
+        {
+            return Ok(false);
+        }
+        let binding_copy = binding.clone();
+        let disconnected = tokio::task::spawn_blocking(move || {
+            let expected = (
+                "fuse.agentdrive".to_owned(),
+                format!("agentdrive:{}", binding_copy.id),
+            );
+            if native_mount(&binding_copy.path)? != Some(expected) {
+                return Ok::<_, Error>(false);
+            }
+            Ok(std::fs::symlink_metadata(&binding_copy.path)
+                .is_err_and(|error| error.raw_os_error() == Some(libc::ENOTCONN)))
+        })
+        .await
+        .map_err(|error| Error::new(ErrorCode::Io, error.to_string()))??;
+        if !disconnected {
+            return Ok(false);
+        }
+        self.unmount(binding).await?;
+        Ok(true)
+    }
+
     pub async fn rebind(&self, previous: &MountBinding, next: &MountBinding) -> Result<()> {
         let mounts = self.mounts.lock();
         let current = mounts
@@ -227,6 +257,10 @@ fn helper_unmount_error(output: &std::process::Output) -> Error {
 }
 
 fn native_source(path: &Path) -> Result<Option<String>> {
+    Ok(native_mount(path)?.map(|(_, source)| source))
+}
+
+fn native_mount(path: &Path) -> Result<Option<(String, String)>> {
     use std::os::unix::ffi::OsStrExt;
     let table = std::fs::read_to_string("/proc/self/mountinfo")?;
     for line in table.lines() {
@@ -260,7 +294,11 @@ fn native_source(path: &Path) -> Result<Option<String>> {
             }
         }
         if decoded == path.as_os_str().as_bytes() {
-            return Ok(right.split_whitespace().nth(1).map(str::to_owned));
+            let mut fields = right.split_whitespace();
+            return Ok(fields
+                .next()
+                .zip(fields.next())
+                .map(|(kind, source)| (kind.to_owned(), source.to_owned())));
         }
     }
     Ok(None)
