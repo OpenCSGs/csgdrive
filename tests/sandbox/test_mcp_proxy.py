@@ -7,7 +7,7 @@ import threading
 import unittest
 from pathlib import Path
 
-PROXY = Path(__file__).resolve().parents[2] / 'build/sandbox/mcp-proxy.py'
+PROXY = Path(__file__).resolve().parents[2] / 'sandbox/templates/mcp-proxy.py'
 
 
 class ProxyTest(unittest.TestCase):

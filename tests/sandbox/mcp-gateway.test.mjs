@@ -4,10 +4,10 @@ import {fileURLToPath} from 'node:url';
 import {mkdtemp,writeFile,rm} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
-import {Client} from '../../build/sandbox/mcp/node_modules/@modelcontextprotocol/sdk/dist/esm/client/index.js';
-import {InMemoryTransport} from '../../build/sandbox/mcp/node_modules/@modelcontextprotocol/sdk/dist/esm/inMemory.js';
-import {StdioClientTransport} from '../../build/sandbox/mcp/node_modules/@modelcontextprotocol/sdk/dist/esm/client/stdio.js';
-import {createGateway} from '../../build/sandbox/mcp/gateway.mjs';
+import {Client} from '../../sandbox/templates/mcp/node_modules/@modelcontextprotocol/sdk/dist/esm/client/index.js';
+import {InMemoryTransport} from '../../sandbox/templates/mcp/node_modules/@modelcontextprotocol/sdk/dist/esm/inMemory.js';
+import {StdioClientTransport} from '../../sandbox/templates/mcp/node_modules/@modelcontextprotocol/sdk/dist/esm/client/stdio.js';
+import {createGateway} from '../../sandbox/templates/mcp/gateway.mjs';
 
 const fixture=fileURLToPath(new URL('./mcp-fixture.py',import.meta.url));
 const provider=(id,prefix='')=>({id,prefix,command:'python3',args:[fixture,id]});
@@ -48,7 +48,7 @@ test('one unavailable provider leaves other tools usable and reports its failure
 test('stdio connection negotiates once and disconnect closes its children',async t=>{
  const directory=await mkdtemp(join(tmpdir(),'agentdrive-gateway-'));
  const config=join(directory,'providers.json');await writeFile(config,JSON.stringify({cwd:directory,providers:[provider('desktop'),provider('browser','browser_')]}));
- const transport=new StdioClientTransport({command:process.execPath,args:[fileURLToPath(new URL('../../build/sandbox/mcp/gateway.mjs',import.meta.url)),config],stderr:'pipe'});
+ const transport=new StdioClientTransport({command:process.execPath,args:[fileURLToPath(new URL('../../sandbox/templates/mcp/gateway.mjs',import.meta.url)),config],stderr:'pipe'});
  const client=new Client({name:'external-agent',version:'1'});
  t.after(async()=>{await client.close();await rm(directory,{recursive:true,force:true});});
  await client.connect(transport);assert.equal(client.getServerVersion().name,'agentdrive-sandbox');

@@ -20,7 +20,7 @@ CSGClaw 的登录回调使用当前实例的 `csgclaw.<工作区>.<分支>.local
 
 模板安装 `xdg-utils`，桌面启动时为用户配置 Chromium 为 HTTP、HTTPS 和 HTML 的默认应用。在桌面终端执行 `xdg-open https://example.com` 即可打开网页。
 
-Chromium 来自官方 Linux 构建，版本与 SHA-256 记录在 `build/sandbox/chromium.json`，构建模板时校验下载内容。该构建需要随模板更新。程序以桌面用户身份运行，并保留 Chromium 自身的进程隔离。模板包含 `fonts-noto-cjk` 和 `fonts-noto-color-emoji`，支持中文与表情显示。
+Chromium 来自官方 Linux 构建，版本与 SHA-256 记录在 `sandbox/templates/chromium.json`，构建模板时校验下载内容。该构建需要随模板更新。程序以桌面用户身份运行，并保留 Chromium 自身的进程隔离。模板包含 `fonts-noto-cjk` 和 `fonts-noto-color-emoji`，支持中文与表情显示。
 
 当前桌面会话通过脚本启动，Chromium 使用 `basic` 凭据存储，以便直接启动浏览器。该模式没有系统密钥环提供的独立凭据加密；实例系统磁盘需要按用户数据保护。
 
@@ -44,7 +44,7 @@ Sandbox 对外提供一个统一 MCP 入口，内部运行 computer-use-linux �
     "ubuntu_desktop": {
       "command": "python3",
       "args": [
-        "/absolute/path/csgdrive/build/sandbox/mcp-proxy.py",
+        "/absolute/path/csgdrive/sandbox/templates/mcp-proxy.py",
         "--socket",
         "/absolute/path/agentdrive/sandboxes/BRANCH_ID/vsock.sock"
       ]
@@ -61,7 +61,7 @@ Chromium 在 Ubuntu 的 `DISPLAY=:0` 运行，用户目录固定为 `/home/user/
 
 可以给 Agent 下达：「打开 Python 官网，新建标签页，点击指定按钮，并将下载文件保存到当前分支。」安装在 Ubuntu 内的 Agent 可以直接启动 `/usr/local/bin/node /opt/agentdrive-mcp/gateway.mjs` 连接相同工具入口。
 
-内部服务在 `build/sandbox/mcp/providers.json` 注册。新增服务时填写 `id`、`command`、`args`，用 `prefix` 区分工具名称，再安装对应程序并构建模板。Agent 的配置保持不变，重新连接后获得新的工具列表。工具名称冲突会明确报错，单个服务断开时其他服务仍可使用。当前统一入口合并 MCP tools，转发原始参数、结构化结果、图片和工具错误，支持分页工具列表、请求取消及连接清理。
+内部服务在 `sandbox/templates/mcp/providers.json` 注册。新增服务时填写 `id`、`command`、`args`，用 `prefix` 区分工具名称，再安装对应程序并构建模板。Agent 的配置保持不变，重新连接后获得新的工具列表。工具名称冲突会明确报错，单个服务断开时其他服务仍可使用。当前统一入口合并 MCP tools，转发原始参数、结构化结果、图片和工具错误，支持分页工具列表、请求取消及连接清理。
 
 ## 构建
 
@@ -74,19 +74,19 @@ cargo build --release --locked --manifest-path sandbox/worker/Cargo.toml
 
 worker 使用 `sandbox/hypervisor` 中的本地源码，通过独立 Cargo workspace 构建。源码来自 CubeSandbox commit `4411c96ba8658a959de34693f54f4918db2a432f`，原文件、PVM/KVM 支持及内置 virtio-fs 实现均保留。来源、文件校验值和许可证位于该目录，`make sandbox-verify` 检查来源记录、worker 编译和模板相关测试。linux-loader 固定为 0.13.0。
 
-Ubuntu 模板继续基于腾讯的 `ghcr.io/tencentcloud/cubesandbox-base:2026.16` 镜像。使用 `CUBE_BASE_IMAGE` 可以指定同一镜像的内部镜像仓库地址。桌面文件来源和修改记录见 `build/sandbox/SOURCES.md`，该说明及上游许可证随模板安装到 `/usr/share/doc/agentdrive-sandbox/`。
+Ubuntu 模板继续基于腾讯的 `ghcr.io/tencentcloud/cubesandbox-base:2026.16` 镜像。使用 `CUBE_BASE_IMAGE` 可以指定同一镜像的内部镜像仓库地址。桌面文件来源和修改记录见 `sandbox/templates/SOURCES.md`，该说明及上游许可证随模板安装到 `/usr/share/doc/agentdrive-sandbox/`。
 
 Ubuntu 模板安装 computer-use-linux 0.7.53，下载文件使用 SHA-256 验证。Playwright MCP 固定为 0.0.85，MCP SDK 固定为 1.32.2；Node.js 构建镜像固定 digest，npm 依赖通过 package-lock.json 和 npm ci 安装。
 
 准备与导入的 hypervisor 兼容的 KVM 内核，以及需要使用 PVM 时对应的内核。使用下列命令构建模板，输出目录需要尚未存在：
 
 ```bash
-build/sandbox/build-image.sh /absolute/path/template /absolute/path/vmlinux
+sandbox/templates/build-image.sh /absolute/path/template /absolute/path/vmlinux
 ```
 
 构建脚本生成 `kernels.json`，记录 KVM/PVM 内核文件的 SHA-256；内核源码、配置及许可证资料需要随部署产物保存。系统磁盘直接启动 guest-init.sh，guest helper 通过 vsock 提供桌面连接、截图检查、文件刷新和 MCP 标准输入输出。
 
-CSGClaw 模板通过 `build/sandbox/build-assistant-image.sh` 在本地构建的 `agentdrive-ubuntu:local` 上增加助手。先完成桌面模板构建，再执行助手构建脚本。更新部署时切换模板路径和版本；已有实例保留原系统磁盘，新建实例使用新模板。替换 worker 后需要重启服务及实例。
+CSGClaw 模板通过 `sandbox/templates/build-assistant-image.sh` 在本地构建的 `agentdrive-ubuntu:local` 上增加助手。先完成桌面模板构建，再执行助手构建脚本。更新部署时切换模板路径和版本；已有实例保留原系统磁盘，新建实例使用新模板。替换 worker 后需要重启服务及实例。
 
 ## 启动配置
 
@@ -106,7 +106,7 @@ CSGClaw 模板通过 `build/sandbox/build-assistant-image.sh` 在本地构建的
   "directory": "/absolute/path/agentdrive/sandboxes",
   "mount_root": "/absolute/path/agentdrive/mounts",
   "novnc_dir": "/absolute/path/template/novnc",
-  "mcp_proxy": "/absolute/path/csgdrive/build/sandbox/mcp-proxy.py",
+  "mcp_proxy": "/absolute/path/csgdrive/sandbox/templates/mcp-proxy.py",
   "max_instances": 2,
   "networks": [
     {"tap": "adsb0", "guest_ip": "172.30.80.2", "gateway": "172.30.80.1", "dns": ["223.5.5.5", "1.1.1.1"]},
@@ -118,7 +118,7 @@ CSGClaw 模板通过 `build/sandbox/build-assistant-image.sh` 在本地构建的
 准备外网接口，参数使用运行 agentdrived 的用户 UID：
 
 ```bash
-sudo bash build/sandbox/prepare-network.sh "$(id -u)"
+sudo bash sandbox/templates/prepare-network.sh "$(id -u)"
 ```
 
 脚本创建 `adsb0` 和 `adsb1`，使用 `172.30.80.0/29` 地址范围。运行前应确认该范围未被其他网络使用。每个运行中的实例占用一个接口，停止后释放接口。接口由普通用户打开，网络参数通过内核命令行传给 Ubuntu，启动时配置地址、默认路由和 DNS。省略 `networks` 时实例保持离线；配置了网络但接口不可用时，页面显示启动错误。
@@ -193,7 +193,7 @@ python3 tests/sandbox/playwright_probe.py \
 统一入口和通信通道的自动化测试：
 
 ```bash
-npm ci --prefix build/sandbox/mcp --ignore-scripts
+npm ci --prefix sandbox/templates/mcp --ignore-scripts
 node --test tests/sandbox/mcp-gateway.test.mjs
 python3 -m unittest discover -s tests/sandbox -p 'test_*.py'
 ```
@@ -220,7 +220,7 @@ python3 -m unittest discover -s tests/sandbox -p 'test_*.py'
 `ubuntu-csgclaw` 模板在现有 GNOME 镜像中预装 CSGClaw v0.10.0 完整发布包，包括 Web UI 与 Agent 执行程序。发布包 SHA-256 在构建脚本中校验，模型凭据不写入模板。需要已经构建的 `agentdrive-ubuntu:local` 基础镜像：
 
 ```bash
-bash build/sandbox/build-assistant-image.sh /absolute/path/ubuntu-csgclaw /absolute/path/vmlinux
+bash sandbox/templates/build-assistant-image.sh /absolute/path/ubuntu-csgclaw /absolute/path/vmlinux
 ```
 
 在 `AGENTDRIVE_SANDBOX_CONFIG` 文件中添加以下 `templates` 条目，重新启动 AgentDrive：
