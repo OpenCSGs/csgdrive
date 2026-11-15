@@ -8,7 +8,7 @@ import unittest
 import zipfile
 
 spec = importlib.util.spec_from_file_location(
-    'install_chromium', Path(__file__).resolve().parents[2] / 'build/sandbox/install-chromium.py')
+    'install_chromium', Path(__file__).resolve().parents[2] / 'sandbox/templates/install-chromium.py')
 installer = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(installer)
 

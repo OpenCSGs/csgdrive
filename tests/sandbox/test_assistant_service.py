@@ -5,7 +5,7 @@ import types
 import unittest
 from unittest.mock import patch
 
-spec = importlib.util.spec_from_file_location('assistant_service', Path(__file__).resolve().parents[2] / 'build/sandbox/assistant/assistant-service.py')
+spec = importlib.util.spec_from_file_location('assistant_service', Path(__file__).resolve().parents[2] / 'sandbox/templates/assistant/assistant-service.py')
 assistant = importlib.util.module_from_spec(spec)
 with patch('pwd.getpwnam', return_value=types.SimpleNamespace(pw_uid=1000, pw_gid=1000, pw_dir='/home/user')):
     spec.loader.exec_module(assistant)

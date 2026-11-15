@@ -7,7 +7,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[2] / 'build/sandbox'))
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / 'sandbox/templates'))
 from desktop_environment import environment_instructions
 from desktop_mcp import enrich, paste_request
 
@@ -23,7 +23,7 @@ for line in sys.stdin:
     result={'tools':[]} if request['method']=='tools/list' else {'content':[{'type':'text','text':'unchanged'}]}
     print(json.dumps({'jsonrpc':'2.0','id':request['id'],'result':result}),flush=True)
 ''')
-            source = str(Path(__file__).resolve().parents[2] / 'build/sandbox')
+            source = str(Path(__file__).resolve().parents[2] / 'sandbox/templates')
             program = ('import sys;sys.path.insert(0,sys.argv[1]);import desktop_mcp as m;'
                        'm.environment_info=lambda: {};m.environment_instructions=lambda info: "environment";'
                        'original=m.subprocess.Popen;'

@@ -12,7 +12,7 @@
 /sandbox/worker/target/
 
 /tests/dashboard/node_modules/
-/build/sandbox/mcp/node_modules/
-/build/sandbox/.cache/
-/build/sandbox/**/__pycache__/
+/sandbox/templates/mcp/node_modules/
+/sandbox/templates/.cache/
+/sandbox/templates/**/__pycache__/
 /tests/sandbox/__pycache__/

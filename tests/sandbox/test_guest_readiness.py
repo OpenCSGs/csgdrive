@@ -7,7 +7,7 @@ import subprocess
 import unittest
 from unittest.mock import MagicMock, patch
 
-spec = importlib.util.spec_from_file_location('guest_helper', Path(__file__).resolve().parents[2] / 'build/sandbox/guest-helper.py')
+spec = importlib.util.spec_from_file_location('guest_helper', Path(__file__).resolve().parents[2] / 'sandbox/templates/guest-helper.py')
 helper = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(helper)
 

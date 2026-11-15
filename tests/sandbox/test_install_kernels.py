@@ -6,7 +6,7 @@ import subprocess
 import tempfile
 import unittest
 
-SCRIPT = Path(__file__).resolve().parents[2] / 'build/sandbox/install-kernels.sh'
+SCRIPT = Path(__file__).resolve().parents[2] / 'sandbox/templates/install-kernels.sh'
 
 
 class InstallKernelsTest(unittest.TestCase):
