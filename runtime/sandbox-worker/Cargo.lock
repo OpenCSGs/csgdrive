@@ -5,7 +5,6 @@ version = 4
 [[package]]
 name = "acpi_tables"
 version = "0.1.0"
-source = "git+https://github.com/TencentCloud/CubeSandbox?rev=4411c96ba8658a959de34693f54f4918db2a432f#4411c96ba8658a959de34693f54f4918db2a432f"
 dependencies = [
  "vm-memory 0.16.2",
  "zerocopy 0.6.6",
@@ -112,7 +111,6 @@ checksum = "330a5ed07fa54e4702c9d6c4174f74427fc0ef6e214bbd677ae50a5099946470"
 [[package]]
 name = "api_client"
 version = "0.1.0"
-source = "git+https://github.com/TencentCloud/CubeSandbox?rev=4411c96ba8658a959de34693f54f4918db2a432f#4411c96ba8658a959de34693f54f4918db2a432f"
 dependencies = [
  "vmm-sys-util 0.12.1",
 ]
@@ -129,7 +127,6 @@ dependencies = [
 [[package]]
 name = "arch"
 version = "0.1.0"
-source = "git+https://github.com/TencentCloud/CubeSandbox?rev=4411c96ba8658a959de34693f54f4918db2a432f#4411c96ba8658a959de34693f54f4918db2a432f"
 dependencies = [
  "anyhow",
  "byteorder",
@@ -205,7 +202,6 @@ checksum = "3ded4057c258ba199e2d26386d3af3780957ecaee6c4ef4041c6b4b8b97c0b06"
 [[package]]
 name = "block_util"
 version = "0.1.0"
-source = "git+https://github.com/TencentCloud/CubeSandbox?rev=4411c96ba8658a959de34693f54f4918db2a432f#4411c96ba8658a959de34693f54f4918db2a432f"
 dependencies = [
  "io-uring",
  "libc",
@@ -393,7 +389,6 @@ checksum = "a31eee39dddec8330830986fcd7625edb5a24ec90ea038215273bbc3adb08ac6"
 [[package]]
 name = "cube-hypervisor"
 version = "28.0.0"
-source = "git+https://github.com/TencentCloud/CubeSandbox?rev=4411c96ba8658a959de34693f54f4918db2a432f#4411c96ba8658a959de34693f54f4918db2a432f"
 dependencies = [
  "anyhow",
  "api_client",
@@ -502,7 +497,6 @@ checksum = "9e9de72ce2ad1f90dc62fa25f0f430ef85eb4b0d8fa0be4f30373bc40a21d28e"
 [[package]]
 name = "devices"
 version = "0.1.0"
-source = "git+https://github.com/TencentCloud/CubeSandbox?rev=4411c96ba8658a959de34693f54f4918db2a432f#4411c96ba8658a959de34693f54f4918db2a432f"
 dependencies = [
  "acpi_tables",
  "anyhow",
@@ -593,7 +587,6 @@ dependencies = [
 [[package]]
 name = "event_monitor"
 version = "0.1.0"
-source = "git+https://github.com/TencentCloud/CubeSandbox?rev=4411c96ba8658a959de34693f54f4918db2a432f#4411c96ba8658a959de34693f54f4918db2a432f"
 dependencies = [
  "libc",
  "serde",
@@ -603,7 +596,6 @@ dependencies = [
 [[package]]
 name = "event_notifier"
 version = "0.1.0"
-source = "git+https://github.com/TencentCloud/CubeSandbox?rev=4411c96ba8658a959de34693f54f4918db2a432f#4411c96ba8658a959de34693f54f4918db2a432f"
 dependencies = [
  "lazy_static",
  "log",
@@ -799,7 +791,6 @@ checksum = "15cdd26707701c53297e2fa6afb323d55fbc1d0810c3aec078ae3ef0424c3c15"
 [[package]]
 name = "hypervisor"
 version = "0.1.0"
-source = "git+https://github.com/TencentCloud/CubeSandbox?rev=4411c96ba8658a959de34693f54f4918db2a432f#4411c96ba8658a959de34693f54f4918db2a432f"
 dependencies = [
  "anyhow",
  "byteorder",
@@ -973,7 +964,6 @@ checksum = "5d15f86d12da44cd8d4ec3c73984537eb7f4cadcb9776a575a0a8a05ca11005c"
 [[package]]
 name = "log_json"
 version = "0.1.0"
-source = "git+https://github.com/TencentCloud/CubeSandbox?rev=4411c96ba8658a959de34693f54f4918db2a432f#4411c96ba8658a959de34693f54f4918db2a432f"
 dependencies = [
  "libc",
  "serde",
@@ -983,7 +973,6 @@ dependencies = [
 [[package]]
 name = "logging"
 version = "0.1.0"
-source = "git+https://github.com/TencentCloud/CubeSandbox?rev=4411c96ba8658a959de34693f54f4918db2a432f#4411c96ba8658a959de34693f54f4918db2a432f"
 dependencies = [
  "lazy_static",
  "serde",
@@ -1036,7 +1025,6 @@ dependencies = [
 [[package]]
 name = "net_gen"
 version = "0.1.0"
-source = "git+https://github.com/TencentCloud/CubeSandbox?rev=4411c96ba8658a959de34693f54f4918db2a432f#4411c96ba8658a959de34693f54f4918db2a432f"
 dependencies = [
  "vmm-sys-util 0.12.1",
 ]
@@ -1044,7 +1032,6 @@ dependencies = [
 [[package]]
 name = "net_util"
 version = "0.1.0"
-source = "git+https://github.com/TencentCloud/CubeSandbox?rev=4411c96ba8658a959de34693f54f4918db2a432f#4411c96ba8658a959de34693f54f4918db2a432f"
 dependencies = [
  "epoll",
  "getrandom 0.2.17",
@@ -1110,7 +1097,6 @@ checksum = "384b8ab6d37215f3c5301a95a4accb5d64aa607f1fcb26a11b5303878451b4fe"
 [[package]]
 name = "option_parser"
 version = "0.1.0"
-source = "git+https://github.com/TencentCloud/CubeSandbox?rev=4411c96ba8658a959de34693f54f4918db2a432f#4411c96ba8658a959de34693f54f4918db2a432f"
 
 [[package]]
 name = "parking_lot"
@@ -1138,7 +1124,6 @@ dependencies = [
 [[package]]
 name = "pci"
 version = "0.1.0"
-source = "git+https://github.com/TencentCloud/CubeSandbox?rev=4411c96ba8658a959de34693f54f4918db2a432f#4411c96ba8658a959de34693f54f4918db2a432f"
 dependencies = [
  "anyhow",
  "byteorder",
@@ -1236,7 +1221,6 @@ dependencies = [
 [[package]]
 name = "qcow"
 version = "0.1.0"
-source = "git+https://github.com/TencentCloud/CubeSandbox?rev=4411c96ba8658a959de34693f54f4918db2a432f#4411c96ba8658a959de34693f54f4918db2a432f"
 dependencies = [
  "byteorder",
  "libc",
@@ -1295,7 +1279,6 @@ checksum = "63b8176103e19a2643978565ca18b50549f6101881c443590420e4dc998a3c69"
 [[package]]
 name = "rate_limiter"
 version = "0.1.0"
-source = "git+https://github.com/TencentCloud/CubeSandbox?rev=4411c96ba8658a959de34693f54f4918db2a432f#4411c96ba8658a959de34693f54f4918db2a432f"
 dependencies = [
  "libc",
  "log",
@@ -1514,7 +1497,6 @@ dependencies = [
 [[package]]
 name = "serial_buffer"
 version = "0.1.0"
-source = "git+https://github.com/TencentCloud/CubeSandbox?rev=4411c96ba8658a959de34693f54f4918db2a432f#4411c96ba8658a959de34693f54f4918db2a432f"
 
 [[package]]
 name = "shlex"
@@ -1822,7 +1804,6 @@ dependencies = [
 [[package]]
 name = "tpm"
 version = "0.1.0"
-source = "git+https://github.com/TencentCloud/CubeSandbox?rev=4411c96ba8658a959de34693f54f4918db2a432f#4411c96ba8658a959de34693f54f4918db2a432f"
 dependencies = [
  "anyhow",
  "byteorder",
@@ -1835,7 +1816,6 @@ dependencies = [
 [[package]]
 name = "tracer"
 version = "0.1.0"
-source = "git+https://github.com/TencentCloud/CubeSandbox?rev=4411c96ba8658a959de34693f54f4918db2a432f#4411c96ba8658a959de34693f54f4918db2a432f"
 dependencies = [
  "libc",
  "log",
@@ -1907,7 +1887,6 @@ dependencies = [
 [[package]]
 name = "vfio_user"
 version = "0.1.0"
-source = "git+https://github.com/TencentCloud/CubeSandbox?rev=4411c96ba8658a959de34693f54f4918db2a432f#4411c96ba8658a959de34693f54f4918db2a432f"
 dependencies = [
  "libc",
  "log",
@@ -1923,7 +1902,6 @@ dependencies = [
 [[package]]
 name = "vhdx"
 version = "0.1.0"
-source = "git+https://github.com/TencentCloud/CubeSandbox?rev=4411c96ba8658a959de34693f54f4918db2a432f#4411c96ba8658a959de34693f54f4918db2a432f"
 dependencies = [
  "byteorder",
  "crc32c",
@@ -1988,7 +1966,6 @@ checksum = "091f1f09cfbf2a78563b562e7a949465cce1aef63b6065645188d995162f8868"
 [[package]]
 name = "virtio-devices"
 version = "0.1.0"
-source = "git+https://github.com/TencentCloud/CubeSandbox?rev=4411c96ba8658a959de34693f54f4918db2a432f#4411c96ba8658a959de34693f54f4918db2a432f"
 dependencies = [
  "anyhow",
  "arc-swap",
@@ -2061,7 +2038,6 @@ dependencies = [
 [[package]]
 name = "virtiofsd"
 version = "1.11.0"
-source = "git+https://github.com/TencentCloud/CubeSandbox?rev=4411c96ba8658a959de34693f54f4918db2a432f#4411c96ba8658a959de34693f54f4918db2a432f"
 dependencies = [
  "anyhow",
  "bitflags 1.3.2",
@@ -2087,7 +2063,6 @@ dependencies = [
 [[package]]
 name = "vm-allocator"
 version = "0.1.0"
-source = "git+https://github.com/TencentCloud/CubeSandbox?rev=4411c96ba8658a959de34693f54f4918db2a432f#4411c96ba8658a959de34693f54f4918db2a432f"
 dependencies = [
  "arch",
  "libc",
@@ -2097,7 +2072,6 @@ dependencies = [
 [[package]]
 name = "vm-device"
 version = "0.1.0"
-source = "git+https://github.com/TencentCloud/CubeSandbox?rev=4411c96ba8658a959de34693f54f4918db2a432f#4411c96ba8658a959de34693f54f4918db2a432f"
 dependencies = [
  "anyhow",
  "hypervisor",
@@ -2140,7 +2114,6 @@ dependencies = [
 [[package]]
 name = "vm-migration"
 version = "0.1.0"
-source = "git+https://github.com/TencentCloud/CubeSandbox?rev=4411c96ba8658a959de34693f54f4918db2a432f#4411c96ba8658a959de34693f54f4918db2a432f"
 dependencies = [
  "anyhow",
  "serde",
@@ -2152,7 +2125,6 @@ dependencies = [
 [[package]]
 name = "vm-virtio"
 version = "0.1.0"
-source = "git+https://github.com/TencentCloud/CubeSandbox?rev=4411c96ba8658a959de34693f54f4918db2a432f#4411c96ba8658a959de34693f54f4918db2a432f"
 dependencies = [
  "log",
  "virtio-queue 0.14.0",
@@ -2162,7 +2134,6 @@ dependencies = [
 [[package]]
 name = "vmm"
 version = "0.1.0"
-source = "git+https://github.com/TencentCloud/CubeSandbox?rev=4411c96ba8658a959de34693f54f4918db2a432f#4411c96ba8658a959de34693f54f4918db2a432f"
 dependencies = [
  "acpi_tables",
  "anyhow",

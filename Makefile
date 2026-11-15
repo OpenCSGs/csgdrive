@@ -4,7 +4,7 @@ TARGETS ?= --all-targets
 FEATURES ?=
 CARGO_FLAGS = --locked --workspace $(if $(FEATURES),--features $(FEATURES),)
 
-.PHONY: all build check test fmt fmt-check clippy architecture verify clean
+.PHONY: all build check test fmt fmt-check clippy architecture verify sandbox-verify clean
 all: build
 build:
 	+$(CARGO) build $(CARGO_FLAGS)
@@ -21,5 +21,9 @@ clippy:
 architecture:
 	$(PYTHON) tests/architecture.py
 verify: fmt-check clippy test architecture
+sandbox-verify:
+	$(PYTHON) tests/sandbox/check_sources.py
+	+$(CARGO) check --locked --manifest-path runtime/sandbox-worker/Cargo.toml
+	$(PYTHON) -m unittest discover -s tests/sandbox -p 'test_*.py'
 clean:
 	$(CARGO) clean

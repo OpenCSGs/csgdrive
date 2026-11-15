@@ -17,3 +17,17 @@ cp --reflink=auto -- "$kernel" "$output/vmlinux-bm"
 if [[ -f "$pvm" ]]; then
     cp --dereference --reflink=auto -- "$pvm" "$output/vmlinux-pvm"
 fi
+python3 - "$output" <<'PY'
+import hashlib
+import json
+import pathlib
+import sys
+
+directory = pathlib.Path(sys.argv[1])
+kernels = {}
+for mode, name in [("kvm", "vmlinux-bm"), ("pvm", "vmlinux-pvm")]:
+    path = directory / name
+    if path.is_file():
+        kernels[mode] = {"file": name, "sha256": hashlib.sha256(path.read_bytes()).hexdigest()}
+(directory / "kernels.json").write_text(json.dumps(kernels, indent=2) + "\n")
+PY

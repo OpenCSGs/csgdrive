@@ -8,6 +8,8 @@
 
 /vendor/winfsp_wrs/target/
 /vendor/winfsp_wrs/Cargo.lock
+/vendor/cube-hypervisor/target/
+/runtime/sandbox-worker/target/
 
 /tests/dashboard/node_modules/
 /build/sandbox/mcp/node_modules/

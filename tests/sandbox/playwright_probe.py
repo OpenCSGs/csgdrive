@@ -99,9 +99,10 @@ try:
     call('browser_evaluate', {'function': '() => { document.open(); document.write(' + json.dumps(fixture.read_text()) + '); document.close(); return document.title; }'})
     click_button('点击验证')
     assert '点击成功' in call('browser_snapshot')
-    windows = call('list_windows')
-    assert 'chromium' in windows.lower(), windows
-    desktop = call('get_app_state', {'app_name_or_bundle_identifier': 'chromium', 'include_screenshot': True})
+    windows = json.loads(call('list_windows'))['windows']
+    browser = next(window for window in windows
+                   if 'chromium' in window.get('wm_class', '').lower())
+    desktop = call('get_app_state', {'window_id': browser['window_id'], 'include_screenshot': True})
     assert 'AgentDrive Playwright' in desktop, desktop
     click_button('下载到当前分支')
     expected = mount / 'Downloads' / filename
@@ -120,7 +121,7 @@ try:
     start()
     rpc('tools/list', {})
     assert 'AgentDrive Playwright Verification' in call('browser_tabs', {'action': 'list'})
-    call('get_app_state', {'app_name_or_bundle_identifier': 'chromium', 'include_screenshot': True})
+    call('get_app_state', {'window_id': browser['window_id'], 'include_screenshot': True})
     report['reconnect_preserves_browser'] = True
     (artifacts / 'report.json').write_text(json.dumps(report, ensure_ascii=False, indent=2))
     print('UNIFIED MCP VERIFIED', flush=True)

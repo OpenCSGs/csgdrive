@@ -1,3 +1,4 @@
+# AgentDrive 修改及来源见 SOURCES.md。
 # Only pin apps that this image actually ships. ubuntu-settings defaults
 # include Firefox snap / Thunderbird / LibreOffice / ubiquity, which show
 # up as broken dock icons.

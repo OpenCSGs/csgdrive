@@ -1,6 +1,6 @@
 #!/bin/bash
 # Start dummy Xorg (or Xvfb fallback), Ubuntu GNOME, x11vnc, and noVNC.
-# Foreground process is this script so cube-entrypoint / docker stop can signal it.
+# 来源和本地修改记录见 SOURCES.md；前台进程负责处理停止信号。
 set -euo pipefail
 
 DISPLAY_NUM="${DISPLAY:-:0}"
