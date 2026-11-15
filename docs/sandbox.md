@@ -72,7 +72,7 @@ cargo build --release -p agentdrived -p agentdrive
 cargo build --release --locked --manifest-path runtime/sandbox-worker/Cargo.toml
 ```
 
-worker 使用 `vendor/cube-hypervisor` 中的本地源码，通过独立 Cargo workspace 构建。源码来自 CubeSandbox commit `4411c96ba8658a959de34693f54f4918db2a432f`，原文件、PVM/KVM 支持及内置 virtio-fs 实现均保留。来源、文件校验值和许可证位于该目录，`make sandbox-verify` 检查来源记录、worker 编译和模板相关测试。linux-loader 固定为 0.13.0。
+worker 使用 `sandbox/hypervisor` 中的本地源码，通过独立 Cargo workspace 构建。源码来自 CubeSandbox commit `4411c96ba8658a959de34693f54f4918db2a432f`，原文件、PVM/KVM 支持及内置 virtio-fs 实现均保留。来源、文件校验值和许可证位于该目录，`make sandbox-verify` 检查来源记录、worker 编译和模板相关测试。linux-loader 固定为 0.13.0。
 
 Ubuntu 模板继续基于腾讯的 `ghcr.io/tencentcloud/cubesandbox-base:2026.16` 镜像。使用 `CUBE_BASE_IMAGE` 可以指定同一镜像的内部镜像仓库地址。桌面文件来源和修改记录见 `build/sandbox/SOURCES.md`，该说明及上游许可证随模板安装到 `/usr/share/doc/agentdrive-sandbox/`。
 
