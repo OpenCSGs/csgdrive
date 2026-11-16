@@ -96,7 +96,8 @@ async fn management_command(
 ) -> std::result::Result<Json<Value>, ApiError> {
     if !matches!(
         command.as_str(),
-        "workspace_delete"
+        "workspace_create"
+            | "workspace_delete"
             | "workspace_discover"
             | "branch_create"
             | "branch_switch"

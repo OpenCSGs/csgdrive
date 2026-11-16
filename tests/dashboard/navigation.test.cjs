@@ -33,6 +33,14 @@ async function setup(t, options = {}) {
     assert.equal(request.headers().authorization, undefined);
     if (url.pathname === '/api/settings') return route.fulfill({json:{revision:'config',config_path:'/config',runtime:{cache:{max_bytes:2147483648},allowed_origins:[],remote:null},startup:{listen:'127.0.0.1:7421',data_dir:'/state',mount_roots:[],directory_roots:[]}}});
     if (url.pathname === '/api/workspaces') return data.listError ? route.fulfill({status:503,json:{error:{message:'Workspaces unavailable'}}}) : route.fulfill({json:data.workspaces});
+    if (url.pathname === '/api/commands/workspace_create') {
+      const input = request.postDataJSON(); (data.creations ||= []).push(input);
+      if (data.createPending) await data.createPending();
+      if (data.createError) return route.fulfill({status:data.createStatus || 503,json:{error:{message:data.createError}}});
+      const workspace = {id:'created',name:input.request.name};
+      if (!data.workspaces.some(item=>item.id===workspace.id)) data.workspaces.push(workspace);
+      return route.fulfill({json:{local_saved:true,phase:'local_saved',error:null,result:{workspace}}});
+    }
     if (url.pathname === '/api/commands/workspace_delete') {
       const input = request.postDataJSON();
       (data.deletions ||= []).push(input);
@@ -265,4 +273,80 @@ test('loading failure leaves an actionable refresh control and an accessible err
   assert.equal(await page.locator('#main-content').getAttribute('aria-busy'),'false');
   assert(await page.getByRole('alert').filter({hasText:'Workspaces unavailable'}).isVisible());
   assert(await page.getByRole('button',{name:'刷新数据'}).isEnabled());
+});
+
+
+test('workspace creation is available without workspaces and selects the new project', async t => {
+  const {page,data}=await setup(t,{workspaces:[]});
+  await page.goto(endpoint+'/archive');await settled(page);
+  await page.getByRole('button',{name:'创建工作区',exact:true}).click();
+  const dialog=page.getByRole('dialog',{name:'创建工作区',exact:true});
+  const input=dialog.getByLabel('工作区名称'),submit=dialog.getByRole('button',{name:'创建工作区',exact:true});
+  assert(await input.evaluate(node=>node===document.activeElement));
+  assert(await submit.isDisabled());
+  await input.fill('   ');assert(await submit.isDisabled());
+  await input.fill('项'.repeat(86));assert(await submit.isDisabled());
+  await input.fill('  新项目  ');
+  await page.locator('#refresh').evaluate(button=>button.click());await settled(page);
+  assert.equal(await input.inputValue(),'  新项目  ');
+  await input.press('Enter');await dialog.waitFor({state:'hidden'});await settled(page);
+  assert.equal(new URL(page.url()).pathname,'/archive');
+  assert.equal(new URL(page.url()).searchParams.get('workspace'),'created');
+  assert.equal(await page.locator('#workspace-name').textContent(),'新项目');
+  assert.equal(data.creations.length,1);assert.equal(data.creations[0].request.name,'新项目');
+  assert.equal(await page.evaluate(()=>sessionStorage.getItem('agentdrive-workspace-create')),null);
+});
+
+test('workspace creation retries the same request after failure and reload', async t => {
+  const {page,data}=await setup(t,{createError:'Connection interrupted'});
+  await page.goto(endpoint+'/archive');await settled(page);
+  await page.getByRole('button',{name:'创建工作区',exact:true}).click();
+  const dialog=page.getByRole('dialog',{name:'创建工作区',exact:true});
+  await dialog.getByLabel('工作区名称').fill('重试项目');
+  await dialog.getByRole('button',{name:'创建工作区',exact:true}).click();
+  await dialog.getByRole('alert').filter({hasText:'Connection interrupted'}).waitFor();
+  assert(await dialog.getByLabel('工作区名称').evaluate(input=>input.readOnly));
+  const original=data.creations[0];
+  await page.reload();await settled(page);
+  await page.getByRole('button',{name:'创建工作区',exact:true}).click();
+  assert.equal(await dialog.getByLabel('工作区名称').inputValue(),'重试项目');
+  data.createError=null;
+  await dialog.getByRole('button',{name:'重试创建'}).click();
+  await dialog.waitFor({state:'hidden'});await settled(page);
+  assert.deepEqual(data.creations[1],original);
+  assert.equal(new URL(page.url()).searchParams.get('workspace'),'created');
+});
+
+test('rejected creation can be corrected and duplicate submissions are blocked', async t => {
+  const {page,data}=await setup(t,{createError:'Invalid name',createStatus:400});
+  await page.goto(endpoint+'/archive');await settled(page);
+  await page.getByRole('button',{name:'创建工作区',exact:true}).click();
+  const dialog=page.getByRole('dialog',{name:'创建工作区',exact:true}),input=dialog.getByLabel('工作区名称');
+  await input.fill('Rejected');await dialog.getByRole('button',{name:'创建工作区',exact:true}).click();
+  await dialog.getByRole('alert').filter({hasText:'Invalid name'}).waitFor();
+  assert.equal(await input.evaluate(node=>node.readOnly),false);
+  let release;const gate=new Promise(resolve=>{release=resolve;});t.after(()=>release());
+  data.createError=null;data.createPending=()=>gate;
+  await input.fill('Corrected');await dialog.getByRole('button',{name:'创建工作区',exact:true}).click();
+  assert(await dialog.getByRole('button',{name:'正在创建…'}).isDisabled());
+  assert(await dialog.getByRole('button',{name:'取消'}).isDisabled());
+  await input.press('Enter');await page.keyboard.press('Escape');assert(await dialog.isVisible());
+  release();await dialog.waitFor({state:'hidden'});await settled(page);
+  assert.equal(data.creations.length,2);
+  assert.notEqual(data.creations[0].request_id,data.creations[1].request_id);
+});
+
+test('collapsed and mobile navigation keep workspace creation accessible', async t => {
+  const {page,data}=await setup(t);
+  await page.goto(endpoint+'/archive');await settled(page);
+  await page.locator('#workspace-toggle').click();
+  for(const width of [1440,390,320]) {
+    await page.setViewportSize({width,height:844});
+    const trigger=page.locator('#workspace-create');assert(await trigger.isVisible());
+    await trigger.click();const dialog=page.getByRole('dialog',{name:'创建工作区',exact:true});
+    assert(await dialog.isVisible());assert(await dialog.evaluate(node=>node.scrollWidth<=node.clientWidth));
+    await page.keyboard.press('Escape');assert(await trigger.evaluate(node=>node===document.activeElement));
+    assert(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth));
+  }
+  assert.equal(data.creations,undefined);
 });

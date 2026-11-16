@@ -1,6 +1,6 @@
 import { decorateIcon, initializeIcons } from './ui.js';
 import { createSandboxesPage } from './sandboxes.js';
-import { createWorkspaceActions } from './workspace-actions.js';
+import { createWorkspaceActions, createWorkspaceCreator } from './workspace-actions.js';
 import { createNavigation } from './navigation.js';
 import { createManagementPage } from './management.js';
 import { createArchivePage } from './archive.js';
@@ -171,6 +171,12 @@ const workspaceActions = createWorkspaceActions({api, element, changed: async id
   if (!isSettings() && currentWorkspace === id) history.replaceState(null, '', '/archive');
   showPage();
 }});
+const workspaceCreator = createWorkspaceCreator({api, element, created:workspace => {
+  $('workspace-search').value = '';
+  history.pushState(null, '', '/archive?'+new URLSearchParams({workspace:workspace.id}));
+  showPage();
+}});
+$('workspace-create').onclick = () => workspaceCreator.show($('workspace-create'));
 const navigation = createNavigation({element, $, navigate:showPage, deleteWorkspace:workspaceActions.show});
 const sandboxesPage = createSandboxesPage({api, element, container:$('sandboxes-page')});
 const settingsPage = createSettingsPage({api, element, $});

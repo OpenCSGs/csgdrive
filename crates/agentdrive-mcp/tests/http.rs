@@ -798,13 +798,87 @@ async fn local_mcp_clients_share_operations_without_credentials() {
         400
     );
     assert_eq!(
-        http.post(format!("{base}/api/commands/workspace_create"))
+        http.post(format!("{base}/api/commands/unknown_command"))
             .json(&create)
             .send()
             .await
             .unwrap()
             .status(),
         404
+    );
+    let workspace_url = format!("{base}/api/commands/workspace_create");
+    let request =
+        json!({"request_id":"dashboard-workspace-create", "request":{"name":"Dashboard project"}});
+    assert_eq!(
+        http.post(&workspace_url)
+            .header("Origin", "https://untrusted.example")
+            .json(&request)
+            .send()
+            .await
+            .unwrap()
+            .status(),
+        403
+    );
+    let project: Value = http
+        .post(&workspace_url)
+        .json(&request)
+        .send()
+        .await
+        .unwrap()
+        .error_for_status()
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(project["local_saved"], true);
+    assert_eq!(project["result"]["workspace"]["name"], "Dashboard project");
+    let repeated: Value = http
+        .post(&workspace_url)
+        .json(&request)
+        .send()
+        .await
+        .unwrap()
+        .error_for_status()
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(project["id"], repeated["id"]);
+    assert_eq!(
+        project["result"]["workspace"]["id"],
+        repeated["result"]["workspace"]["id"]
+    );
+    let project_id = project["result"]["workspace"]["id"].as_str().unwrap();
+    let archive: Value = http
+        .get(format!("{base}/api/workspaces/{project_id}/archive"))
+        .send()
+        .await
+        .unwrap()
+        .error_for_status()
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(archive["branches"].as_array().unwrap().len(), 1);
+    assert_eq!(archive["branches"][0]["name"], "main");
+    let invalid: Value = http
+        .post(&workspace_url)
+        .json(&json!({"request_id":"dashboard-workspace-invalid","request":{"name":""}}))
+        .send()
+        .await
+        .unwrap()
+        .error_for_status()
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(invalid["phase"], "failed");
+    assert_eq!(invalid["local_saved"], false);
+    assert!(
+        invalid["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("workspace name")
     );
     let child = created["result"]["branch"]["id"].clone();
     let prepared: Value = http.post(format!("{base}/api/commands/mount_prepare"))

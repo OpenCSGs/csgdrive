@@ -30,6 +30,10 @@ Keep using your preferred agent, editor and terminal. MCP lets agents manage sav
 
 Follow [installation and startup](docs/installation.md), then connect AgentDrive to an MCP-capable agent client. An existing local directory can be imported and mounted back at the same path. Pause writes before converting it, and restart the agent after conversion.
 
+To start an empty project in the dashboard, click **Create Workspace** in the left sidebar and enter a name. AgentDrive creates the workspace and its default `main` branch, then opens the Archive. From there, use Mount Management to attach a local directory or create a branch Sandbox.
+
+![Create a workspace from the sidebar](docs/images/workspace-create.png)
+
 Ask your agent:
 
 > Connect this project to AgentDrive. Keep its existing files, create a branch for this task, and tell me the working directory and branch name.
