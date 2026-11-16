@@ -84,7 +84,7 @@ Use **Branch Management** (`/branches`) to create a branch from current local wo
 
 ### 6. Run a desktop and assistant for a branch
 
-With the [Sandbox runtime configured](docs/sandbox.md), open **Sandboxes** (`/sandboxes`) or the **Sandbox** button beside a branch. Select a writable local branch and a template, then create and start the instance. The catalog lists instances across workspaces, with workspace, state and name filters.
+With the [Sandbox runtime configured](docs/sandbox.md), open **Sandboxes** (`/sandboxes`) or the **Sandbox** button beside a branch. Select a writable local branch and a template, then create and start the instance. The catalog lists only the current workspace’s instances, with state and branch-name filters. Templates are shared by all workspaces; the running-instance limit applies to the whole host.
 
 - **Ubuntu Desktop** includes GNOME, Chromium, Chinese and emoji fonts, a terminal, file manager and image viewer.
 - **Ubuntu Desktop + CSGClaw** adds the CSGClaw Web UI and Agent. **Open Assistant** opens the Web UI directly through AgentDrive; VNC login is unnecessary. Configure the model account in CSGClaw, then chat to operate files and the browser.

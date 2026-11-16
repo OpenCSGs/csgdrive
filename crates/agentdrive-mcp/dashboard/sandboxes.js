@@ -3,16 +3,16 @@ import { createSandboxControl } from './sandbox.js';
 const labels = {ready:'运行中',creating:'准备中',starting:'启动中',stopping:'停止中',stopped:'已停止',error:'启动失败',idle:'尚未创建'};
 
 export function createSandboxesPage({api, element, container}) {
-  let generation = 0, data = null, templateKey = '', workspaceKey = '';
+  let generation = 0, data = null, templateKey = '', currentWorkspace = null;
   const cards = new Map();
   const heading = element('div', 'page-heading');
   const intro = element('div');
-  intro.append(element('div', 'eyebrow', 'SANDBOXES'), element('h1', '', '沙盒'), element('p', '', '管理所有工作区的 Ubuntu 桌面，在独立环境中操作分支文件。'));
+  intro.append(element('div', 'eyebrow', 'SANDBOXES'), element('h1', '', '沙盒'), element('p', '', '管理当前工作区的 Ubuntu 桌面，在独立环境中操作分支文件。'));
   const create = element('button', 'primary', '创建沙盒'); create.type = 'button'; create.disabled = true;
   heading.append(intro, create);
   const notice = element('p', 'error-banner'); notice.hidden = true; notice.setAttribute('role', 'alert');
   const stats = element('section', 'sandbox-summary'); stats.setAttribute('aria-label', '沙盒统计');
-  const counters = ['已创建', '运行中', '启动或停止中', '运行上限'].map(title => {
+  const counters = ['已创建', '运行中', '启动或停止中', '本机运行上限'].map(title => {
     const item = element('div'); const value = element('strong', '', '—'); item.append(element('span', '', title), value); stats.append(item); return value;
   });
   const tabs = element('div', 'sandbox-page-tabs'); tabs.setAttribute('role', 'tablist'); tabs.setAttribute('aria-label', '沙盒视图');
@@ -36,13 +36,12 @@ export function createSandboxesPage({api, element, container}) {
     tabs.append(tab);
   });
   const filters = element('div', 'sandbox-filters');
-  const search = element('input'); search.type = 'search'; search.placeholder = '搜索分支或工作区'; search.setAttribute('aria-label', '搜索沙盒');
-  const workspace = element('select'); workspace.setAttribute('aria-label', '筛选工作区');
+  const search = element('input'); search.type = 'search'; search.placeholder = '搜索分支'; search.setAttribute('aria-label', '搜索沙盒');
   const state = element('select'); state.setAttribute('aria-label', '筛选沙盒状态');
   for (const [value, label] of [['existing','全部已创建'],['ready','运行中'],['pending','启动或停止中'],['stopped','已停止'],['error','启动失败'],['idle','可创建的分支']]) {
     const option = element('option', '', label); option.value = value; state.append(option);
   }
-  filters.append(search, workspace, state);
+  filters.append(search, state);
   const list = element('div', 'sandbox-catalog');
   const empty = element('div', 'sandbox-empty panel', '正在读取沙盒…'); empty.setAttribute('role', 'status');
   instances.append(filters, list, empty);
@@ -55,8 +54,8 @@ export function createSandboxesPage({api, element, container}) {
   const closeCreate = element('button', 'revision-dialog-close', '×'); closeCreate.type = 'button'; closeCreate.setAttribute('aria-label', '关闭创建沙盒');
   createHeader.append(createTitle, closeCreate);
   const createForm = element('form', 'sandbox-create-form');
-  createForm.append(element('p', '', '选择工作区和分支，创建 Ubuntu 桌面。分支文件会自动挂载到 /workspace。'));
-  const targetWorkspace = element('select'); targetWorkspace.id = 'sandbox-create-workspace';
+  createForm.append(element('p', '', '选择当前工作区的分支和模板，创建 Ubuntu 桌面。分支文件会自动挂载到 /workspace。'));
+  const targetWorkspace = element('input'); targetWorkspace.id = 'sandbox-create-workspace'; targetWorkspace.readOnly = true;
   const targetBranch = element('select'); targetBranch.id = 'sandbox-create-branch';
   const targetTemplate = element('select'); targetTemplate.id = 'sandbox-create-template';
   for (const [name, input] of [['工作区', targetWorkspace], ['分支', targetBranch], ['模板', targetTemplate]]) {
@@ -83,17 +82,16 @@ export function createSandboxesPage({api, element, container}) {
   }
   function updateCreate() {
     if (!createDialog.open || !data) return;
-    const allWorkspaces = [...new Map(data.entries.map(entry => [entry.workspace, entry.workspace_name])).entries()];
-    options(targetWorkspace, allWorkspaces, targetWorkspace.value, '暂无工作区');
-    const available = data.entries.filter(entry => entry.workspace === targetWorkspace.value && entry.can_start && !entry.sandbox);
+    targetWorkspace.value = currentWorkspace?.name || '暂无工作区';
+    const available = workspaceEntries().filter(entry => entry.can_start && !entry.sandbox);
     options(targetBranch, available.map(entry => [entry.branch, entry.branch_name]), targetBranch.value, '没有可创建沙盒的分支');
     const active = data.entries.filter(entry => ['ready', 'creating', 'starting', 'stopping'].includes(entry.sandbox?.state)).length;
     const limit = data.template?.max_instances;
     const full = limit != null && active >= limit;
     submitCreate.disabled = !data.enabled || !available.length || full;
-    createFeedback.textContent = !data.enabled ? 'Sandbox 运行环境尚未配置。' : !allWorkspaces.length ? '请先创建工作区和分支。' : !available.length ? '此工作区没有可用分支。每个分支对应一个沙盒；可以选择其他工作区，或前往分支管理创建新分支。' : full ? `当前已达到 ${limit} 个运行实例的上限。请先停止一个沙盒，再创建新沙盒。` : '创建后会显示启动步骤，桌面就绪后可以打开桌面或获取 MCP 配置。';
-    branchesLink.hidden = !targetWorkspace.value || available.length > 0;
-    branchesLink.href = `/branches?workspace=${encodeURIComponent(targetWorkspace.value)}`;
+    createFeedback.textContent = !data.enabled ? 'Sandbox 运行环境尚未配置。' : !currentWorkspace ? '请先创建工作区和分支。' : !available.length ? '此工作区没有可用分支。每个分支对应一个沙盒，可以前往分支管理创建新分支。' : full ? `本机已达到 ${limit} 个运行实例的上限。请先停止一个沙盒，再创建新沙盒。` : '创建后会显示启动步骤，桌面就绪后可以打开桌面或获取 MCP 配置。';
+    branchesLink.hidden = !currentWorkspace || available.length > 0;
+    branchesLink.href = `/branches?workspace=${encodeURIComponent(currentWorkspace?.id || '')}`;
     const templates = data.templates?.length ? data.templates : data.template ? [{id:'ubuntu-desktop',...data.template}] : [];
     options(targetTemplate, templates.map(item => [item.id,item.manifest?.name || item.id]), targetTemplate.value || templates.find(item => item.capabilities?.includes('csgclaw'))?.id, '暂无可用模板');
     const value = templates.find(item => item.id === targetTemplate.value);
@@ -103,44 +101,44 @@ export function createSandboxesPage({api, element, container}) {
   create.onclick = () => {
     if (!createDialog.isConnected) document.body.append(createDialog);
     createDialog.showModal();
-    options(targetWorkspace, [...new Map((data?.entries || []).map(entry => [entry.workspace, entry.workspace_name])).entries()], workspace.value || new URLSearchParams(location.search).get('workspace'), '暂无工作区');
-    updateCreate(); targetWorkspace.focus();
+    updateCreate(); targetBranch.focus();
   };
-  targetWorkspace.onchange = targetTemplate.onchange = updateCreate;
+  targetTemplate.onchange = updateCreate;
   closeCreate.onclick = cancelCreate.onclick = () => createDialog.close();
   createDialog.addEventListener('close', () => { if (create.isConnected && !container.hidden && !document.querySelector('dialog[open]')) create.focus(); });
   createForm.onsubmit = event => {
     event.preventDefault(); updateCreate();
     if (submitCreate.disabled) return;
-    const card = cards.get(`${targetWorkspace.value}/${targetBranch.value}`);
+    const card = cards.get(`${currentWorkspace?.id}/${targetBranch.value}`);
     if (!card || card.entry.sandbox || !card.entry.can_start) return;
-    createDialog.close(); selectTab(0); state.value = 'existing'; search.value = ''; workspace.value = targetWorkspace.value;
+    createDialog.close(); selectTab(0); state.value = 'existing'; search.value = '';
     card.entry.sandbox = {state:'creating', startup_step:'prepare_branch'}; filter();
     card.control.start(targetTemplate.value);
   };
-  search.oninput = filter; workspace.onchange = filter; state.onchange = filter;
+  search.oninput = filter; state.onchange = filter;
+  function workspaceEntries() { return data?.entries.filter(entry => entry.workspace === currentWorkspace?.id) || []; }
   function filter() {
     let count = 0;
     const query = search.value.trim().toLocaleLowerCase();
     for (const {node, entry} of cards.values()) {
       const current = entry.sandbox?.state || 'idle';
       const matches = state.value === 'existing' ? !!entry.sandbox : state.value === 'pending' ? ['creating','starting','stopping'].includes(current) : state.value === 'idle' ? !entry.sandbox && entry.can_start : current === state.value;
-      node.hidden = !matches || (!!workspace.value && workspace.value !== entry.workspace) || !`${entry.workspace_name} ${entry.branch_name} ${entry.branch}`.toLocaleLowerCase().includes(query);
+      node.hidden = !matches || !`${entry.branch_name} ${entry.branch}`.toLocaleLowerCase().includes(query);
       if (!node.hidden) count++;
     }
     empty.hidden = count > 0;
-    empty.textContent = !data ? '正在读取沙盒…' : !data.enabled ? 'Sandbox 运行环境尚未配置。配置完成后即可创建沙盒。' : state.value === 'idle' ? '没有符合条件的分支。可以在分支管理中创建分支，或启动已停止的沙盒。' : '没有符合条件的沙盒。点击「创建沙盒」选择工作区分支。';
+    empty.textContent = !data ? '正在读取沙盒…' : !data.enabled ? 'Sandbox 运行环境尚未配置。配置完成后即可创建沙盒。' : !currentWorkspace ? '请先创建工作区，再创建沙盒。' : state.value === 'idle' ? '没有符合条件的分支。可以在分支管理中创建分支，或启动已停止的沙盒。' : '当前工作区没有符合条件的沙盒。点击「创建沙盒」选择分支。';
   }
   function renderTemplate() {
     const values = data.templates?.length ? data.templates : data.template ? [{id:'ubuntu-desktop',...data.template}] : [];
-    const key = JSON.stringify([data.enabled, values]); if (templateKey === key) return; templateKey = key;
+    const key = JSON.stringify([data.enabled, !!currentWorkspace, values]); if (templateKey === key) return; templateKey = key;
     template.replaceChildren();
     if (!values.length) { template.append(element('p', 'sandbox-empty panel', '尚未配置模板')); return; }
     for (const value of values) {
       const card = element('article', 'sandbox-template panel');
       const header = element('div', 'sandbox-template-heading');
       const title = element('div'); title.append(element('div', 'sandbox-eyebrow', value.id),element('h2', '', value.manifest?.name || value.id));
-      const use = element('button', 'primary', '使用此模板创建'); use.type = 'button'; use.disabled = !data.enabled;
+      const use = element('button', 'primary', '使用此模板创建'); use.type = 'button'; use.disabled = !data.enabled || !currentWorkspace;
       use.onclick = () => { create.click(); targetTemplate.value = value.id; updateCreate(); };
       header.append(element('div', 'sandbox-template-icon', '▧'),title); card.append(header);
       const capabilities = element('div', 'sandbox-capabilities');
@@ -180,21 +178,16 @@ export function createSandboxesPage({api, element, container}) {
   }
   function render() {
     notice.hidden = !data.errors.length; notice.textContent = data.errors.join('；');
-    create.disabled = !data.enabled;
-    const existing = data.entries.filter(entry => entry.sandbox);
+    create.disabled = !data.enabled || !currentWorkspace;
+    const entries = workspaceEntries();
+    const existing = entries.filter(entry => entry.sandbox);
     counters[0].textContent = existing.length;
     counters[1].textContent = existing.filter(entry => entry.sandbox.state === 'ready').length;
     counters[2].textContent = existing.filter(entry => ['creating','starting','stopping'].includes(entry.sandbox.state)).length;
     counters[3].textContent = data.template?.max_instances ?? '—';
-    const workspaces = [...new Map(data.entries.map(entry => [entry.workspace, entry.workspace_name])).entries()];
-    const key = JSON.stringify(workspaces);
-    if (workspaceKey !== key) {
-      const selected = workspace.value; workspace.replaceChildren();
-      for (const [id, name] of [['', '所有工作区'], ...workspaces]) { const option = element('option', '', name); option.value = id; workspace.append(option); }
-      workspace.value = workspaces.some(([id]) => id === selected) ? selected : ''; workspaceKey = key;
-    }
+    counters[3].title = '所有工作区共用本机运行上限';
     const retained = new Set();
-    for (const entry of data.entries) {
+    for (const entry of entries) {
       const id = `${entry.workspace}/${entry.branch}`; retained.add(id);
       let card = cards.get(id);
       if (!card) {
@@ -221,11 +214,13 @@ export function createSandboxesPage({api, element, container}) {
     for (const [id, card] of cards) if (!retained.has(id)) { card.control.dispose(); card.node.remove(); cards.delete(id); }
     filter(); renderTemplate(data.template); updateCreate();
   }
-  async function load() {
+  async function load(workspace = currentWorkspace) {
+    if (workspace?.id !== currentWorkspace?.id) clear();
+    currentWorkspace = workspace;
     const request = ++generation;
     try { const result = await api('/api/sandboxes'); if (request === generation) { data = result; render(); } }
     catch (error) { if (request === generation) { notice.hidden = false; notice.textContent = `沙盒数据刷新失败：${error.message}`; if (!data) empty.textContent = '暂时无法读取沙盒，请点击页面右上方刷新按钮重试。'; } }
   }
-  function clear() { generation++; createDialog.close(); createDialog.remove(); for (const dialog of template.querySelectorAll('dialog')) dialog.close(); template.replaceChildren(); for (const card of cards.values()) card.control.dispose(); cards.clear(); list.replaceChildren(); data = null; templateKey = ''; workspaceKey = ''; }
+  function clear() { generation++; createDialog.close(); createDialog.remove(); for (const dialog of template.querySelectorAll('dialog')) dialog.close(); template.replaceChildren(); for (const card of cards.values()) card.control.dispose(); cards.clear(); list.replaceChildren(); data = null; templateKey = ''; currentWorkspace = null; create.disabled = true; search.value = ''; state.value = 'existing'; counters.forEach(value => { value.textContent = '—'; }); notice.hidden = true; empty.hidden = false; empty.textContent = '正在读取沙盒…'; }
   return {load, clear};
 }

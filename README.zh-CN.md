@@ -88,7 +88,7 @@ Agent 可以通过 `mount_save` 请求远端保存，并通过操作结果检查
 
 ### 6. 为分支启动桌面和助手
 
-完成 [Sandbox 运行环境配置](docs/sandbox.md)后，进入 **沙盒**（`/sandboxes`）页面，或点击分支旁的 **Sandbox** 按钮。选择具有本机写入权限的分支和模板，创建并启动实例。沙盒页面集中展示所有工作区的实例，支持按照工作区、状态和名称筛选。
+完成 [Sandbox 运行环境配置](docs/sandbox.md)后，进入 **沙盒**（`/sandboxes`）页面，或点击分支旁的 **Sandbox** 按钮。选择具有本机写入权限的分支和模板，创建并启动实例。沙盒页面只展示当前工作区的实例，支持按照状态和分支名称筛选。模板由所有工作区共用，运行实例的数量上限由整台机器共用。
 
 - **Ubuntu Desktop** 预装 GNOME、Chromium、中文和表情字体、终端、文件管理器及图片查看器。
 - **Ubuntu Desktop + CSGClaw** 增加 CSGClaw Web UI 与 Agent。点击 **打开助手**，即可通过 AgentDrive 直接访问 Web UI，无需登录 VNC。在 CSGClaw 中配置模型账号后，通过聊天操作文件与浏览器。
