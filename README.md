@@ -6,7 +6,7 @@
 
 AgentDrive gives people and agents a persistent project space. Agents read source material, write documents and edit code in a local directory. Their work can be saved remotely so an agent on another machine can continue. Branches keep parallel tasks separate, and versions record how the results evolve.
 
-Keep using your preferred agent, editor and terminal. MCP lets agents manage saving, synchronization, branches and handoffs. People can open the **Archive** to read the latest files in each project branch.
+Keep using your preferred agent, editor and terminal. MCP lets agents manage saving, synchronization, branches and handoffs. People can open the **Archive** to read documents and preview images in each branch. On a configured Linux host, each branch can also have an Ubuntu desktop Sandbox with a shared browser and an optional CSGClaw assistant.
 
 > Development preview; the first formal release has not shipped. AgentDrive is the current product name.
 
@@ -21,7 +21,8 @@ Keep using your preferred agent, editor and terminal. MCP lets agents manage sav
 | Work locally and save remotely | Use ordinary file tools, keep local work, and synchronize results through configured S3 / RustFS or OpenCSG Codes storage. |
 | Hand work to an agent elsewhere | Save the brief, input files, results and next steps together; pull them on the receiving machine. |
 | Try several approaches in parallel | Branch from shared material, complete separate tasks, review changes and merge the results. |
-| Check progress yourself | Browse current files in the Archive, then inspect their origins and changes in Branches & Versions. |
+| Check progress yourself | Browse documents and images in the Archive, then inspect their origins and changes in Branches & Versions. |
+| Give an agent a desktop | Start a branch Sandbox, connect its unified MCP, and operate Chromium and desktop apps against the same branch files. |
 
 ## How to use it
 
@@ -60,14 +61,44 @@ Handoffs carry files, versions and branch information. Task context can travel a
 Open the dashboard, select a project and enter **Archive**:
 
 - Select a branch to browse its current directory; a file preview opens automatically.
-- Read Markdown as a document or source. Page through text and inspect binary bytes in hexadecimal.
+- Read Markdown as a document or source. Preview PNG, JPEG, GIF, WebP, BMP, AVIF and ICO images up to 20 MiB and download the original file. Page through text and inspect other binary files in hexadecimal.
 - Click any segment of the `/a/b/c` directory path to navigate. Filter the current directory, reveal hidden files and return to the same project, branch and directory through its URL.
 - See local progress, remote confirmation and directory usage separately. Browsing leaves the agent's mounted branch unchanged.
 - Files reflect locally known current contents, including unsaved or uncommitted edits. Ask the agent to pull remote updates before reviewing new work from another machine.
 
+![Archive: preview a saved PNG screenshot directly in the branch](docs/images/archive-image.png)
+
 ![Branches and versions: inspect origins and revision history](docs/images/branches.png)
 
 *The same demo project in Branches & Versions. Double-click a revision to inspect its metadata, changed files and text differences.*
+
+### 5. Manage mounts and branches
+
+Use **Mount Management** (`/mounts`) to attach a branch to a local directory, save its contents or unmount it. Search and filter branch relationships by directory, branch, writer location and mount status. Filters stay in the page URL.
+
+Use **Branch Management** (`/branches`) to create a branch from current local work or a saved revision, choose the local default branch, mount a directory or inspect version history.
+
+![Mount management: directories and branch relationships](docs/images/mounts.png)
+
+![Branch management: create branches and open their Sandbox controls](docs/images/branch-management.png)
+
+### 6. Run a desktop and assistant for a branch
+
+With the [Sandbox runtime configured](docs/sandbox.md), open **Sandboxes** (`/sandboxes`) or the **Sandbox** button beside a branch. Select a writable local branch and a template, then create and start the instance. The catalog lists instances across workspaces, with workspace, state and name filters.
+
+- **Ubuntu Desktop** includes GNOME, Chromium, Chinese and emoji fonts, a terminal, file manager and image viewer.
+- **Ubuntu Desktop + CSGClaw** adds the CSGClaw Web UI and Agent. **Open Assistant** opens the Web UI directly through AgentDrive; VNC login is unnecessary. Configure the model account in CSGClaw, then chat to operate files and the browser.
+- The selected branch is mounted at `/workspace`. Browser downloads go to `/workspace/Downloads`. Each instance stays attached to its original branch.
+- **Details & MCP** shows startup progress, proxy settings and one copyable MCP configuration. computer-use-linux and Playwright MCP share the Chromium shown in the desktop. This Sandbox connection provides desktop and browser tools; the AgentDrive MCP below manages project data.
+- Stop an instance to release its running resources and keep its system disk. Delete a stopped instance to remove that disk while retaining branch files and version history. Updating a template applies to newly created instances.
+
+![Sandboxes: branch instances, desktop and assistant controls](docs/images/sandboxes.png)
+
+![Templates: compare installed software and create a branch Sandbox](docs/images/sandbox-templates.png)
+
+*Screenshots use reproducible demonstration data rendered by the current dashboard. Template details open in a dialog beside the create action.*
+
+The desktop runtime requires Linux x86_64, FUSE and an available KVM or PVM device with a compatible guest kernel. AgentDrive detects the host backend and selects a configured matching kernel on startup. Default instance resources are 4 vCPU, 8 GiB memory and a 16 GiB sparse system disk. Docker is used to build templates; instances run through the worker and included hypervisor. Build scripts, networking, kernel configuration and MCP connection requirements are documented in the [Sandbox guide](docs/sandbox.md) (Chinese).
 
 ## Built for agents to operate
 
@@ -99,4 +130,4 @@ Build from source on Linux, macOS or Windows. Linux mounts use FUSE, macOS uses 
 - [Operations and recovery](docs/operations.md): publication confirmation, handoffs, merging and recovery.
 - [Documentation index](docs/README.md): complete usage references and developer documentation.
 
-AgentDrive is licensed under Apache-2.0. The included WinFsp Rust wrapper retains its MIT license; mount components have their own license terms.
+AgentDrive is licensed under Apache-2.0. Included components retain their licenses, including the WinFsp Rust wrapper (MIT) and the CubeSandbox-derived hypervisor under `sandbox/hypervisor`. Template software has its own license terms and source records.

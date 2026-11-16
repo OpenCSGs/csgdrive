@@ -131,7 +131,6 @@ async function refresh(force=false) {
     if (catalogError) $('error').textContent = `远端工作区发现失败，当前显示本机记录：${catalogError.message}`;
     if (isSettings()) return;
     if (location.pathname === '/sandboxes') {
-      $('workspace-name').textContent = '所有工作区';
       await sandboxesPage.load();
       if (request !== generation) return;
       $('updated').textContent = `${new Date().toLocaleTimeString('zh-CN', {hour12:false})} 已刷新`;

@@ -607,6 +607,12 @@ async fn local_mcp_clients_share_operations_without_credentials() {
             .unwrap()
             .contains("script-src 'self'")
     );
+    assert!(
+        page.headers()["content-security-policy"]
+            .to_str()
+            .unwrap()
+            .contains("img-src 'self' blob:;")
+    );
     let settings_url = format!("{base}/api/settings");
 
     let response = http.get(&settings_url).send().await.unwrap();

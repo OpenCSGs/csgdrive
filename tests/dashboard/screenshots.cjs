@@ -38,6 +38,18 @@ const content = {
 content['/reports/交接/HANDOFF.md'] = content['/HANDOFF.md'];
 content['/reports/交接/tasks.md'] = content['/tasks.md'];
 content['/reports/交接/验证记录.txt'] = '已检查分析报告引用、数据来源和远端保存状态。\n';
+const desktopTemplate = {id:'ubuntu-desktop',version:'desktop-demo',capabilities:['desktop','browser','mcp'],
+ vcpus:4,memory_gib:8,disk_gib:16,max_instances:2,network_slots:2,
+ manifest:{name:'Ubuntu Desktop',os:'Ubuntu 22.04.5 LTS',desktop:'GNOME Shell 42.9 / X11',browser:'Chromium 160.0.8160.0',
+ locale:'C.UTF-8',fonts:['fonts-noto-cjk','fonts-noto-color-emoji'],
+ tools:['computer-use-linux 0.7.53','Playwright MCP 0.0.85','Node.js v22.23.5','gnome-terminal','nautilus','gedit','eog','xdg-utils','xclip'],
+ workspace_path:'/workspace',built_at:'2026-11-15T10:23:03Z'}};
+const assistantTemplate = {...desktopTemplate,id:'ubuntu-csgclaw',version:'csgclaw-v0.10.0',
+ capabilities:[...desktopTemplate.capabilities,'csgclaw'],
+ manifest:{...desktopTemplate.manifest,name:'Ubuntu Desktop + CSGClaw',tools:[...desktopTemplate.manifest.tools,'CSGClaw v0.10.0 (Web UI + Agent)']}};
+const sandboxCatalog = {enabled:true,errors:[],template:desktopTemplate,templates:[desktopTemplate,assistantTemplate]};
+sandboxCatalog.entries = branches.map((branch,i)=>({workspace,workspace_name:status.workspace.name,branch:branch.id,branch_name:branch.name,can_start:true,
+ sandbox:i===2 ? null : {workspace,branch:branch.id,state:i ? 'stopped' : 'ready',startup_step:i ? null : 'ready',template_id:i ? 'ubuntu-desktop' : 'ubuntu-csgclaw',desktop_url:'/desktop',services:i ? [] : [{id:'csgclaw',label:'打开助手'}]}}));
 function nodes(directory) {
  const all = [...Object.keys(content),'/reports','/reports/交接','/data'];
  return all.filter(name=>(name.slice(0,name.lastIndexOf('/')) || '/')===directory).map(name=>({path:name,dirty:false,inode:{kind:content[name]===undefined ? 'directory' : 'file',mode:420,size:Buffer.byteLength(content[name] || '')}}));
@@ -46,6 +58,8 @@ function nodes(directory) {
  const server = createServer(async(req,res)=>{
   const url = new URL(req.url,'http://localhost');
   const json = value => res.writeHead(200,{'Content-Type':'application/json'}).end(JSON.stringify(value));
+  if (url.pathname==='/api/sandboxes') return json(sandboxCatalog);
+  if (url.pathname.endsWith('/sandbox')) return json({enabled:true,sandbox:sandboxCatalog.entries.find(entry=>url.pathname.includes(entry.branch))?.sandbox || null});
   if (url.pathname==='/api/workspaces') return json([status.workspace]);
   if (url.pathname===`/api/workspaces/${workspace}/archive`) return json(status);
   if (url.pathname===`/api/workspaces/${workspace}`) return json(view);
@@ -59,7 +73,7 @@ function nodes(directory) {
   }
   if (url.pathname.endsWith('/files')) { const branch=branches.find(b=>url.pathname.includes(b.id));return json({version:`${branch.id}:1:1:${branch.mutation_seq}`,next:null,entries:nodes(url.searchParams.get('path'))}); }
   if (url.pathname.endsWith('/file')) { const bytes=Buffer.from(content[url.searchParams.get('path')] || ''); const offset=Number(url.searchParams.get('offset')),size=Number(url.searchParams.get('size')); return res.writeHead(200,{'Content-Type':'application/octet-stream'}).end(bytes.subarray(offset,offset+size)); }
-  const name=['/archive','/dashboard','/mounts','/branches','/'].includes(url.pathname) ? 'index.html' : url.pathname.slice(1);
+  const name=['/archive','/dashboard','/mounts','/branches','/sandboxes','/'].includes(url.pathname) ? 'index.html' : url.pathname.slice(1);
   if (!/^[a-z.-]+$/.test(name)) return res.writeHead(404).end();
   try { const bytes=await fs.readFile(path.join(root,'crates/agentdrive-mcp/dashboard',name)); res.writeHead(200,{'Content-Type':{'.html':'text/html','.js':'text/javascript','.css':'text/css','.svg':'image/svg+xml'}[path.extname(name)]}).end(bytes); }
   catch {res.writeHead(404).end();}
@@ -68,6 +82,7 @@ function nodes(directory) {
  const browser=await chromium.launch({headless:true});
  try {
   const page=await browser.newPage({viewport:{width:1600,height:1120},deviceScaleFactor:1}); const errors=[];page.on('pageerror',e=>errors.push(e.message));
+  await page.clock.setFixedTime(new Date('2026-11-16T01:00:00Z'));
   const endpoint=`http://127.0.0.1:${server.address().port}`;
   await page.goto(endpoint+'/archive?'+new URLSearchParams({workspace,branch:ids[0]}));
   await page.locator('#archive-page .branch-file[data-path="/reports"]').click();
@@ -78,16 +93,30 @@ function nodes(directory) {
   assert.equal(await page.locator('#archive-page .branch-file.active').getAttribute('data-path'),'/reports/交接/HANDOFF.md');
   assert.equal(await page.locator('#archive-page .branch-directory').textContent(),'/reports/交接');
   await page.mouse.move(10,10);
-  await page.screenshot({path:path.join(root,'docs/images/archive.png')});
+  await page.screenshot({animations:'disabled',path:path.join(root,'docs/images/archive.png')});
   await page.goto(endpoint+'/dashboard?'+new URLSearchParams({workspace,branch:ids[0]}));
   await page.getByText('汇总调研结果，准备异地交接',{exact:true}).waitFor();
-  await page.screenshot({path:path.join(root,'docs/images/branches.png')});
+  await page.screenshot({animations:'disabled',path:path.join(root,'docs/images/branches.png')});
   await page.goto(endpoint+'/mounts?'+new URLSearchParams({workspace}));
   await page.locator('#relationship-list tr').nth(2).waitFor();
-  await page.screenshot({path:path.join(root,'docs/images/mounts.png'),fullPage:true});
+  await page.screenshot({animations:'disabled',path:path.join(root,'docs/images/mounts.png'),fullPage:true});
   await page.goto(endpoint+'/branches?'+new URLSearchParams({workspace}));
   await page.locator('#branches-list .management-row').nth(2).waitFor();
-  await page.screenshot({path:path.join(root,'docs/images/branch-management.png'),fullPage:true});
+  await page.screenshot({animations:'disabled',path:path.join(root,'docs/images/branch-management.png'),fullPage:true});
+  await page.goto(endpoint+'/sandboxes?'+new URLSearchParams({workspace}));
+  await page.locator('.sandbox-card:visible').nth(1).waitFor();
+  assert.equal(await page.locator('#workspace-name').textContent(),status.workspace.name);
+  await page.screenshot({animations:'disabled',path:path.join(root,'docs/images/sandboxes.png')});
+  await page.getByRole('tab',{name:'模板内容'}).click();
+  await page.locator('.sandbox-template:visible').nth(1).waitFor();
+  await page.screenshot({animations:'disabled',path:path.join(root,'docs/images/sandbox-templates.png')});
+  content['/reports/sandbox.png'] = await fs.readFile(path.join(root,'docs/images/sandboxes.png'));
+  await page.goto(endpoint+'/archive?'+new URLSearchParams({workspace,branch:ids[0]}));
+  await page.locator('#archive-page .branch-file[data-path="/reports"]').click();
+  await page.locator('#archive-page .branch-file[data-path="/reports/sandbox.png"]').click();
+  await page.locator('.branch-image-frame img').waitFor();
+  assert.equal(await page.locator('.branch-image-frame img').evaluate(image=>image.naturalWidth),1600);
+  await page.screenshot({animations:'disabled',path:path.join(root,'docs/images/archive-image.png'),fullPage:true});
   assert.deepEqual(errors,[]); console.log('Product screenshots generated from demo data.');
  } finally {await browser.close();await new Promise(r=>server.close(r));}
 })().catch(error=>{console.error(error);process.exit(1)});

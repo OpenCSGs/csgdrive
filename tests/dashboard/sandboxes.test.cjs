@@ -144,3 +144,17 @@ test('unconfigured runtime and failed refresh remain visible',async t=>{
   data.failure=true;await page.getByRole('button',{name:'刷新数据'}).click();
   await page.getByRole('alert').filter({hasText:'沙盒数据刷新失败'}).waitFor();
 });
+
+test('sandbox breadcrumb retains the current workspace across refresh and direct navigation',async t=>{
+  const {page}=await setup(t);
+  assert.equal(await page.locator('#workspace-name').textContent(),'项目 Alpha');
+  assert.equal(await page.locator('#workspace-menu-name').textContent(),'项目 Alpha');
+  await page.getByRole('button',{name:'刷新数据'}).click();
+  await page.waitForFunction(()=>!document.querySelector('#refresh').disabled);
+  assert.equal(await page.locator('#workspace-name').textContent(),'项目 Alpha');
+  await page.goto(endpoint+'/sandboxes?workspace=beta');
+  await page.waitForFunction(()=>!document.querySelector('#refresh').disabled);
+  assert.equal(await page.locator('#workspace-name').textContent(),'项目 Beta');
+  assert.equal(await page.locator('#workspace-menu-name').textContent(),'项目 Beta');
+  assert.equal(await page.locator('.sandbox-card:visible').count(),2);
+});

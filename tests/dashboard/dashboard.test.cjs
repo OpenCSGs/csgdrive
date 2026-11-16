@@ -8,7 +8,10 @@ const {chromium} = require('playwright');
 let server, browser, endpoint;
 before(async () => {
   const directory = path.resolve(__dirname, '../../crates/agentdrive-mcp/dashboard');
+  const web = await readFile(path.resolve(directory, '../src/web.rs'), 'utf8');
+  const policy = web.match(/header::CONTENT_SECURITY_POLICY, "([^"]+)"/)[1];
   server = createServer(async (request, response) => {
+    response.setHeader('Content-Security-Policy', policy);
     const pathname = new URL(request.url, 'http://localhost').pathname;
     const name = ['/', '/dashboard', '/archive', '/settings', '/mounts', '/branches'].includes(pathname) ? 'index.html' : pathname.slice(1);
     if (!/^[a-z.-]+$/.test(name)) { response.writeHead(404).end(); return; }
@@ -1099,4 +1102,101 @@ test('disabled collaboration links to settings and offers local branches', async
   assert.equal(await page.locator('#collaboration-global-state').textContent(),'全局已关闭');
   assert.equal(await page.getByRole('link',{name:'前往设置管理全局开关'}).getAttribute('href'),'/settings');
   assert.equal(await page.locator('#mounts-branch option[value="remote-shared"]').count(),0);
+});
+
+async function imageFixture(page, files = {}) {
+  const encoded = await page.evaluate(() => {
+    const canvas = document.createElement('canvas'); canvas.width = 512; canvas.height = 320;
+    const context = canvas.getContext('2d'), pixels = context.createImageData(512, 320);
+    let seed = 1;
+    for (let i = 0; i < pixels.data.length; i++) {
+      seed = (Math.imul(seed, 1664525) + 1013904223) >>> 0;
+      pixels.data[i] = i % 4 === 3 ? 255 : seed >>> 24;
+    }
+    context.putImageData(pixels, 0, 0); return canvas.toDataURL('image/png').split(',')[1];
+  });
+  const content = Buffer.from(encoded, 'base64'), reads = [];
+  await page.route('**/branches/feature/files?**', route => route.fulfill({json:{version:'feature:1:1:1',next:null,entries:[
+    {path:'/note.txt',inode:{kind:'file',size:4}},
+    {path:'/picture.PNG',inode:{kind:'file',size:content.length}},
+    ...Object.entries(files).map(([path,size]) => ({path,inode:{kind:'file',size}})),
+  ]}}));
+  await page.route('**/branches/feature/file?**', route => {
+    const query = new URL(route.request().url()).searchParams;
+    if (query.get('path') !== '/picture.PNG') return route.fulfill({body:'note'});
+    const offset = Number(query.get('offset')), size = Number(query.get('size'));
+    reads.push({offset,size,version:query.get('version')});
+    return route.fulfill({body:content.subarray(offset, offset + size)});
+  });
+  await page.locator('#archive-page').getByRole('button',{name:'刷新文件',exact:true}).click();
+  await page.locator('.branch-file[data-path="/picture.PNG"]').waitFor();
+  return {content,reads};
+}
+
+test('archive previews complete images, downloads original bytes, and releases URLs on refresh and selection', async t => {
+  const {page} = await open(t, fixture(), '/archive');
+  const {content,reads} = await imageFixture(page);
+  await page.evaluate(() => { window.revokedImages = []; const revoke = URL.revokeObjectURL; URL.revokeObjectURL = url => { window.revokedImages.push(url); revoke.call(URL, url); }; });
+  await page.locator('.branch-file[data-path="/picture.PNG"]').click();
+  const image = page.locator('.branch-image-frame img'); await image.waitFor();
+  assert.deepEqual(await image.evaluate(e => [e.naturalWidth,e.naturalHeight]),[512,320]);
+  assert.equal(await page.locator('#archive-page .branch-file-content').count(),0);
+  assert(reads.length > 1);
+  let offset = 0;
+  for (const read of reads) { assert.equal(read.offset,offset); assert.equal(read.version,'feature:1:1:1'); assert(read.size<=262144); offset += read.size; }
+  assert.equal(offset,content.length);
+  const pending = page.waitForEvent('download'); await page.getByRole('link',{name:'下载图片'}).click();
+  const download = await pending; assert.equal(download.suggestedFilename(),'picture.PNG');
+  assert.deepEqual(await readFile(await download.path()),content);
+  const firstURL = await image.getAttribute('src');
+  await page.locator('#archive-page').getByRole('button',{name:'刷新文件',exact:true}).click();
+  await page.waitForFunction(previous => { const image = document.querySelector('.branch-image-frame img'); return image && image.src !== previous; },firstURL);
+  assert((await page.evaluate(() => window.revokedImages)).includes(firstURL));
+  await page.setViewportSize({width:390,height:844});
+  assert(await page.evaluate(() => document.documentElement.scrollWidth<=innerWidth));
+  const nextURL = await image.getAttribute('src');
+  await page.locator('.branch-file[data-path="/note.txt"]').click();
+  await page.locator('#archive-page .branch-file-content').waitFor();
+  assert((await page.evaluate(() => window.revokedImages)).includes(nextURL));
+  assert.equal(await image.count(),0);
+});
+
+for (const problem of ['corrupt','incomplete','changed']) test(`image preview reports ${problem} files without showing partial data`, async t => {
+  const {page} = await open(t, fixture(), '/archive');
+  const {content} = await imageFixture(page);
+  await page.route('**/branches/feature/file?**', route => {
+    const query = new URL(route.request().url()).searchParams;
+    if (query.get('path') !== '/picture.PNG') return route.fallback();
+    const offset = Number(query.get('offset')), size = Number(query.get('size'));
+    if (problem === 'changed' && offset) return route.fulfill({status:409,json:{error:{message:'Version changed'}}});
+    return route.fulfill({body:problem === 'corrupt' ? Buffer.alloc(size,1) : offset ? Buffer.alloc(0) : content.subarray(0,size)});
+  });
+  await page.locator('.branch-file[data-path="/picture.PNG"]').click();
+  const error = page.locator('#archive-page .changes-error'); await error.waitFor();
+  assert.match(await error.textContent(),problem === 'corrupt' ? /图片无法显示/ : problem === 'changed' ? /分支内容已更新/ : /图片内容不完整/);
+  assert.equal(await page.locator('.branch-image-frame img').count(),0);
+  assert.equal(await page.getByRole('link',{name:'下载图片'}).count(),0);
+});
+
+test('image loading stops when another file is selected and oversized images are not fetched', async t => {
+  const {page} = await open(t, fixture(), '/archive');
+  await imageFixture(page, {'/oversized.png':20*1024*1024+1});
+  let release, started;
+  const pending = new Promise(resolve => { release = resolve; });
+  const received = new Promise(resolve => { started = resolve; });
+  const unexpected = [];
+  await page.route('**/branches/feature/file?**', async route => {
+    const query = new URL(route.request().url()).searchParams;
+    if (query.get('path') === '/oversized.png') { unexpected.push(query.get('path')); return route.fulfill({body:''}); }
+    if (query.get('path') !== '/picture.PNG') return route.fallback();
+    started(); await pending; await route.fulfill({body:'late image'}).catch(() => {});
+  });
+  await page.locator('.branch-file[data-path="/picture.PNG"]').click(); await received;
+  await page.locator('.branch-file[data-path="/note.txt"]').click(); release();
+  await page.locator('#archive-page .branch-file-content').waitFor();
+  assert.equal(await page.locator('#archive-page .branch-file-path').textContent(),'/note.txt');
+  assert.equal(await page.locator('.branch-image-frame img').count(),0);
+  await page.locator('.branch-file[data-path="/oversized.png"]').click();
+  await page.getByText('图片超过 20 MiB，请在 Sandbox 桌面中打开。',{exact:true}).waitFor();
+  assert.deepEqual(unexpected,[]);
 });
