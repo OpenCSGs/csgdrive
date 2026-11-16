@@ -30,6 +30,10 @@ AgentDrive 给人和 Agent 一个可以持续使用的项目空间。Agent 在�
 
 按照[安装与启动](docs/installation.zh-CN.md)运行 AgentDrive，并将它连接到支持 MCP 的 Agent 客户端。已有本地目录可以导入工作区并继续使用原路径；转换目录前暂停写入，转换完成后重启 Agent。
 
+从空项目开始时，点击左侧 **创建工作区**，填写名称。AgentDrive 会创建工作区及默认的 `main` 分支，并打开档案室。之后可以在挂载点管理中挂载本机目录，或为分支创建 Sandbox。
+
+![通过左侧入口创建工作区](docs/images/workspace-create.png)
+
 可以直接告诉 Agent：
 
 > 将这个项目接入 AgentDrive。保留原目录中的资料，为本次任务创建一个工作分支，并告诉我工作目录和分支名称。

@@ -117,6 +117,11 @@ function nodes(directory) {
   await page.locator('.branch-image-frame img').waitFor();
   assert.equal(await page.locator('.branch-image-frame img').evaluate(image=>image.naturalWidth),1600);
   await page.screenshot({animations:'disabled',path:path.join(root,'docs/images/archive-image.png'),fullPage:true});
+  await page.locator('#workspace-create').click();
+  const createDialog=page.getByRole('dialog',{name:'创建工作区',exact:true});
+  await createDialog.getByLabel('工作区名称').fill('产品规划');
+  await page.screenshot({animations:'disabled',path:path.join(root,'docs/images/workspace-create.png')});
+  await page.keyboard.press('Escape');
   assert.deepEqual(errors,[]); console.log('Product screenshots generated from demo data.');
  } finally {await browser.close();await new Promise(r=>server.close(r));}
 })().catch(error=>{console.error(error);process.exit(1)});

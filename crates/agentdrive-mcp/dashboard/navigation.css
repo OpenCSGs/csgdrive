@@ -94,3 +94,16 @@
   .app .content { padding:24px 16px 32px; }
   .app .panels { grid-template-columns:1fr; }
 }
+
+.workspace-create-button { display:flex; align-items:center; justify-content:center; gap:8px; min-height:38px; margin:0 12px 12px; padding:8px 10px; border:1px solid var(--line); border-radius:8px; background:var(--paper); color:var(--ink); font:inherit; font-size:12px; }
+.workspace-create-button:hover { background:var(--surface-muted); border-color:var(--accent); }
+.workspaces-collapsed .workspace-create-button { margin:0 8px 12px; padding:8px 0; }
+.workspaces-collapsed .workspace-create-label { display:none; }
+.revision-dialog.workspace-create-dialog { max-width:480px; padding:24px; }
+.workspace-create-dialog h2 { margin:0 0 12px; font-size:20px; }
+.workspace-create-dialog p { line-height:1.7; }
+.workspace-create-dialog label { display:flex; flex-direction:column; gap:8px; margin:20px 0; }
+.workspace-create-dialog input { width:100%; padding:10px 12px; border:1px solid var(--line); border-radius:8px; color:var(--ink); background:var(--paper); font:inherit; }
+.workspace-create-dialog input[readonly] { background:var(--surface-muted); }
+.workspace-create-dialog .management-actions { justify-content:flex-end; }
+.workspace-create-dialog .command-error:empty { display:none; }

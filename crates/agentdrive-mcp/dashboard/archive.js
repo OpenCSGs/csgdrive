@@ -7,7 +7,7 @@ export function createArchivePage({api, element, container}) {
   introduction.append(element('div','eyebrow','PROJECT FILES'), element('h1','','档案室'), element('p','','每个分支的最新成果，都在这里。查看资料，接着工作。'));
   const scope = element('span','archive-scope','当前项目 · 本机内容'); heading.append(introduction,scope);
   const empty = element('div','empty-state'); empty.hidden = true;
-  empty.append(element('h2','','还没有可以浏览的项目'),element('p','','让 Agent 通过 MCP 创建或同步工作区，项目文件会显示在这里。'));
+  empty.append(element('h2','','还没有可以浏览的项目'),element('p','','点击左侧「创建工作区」开始，也可以让 Agent 通过 MCP 创建或同步工作区。'));
   const workspace = element('div','archive-workspace');
   const branchesPanel = element('section','archive-branches');
   const branchHeading = element('div','archive-list-heading');
