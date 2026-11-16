@@ -134,7 +134,7 @@ AGENTDRIVE_SANDBOX_CONFIG=/absolute/path/sandbox.json \
   target/release/agentdrived serve --config /absolute/path/agentdrive.json
 ```
 
-打开分支管理页面，点击所需分支的「Sandbox」，在弹框中点击「启动 Sandbox」。启动步骤依次展示准备当前分支目录、准备 Ubuntu 系统磁盘、启动 Ubuntu 实例、等待桌面启动、检查浏览器、字体和桌面工具。进度来自后台实际状态，启动期间持续更新；失败时保留具体步骤和原因，并提供重试入口。实例经过窗口管理器、桌面连接和真实截图检查后显示「打开桌面」。页面切换分支不会改变实例绑定。浏览器使用宿主机上的 noVNC 静态文件，guest 仅提供桌面 WebSocket 数据。
+打开分支管理页面，点击所需分支的「Sandbox」，在弹框中点击「启动 Sandbox」。启动步骤依次展示准备当前分支目录、准备 Ubuntu 系统磁盘、启动 Ubuntu 实例、等待桌面启动。进度来自后台实际状态，启动期间持续更新；失败时保留具体步骤和原因，并提供重试入口。实例确认窗口管理器、VNC 连接和分支挂载就绪后显示「打开桌面」。页面切换分支不会改变实例绑定。浏览器使用宿主机上的 noVNC 静态文件，guest 仅提供桌面 WebSocket 数据。
 
 运行中的 Sandbox 会阻止关联挂载被卸载、重新绑定或通过版本恢复替换。停止操作等待 guest 刷新文件，停止 worker，并调用 AgentDrive 保存流程。停止后系统磁盘继续保留。守护进程重新启动后，已有实例显示停止状态，可继续使用原系统磁盘启动。
 

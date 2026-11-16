@@ -19,8 +19,12 @@ export function createFileBrowser({api, element, container, onNavigate}) {
   layout.append(sidebar, preview); body.append(toolbar, status, layout); container.append(body);
   let context = null, path = '/', version = null, cursor = null, request = null, fileRequest = null, selected = null, changed = false, entries = [];
   let previewPath = null, previewMode = 'reading', loadedPages = 0, restoreSelection = null;
+  let imageURL = null;
+  const imageTypes = {png:'image/png',jpg:'image/jpeg',jpeg:'image/jpeg',gif:'image/gif',webp:'image/webp',bmp:'image/bmp',avif:'image/avif',ico:'image/x-icon'};
+  function releaseImage() { if (imageURL) { URL.revokeObjectURL(imageURL); imageURL = null; } }
   function clear() {
     context = null; entries = []; selected = null; request?.abort(); fileRequest?.abort();
+    releaseImage();
     previewPath = null; previewMode = 'reading'; loadedPages = 0; restoreSelection = null;
     list.replaceChildren(); preview.replaceChildren(); status.replaceChildren(); directory.replaceChildren();
     more.hidden = true;
@@ -41,6 +45,39 @@ export function createFileBrowser({api, element, container, onNavigate}) {
     }
     return lines.join('\n');
   }
+  function metadata(entry) {
+    preview.replaceChildren(element('h3', 'branch-file-path', entry.path),
+      element('p', 'diff-metadata', `${entry.inode.size.toLocaleString()} 字节 · ${entry.dirty ? '当前工作内容' : '本机已保存'}`));
+  }
+  async function viewImage(entry, current, type) {
+    metadata(entry);
+    if (entry.inode.size > 20 * 1024 * 1024) {
+      preview.append(element('p', 'changes-status', '图片超过 20 MiB，请在 Sandbox 桌面中打开。'));
+      return;
+    }
+    const progress = element('p', 'changes-status', '正在读取图片…'); preview.append(progress);
+    const endpoint = base(), expectedVersion = version, chunks = [];
+    let offset = 0;
+    while (offset < entry.inode.size) {
+      const size = Math.min(262144, entry.inode.size - offset);
+      const query = new URLSearchParams({path:entry.path, version:expectedVersion, offset, size});
+      const bytes = new Uint8Array(await api(`${endpoint}/file?${query}`, {signal:current.signal, binary:true}));
+      if (current.signal.aborted) return;
+      if (!bytes.length || bytes.length > size) throw new Error('图片内容不完整，请刷新文件后重试。');
+      chunks.push(bytes); offset += bytes.length;
+      progress.textContent = `正在读取图片… ${Math.round(offset / entry.inode.size * 100)}%`;
+    }
+    const image = element('img'); image.alt = entry.path.split('/').at(-1);
+    imageURL = URL.createObjectURL(new Blob(chunks, {type})); image.src = imageURL;
+    try { await image.decode(); }
+    catch { if (!current.signal.aborted) throw new Error('图片无法显示，文件可能已损坏或格式不受支持。'); }
+    if (current.signal.aborted) return;
+    progress.textContent = `${image.naturalWidth} × ${image.naturalHeight} 像素`;
+    const frame = element('div', 'branch-image-frame'); frame.append(image);
+    const actions = element('div', 'branch-image-actions');
+    const download = element('a', 'secondary', '下载图片'); download.href = imageURL; download.download = image.alt;
+    actions.append(download); preview.append(frame, actions);
+  }
   async function view(entry, button, offsets = [0]) {
     if (previewPath !== entry.path) previewMode = 'reading';
     previewPath = entry.path;
@@ -48,9 +85,13 @@ export function createFileBrowser({api, element, container, onNavigate}) {
     selected?.classList.remove('active'); selected?.setAttribute('aria-pressed', 'false');
     selected = button; button.classList.add('active'); button.setAttribute('aria-pressed', 'true');
     fileRequest?.abort(); fileRequest = new AbortController(); const current = fileRequest;
+    releaseImage();
     const offset = offsets.at(-1);
     preview.replaceChildren(element('p', 'changes-status', '正在读取文件…'));
     try {
+      const extension = entry.path.split('.').at(-1).toLowerCase();
+      const imageType = Object.hasOwn(imageTypes, extension) ? imageTypes[extension] : null;
+      if (imageType) { await viewImage(entry, current, imageType); return; }
       const query = new URLSearchParams({path:entry.path, version, offset, size:65536});
       const bytes = new Uint8Array(await api(`${base()}/file?${query}`, {signal:current.signal, binary:true}));
       if (current.signal.aborted) return;
@@ -63,8 +104,7 @@ export function createFileBrowser({api, element, container, onNavigate}) {
           catch { /* Try a complete UTF-8 character boundary at the end of this chunk. */ }
         }
       }
-      preview.replaceChildren(element('h3', 'branch-file-path', entry.path),
-        element('p', 'diff-metadata', `${inode.size.toLocaleString()} 字节 · ${entry.dirty ? '当前工作内容' : '本机已保存'}`));
+      metadata(entry);
       const range = inode.size === 0 ? '空文件（0 字节）' : `字节 ${offset + 1}–${offset + consumed} / ${inode.size}`;
       if (text === null || !final || offset > 0 || inode.size === 0) preview.append(element('p', 'changes-status', `${range}${text === null ? ' · 二进制或非 UTF-8 内容，显示十六进制' : ''}`));
       const source = element('pre', 'branch-file-content', text === null ? hex(bytes, offset) : text);
@@ -86,7 +126,7 @@ export function createFileBrowser({api, element, container, onNavigate}) {
         const next = element('button', 'secondary', '下一段'); next.type = 'button'; next.onclick = () => view(entry, button, [...offsets, offset + consumed]); navigation.append(next);
       }
       preview.append(navigation);
-    } catch (error) { if (!current.signal.aborted) failure(preview, error, () => view(entry, button, offsets)); }
+    } catch (error) { if (!current.signal.aborted) { releaseImage(); failure(preview, error, () => view(entry, button, offsets)); } }
   }
   function renderEntries() {
     const previousPath = selected?.dataset.path || restoreSelection?.path;
@@ -112,6 +152,7 @@ export function createFileBrowser({api, element, container, onNavigate}) {
     else if (!selected && files.length) { const first = files.find(({entry}) => /\/readme\.md$/i.test(entry.path)) || files.find(({entry}) => /\.(md|txt|json|csv|py)$/i.test(entry.path)) || files[0]; view(first.entry, first.button); }
     else if (!selected) {
       fileRequest?.abort();
+      releaseImage();
       preview.replaceChildren(element('p', 'changes-status', entries.length ? visible.length ? '选择目录浏览其中的文件。' : '没有符合筛选条件的文件，可调整筛选或显示隐藏文件。' : '此目录为空。'));
     }
   }
@@ -155,6 +196,7 @@ export function createFileBrowser({api, element, container, onNavigate}) {
     restoreSelection = latest && destination === path && previewPath ? restoreSelection || {path:previewPath, pages:loadedPages} : null;
     if (!restoreSelection) { previewPath = null; previewMode = 'reading'; filter.value = ''; }
     request?.abort(); fileRequest?.abort(); path = destination; cursor = null; selected = null; entries = []; loadedPages = 0;
+    releaseImage();
     if (latest) { version = null; changed = false; }
     renderDirectory(); onNavigate?.(path);
     list.replaceChildren(); preview.replaceChildren(); more.hidden = true; status.textContent = '正在读取目录…'; page();
