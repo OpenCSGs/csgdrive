@@ -131,7 +131,7 @@ async function refresh(force=false) {
     if (catalogError) $('error').textContent = `远端工作区发现失败，当前显示本机记录：${catalogError.message}`;
     if (isSettings()) return;
     if (location.pathname === '/sandboxes') {
-      await sandboxesPage.load();
+      await sandboxesPage.load(workspaces.find(item => item.id === workspace) || null);
       if (request !== generation) return;
       $('updated').textContent = `${new Date().toLocaleTimeString('zh-CN', {hour12:false})} 已刷新`;
       $('connection').textContent = '已连接本地服务';
@@ -236,7 +236,7 @@ function showPage() {
   $('history-breadcrumb').hidden = settings;
   $('settings-breadcrumb').hidden = !settings;
   navigation.page();
-  $('view-mode').textContent = sandboxes ? '所有工作区' : settings ? '全局配置' : mounts || branches ? '工作区管理' : '只读浏览';
+  $('view-mode').textContent = sandboxes ? '当前工作区' : settings ? '全局配置' : mounts || branches ? '工作区管理' : '只读浏览';
   showHistoryTab();
   refreshPage();
 }

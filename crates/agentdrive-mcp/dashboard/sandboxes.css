@@ -9,7 +9,7 @@
 .sandbox-page-tabs { display:flex; gap:28px; border-bottom:1px solid var(--line); margin-bottom:24px; }
 .sandbox-page-tabs button { background:none; border:0; border-bottom:2px solid transparent; padding:0 2px 15px; color:var(--muted); font-size:14px; }
 .sandbox-page-tabs button[aria-selected=true] { border-color:var(--accent); color:var(--accent); font-weight:600; }
-.sandbox-filters { display:grid; grid-template-columns:minmax(0,1fr) minmax(140px,220px) minmax(120px,160px); gap:12px; margin-bottom:20px; }
+.sandbox-filters { display:grid; grid-template-columns:minmax(0,1fr) minmax(120px,180px); gap:12px; margin-bottom:20px; }
 .sandbox-filters input,.sandbox-filters select { min-width:0; border:1px solid var(--line); background:var(--paper); border-radius:7px; padding:11px 13px; color:var(--ink); font:inherit; font-size:13px; }
 .sandbox-filters input { width:100%; }
 .sandbox-catalog,.sandbox-template-list { display:grid; grid-template-columns:repeat(auto-fill,minmax(min(100%,370px),1fr)); gap:18px; }
@@ -64,7 +64,7 @@
 .sandbox-service-actions { display:contents; }
 .sandbox-service-link { text-decoration:none; }
 @container sandboxes (max-width:640px) {
-  .sandbox-filters { grid-template-columns:repeat(2,minmax(0,1fr)); }
+  .sandbox-filters { grid-template-columns:minmax(0,1fr); }
   .sandbox-filters input { grid-column:1 / -1; }
 }
 @container sandboxes (max-width:280px) {

@@ -17,7 +17,7 @@ before(async()=>{
   browser=await chromium.launch({headless:true});
 });
 after(async()=>{await browser?.close();if(server)await new Promise(resolve=>server.close(resolve));});
-async function setup(t,options={}){
+async function setup(t,options={},workspace='alpha'){
   const page=await browser.newPage({viewport:{width:1440,height:1000}}),errors=[],calls=[];
   const data={enabled:true,errors:[],entries:[
     {workspace:'alpha',workspace_name:'项目 Alpha',branch:'main-a',branch_name:'main',can_start:true,sandbox:{state:'ready',desktop_url:'/desktop-a'}},
@@ -35,13 +35,14 @@ async function setup(t,options={}){
     if(entry){if(method!=='GET')entry.sandbox={state:method==='POST'?'ready':'stopped',desktop_url:'/desktop-b'};return route.fulfill({json:method==='GET'?{enabled:data.enabled,sandbox:entry.sandbox}:entry.sandbox});}
     return route.fulfill({status:404,json:{error:{message:'Not found'}}});
   });
-  await page.goto(endpoint+'/sandboxes');await page.waitForFunction(()=>document.querySelector('#updated').textContent.includes('已刷新'));
+  await page.goto(endpoint+'/sandboxes?workspace='+workspace);await page.waitForFunction(()=>document.querySelector('#updated').textContent.includes('已刷新'));
   return {page,data,calls};
 }
-test('catalog lists every workspace and controls the selected branch',async t=>{
-  const {page,calls}=await setup(t);
+test('catalog only lists the current workspace and controls its selected branch',async t=>{
+  const {page,calls}=await setup(t,{},'beta');
   assert.equal(await page.locator('#sandboxes-nav').getAttribute('aria-current'),'page');
-  assert.equal(await page.locator('.sandbox-card:visible').count(),2);
+  assert.equal(await page.locator('.sandbox-card:visible').count(),1);
+  assert.equal(await page.locator('[data-branch="main-a"]').count(),0);
   const card=page.locator('[data-branch="branch-b"]');await card.getByRole('button',{name:'启动 Sandbox',exact:true}).click();
   await card.getByRole('link',{name:'打开桌面'}).waitFor();
   await card.getByRole('button',{name:'详情与 MCP'}).click();
@@ -52,7 +53,7 @@ test('catalog lists every workspace and controls the selected branch',async t=>{
   assert.deepEqual(calls.filter(c=>c.method!=='GET'),[{path:'/api/workspaces/beta/branches/branch-b/sandbox',method:'POST'},{path:'/api/workspaces/beta/branches/branch-b/sandbox',method:'DELETE'}]);
 });
 test('deletion removes the card from existing instances and makes the branch available for creation',async t=>{
-  const {page,calls}=await setup(t);
+  const {page,calls}=await setup(t,{},'beta');
   const card=page.locator('[data-branch="branch-b"]');
   await card.getByRole('button',{name:'删除 Sandbox',exact:true}).click();
   const dialog=page.getByRole('dialog',{name:'删除 Sandbox',exact:true});
@@ -60,24 +61,25 @@ test('deletion removes the card from existing instances and makes the branch ava
   await dialog.getByRole('textbox').fill('feature');
   await dialog.getByRole('button',{name:'确认删除'}).click();
   await card.waitFor({state:'hidden'});
-  assert.equal(await page.locator('.sandbox-card:visible').count(),1);
+  assert.equal(await page.locator('.sandbox-card:visible').count(),0);
   assert.deepEqual(calls.filter(c=>c.method!=='GET'),[{path:'/api/workspaces/beta/branches/branch-b/sandbox/delete',method:'POST'}]);
   await page.getByRole('button',{name:'创建沙盒',exact:true}).click();
   const create=page.getByRole('dialog',{name:'创建沙盒',exact:true});
-  await create.getByLabel('工作区',{exact:true}).selectOption('beta');
+  assert.equal(await create.getByLabel('工作区',{exact:true}).inputValue(),'项目 Beta');
+  assert(await create.getByLabel('工作区',{exact:true}).evaluate(input=>input.readOnly));
   await create.getByLabel('分支',{exact:true}).selectOption('branch-b');
   assert(await create.getByRole('button',{name:'创建并启动'}).isEnabled());
 });
 test('refresh preserves filters and the open dialog; creation selects an unused branch',async t=>{
-  const {page}=await setup(t);
-  await page.getByRole('combobox',{name:'筛选工作区'}).selectOption('beta');
+  const {page}=await setup(t,{},'beta');
+  await page.getByRole('searchbox',{name:'搜索沙盒'}).fill('feature');
   await page.getByRole('button',{name:'详情与 MCP'}).filter({visible:true}).click();
   await page.waitForTimeout(2200);assert(await page.getByRole('dialog').isVisible());
-  await page.keyboard.press('Escape');assert.equal(await page.getByRole('combobox',{name:'筛选工作区'}).inputValue(),'beta');
+  await page.keyboard.press('Escape');assert.equal(await page.getByRole('searchbox',{name:'搜索沙盒'}).inputValue(),'feature');
   await page.getByRole('button',{name:'创建沙盒',exact:true}).click();
   const dialog=page.getByRole('dialog',{name:'创建沙盒',exact:true});
   assert(await dialog.isVisible());
-  assert.equal(await dialog.getByLabel('工作区',{exact:true}).inputValue(),'beta');
+  assert.equal(await dialog.getByLabel('工作区',{exact:true}).inputValue(),'项目 Beta');
   assert.equal(await dialog.getByLabel('分支',{exact:true}).inputValue(),'new-b');
   await page.waitForTimeout(2200);
   assert.equal(await dialog.getByLabel('分支',{exact:true}).inputValue(),'new-b');
@@ -97,13 +99,16 @@ test('creation dialog explains unavailable branches and capacity without sending
   assert(await dialog.getByRole('button',{name:'创建并启动'}).isDisabled());
   assert.match(await dialog.getByRole('status').textContent(),/没有可用分支/);
   assert(await dialog.getByRole('link',{name:'前往分支管理'}).isVisible());
-  await dialog.getByLabel('工作区',{exact:true}).selectOption('beta');
+  await page.keyboard.press('Escape');
+  await page.goto(endpoint+'/sandboxes?workspace=beta');
+  await page.waitForFunction(()=>!document.querySelector('#refresh').disabled);
+  await page.getByRole('button',{name:'创建沙盒',exact:true}).click();
   assert.equal(await dialog.getByLabel('分支',{exact:true}).locator('option').count(),1);
   assert(await dialog.getByRole('button',{name:'创建并启动'}).isEnabled());
   data.template.max_instances=1;
   await page.waitForTimeout(2200);
   assert(await dialog.getByRole('button',{name:'创建并启动'}).isDisabled());
-  assert.match(await dialog.getByRole('status').textContent(),/已达到 1 个运行实例/);
+  assert.match(await dialog.getByRole('status').textContent(),/本机已达到 1 个运行实例/);
   await page.keyboard.press('Escape');
   assert(await page.getByRole('button',{name:'创建沙盒',exact:true}).evaluate(e=>e===document.activeElement));
   assert.equal(calls.filter(c=>c.method!=='GET').length,0);
@@ -156,5 +161,58 @@ test('sandbox breadcrumb retains the current workspace across refresh and direct
   await page.waitForFunction(()=>!document.querySelector('#refresh').disabled);
   assert.equal(await page.locator('#workspace-name').textContent(),'项目 Beta');
   assert.equal(await page.locator('#workspace-menu-name').textContent(),'项目 Beta');
-  assert.equal(await page.locator('.sandbox-card:visible').count(),2);
+  assert.equal(await page.locator('.sandbox-card:visible').count(),1);
+  assert.equal(await page.locator('[data-branch="main-a"]').count(),0);
+});
+
+
+test('workspace changes replace instances and counts while retaining shared templates',async t=>{
+  const {page,data}=await setup(t);
+  assert.deepEqual(await page.locator('.sandbox-summary strong').allTextContents(),['1','1','0','2']);
+  assert.equal(await page.getByRole('combobox',{name:'筛选工作区'}).count(),0);
+  await page.getByRole('tab',{name:'模板内容'}).click();
+  const templates=await page.locator('#sandbox-template h2').allTextContents();
+  await page.evaluate(()=>{history.pushState(null,'','/sandboxes?workspace=beta');dispatchEvent(new PopStateEvent('popstate'));});
+  await page.waitForFunction(()=>!document.querySelector('#refresh').disabled);
+  assert.equal(await page.locator('[data-branch="main-a"]').count(),0);
+  assert.deepEqual(await page.locator('.sandbox-summary strong').allTextContents(),['1','0','0','2']);
+  await page.getByRole('tab',{name:'模板内容'}).click();
+  assert.deepEqual(await page.locator('#sandbox-template h2').allTextContents(),templates);
+  await page.getByRole('button',{name:'使用此模板创建'}).click();
+  const dialog=page.getByRole('dialog',{name:'创建沙盒',exact:true});
+  assert.equal(await dialog.getByLabel('工作区',{exact:true}).inputValue(),'项目 Beta');
+  assert.deepEqual(await dialog.getByLabel('分支',{exact:true}).locator('option').evaluateAll(nodes=>nodes.map(node=>node.value)),['new-b']);
+  await page.keyboard.press('Escape');
+  data.entries=data.entries.filter(entry=>entry.workspace!=='beta');
+  await page.getByRole('button',{name:'刷新数据'}).click();
+  await page.getByRole('tab',{name:'沙盒实例'}).click();
+  assert.equal(await page.locator('.sandbox-card').count(),0);
+  assert.deepEqual(await page.locator('.sandbox-summary strong').allTextContents(),['0','0','0','2']);
+  assert.match(await page.locator('#sandbox-instances .sandbox-empty').textContent(),/当前工作区/);
+  await page.getByRole('button',{name:'创建沙盒',exact:true}).click();
+  assert.equal(await dialog.getByLabel('工作区',{exact:true}).inputValue(),'项目 Beta');
+  assert(await dialog.getByRole('button',{name:'创建并启动'}).isDisabled());
+  assert.match(await dialog.getByRole('link',{name:'前往分支管理'}).getAttribute('href'),/workspace=beta/);
+});
+
+test('a delayed refresh cannot restore instances from the previous workspace',async t=>{
+  const {page,data}=await setup(t);
+  let release,started,held=false;
+  const pending=new Promise(resolve=>{release=resolve;});
+  const requested=new Promise(resolve=>{started=resolve;});
+  await page.route('**/api/sandboxes',async route=>{
+    if(!held){held=true;started();await pending;}
+    await route.fulfill({json:data});
+  });
+  await page.getByRole('button',{name:'刷新数据'}).click();await requested;
+  await page.evaluate(()=>{history.pushState(null,'','/sandboxes?workspace=beta');dispatchEvent(new PopStateEvent('popstate'));});
+  await page.waitForFunction(()=>!document.querySelector('#refresh').disabled);
+  assert.equal(await page.locator('[data-branch="main-a"]').count(),0);
+  assert.equal(await page.locator('[data-branch="branch-b"]:visible').count(),1);
+  const response=page.waitForResponse(value=>new URL(value.url()).pathname==='/api/sandboxes');
+  release();await (await response).finished();
+  await page.evaluate(()=>new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve))));
+  assert.equal(await page.locator('#workspace-name').textContent(),'项目 Beta');
+  assert.equal(await page.locator('[data-branch="main-a"]').count(),0);
+  assert.deepEqual(await page.locator('.sandbox-summary strong').allTextContents(),['1','0','0','2']);
 });
