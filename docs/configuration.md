@@ -60,6 +60,8 @@ Collection removes only remotely confirmed objects without active readers or pro
 
 ## Switching storage while running
 
+Before moving a shared workspace to another destination, pause writes and branch creation on all participating machines, then pull the current remote history. AgentDrive checks the source branches before and after copying. If a writer publishes a new head during the copy, pull again and retry. Update the storage destination on every participating machine before resuming writes.
+
 Disable automatic collaboration in Settings and finish pending handoffs before switching the remote backend or storage namespace, or disabling remote storage. The daemon rejects the change while an active coordinator still depends on that backend's write authority. Updating credentials or tokens for the same backend and namespace refreshes the connection directly and can proceed while collaboration remains enabled.
 
 In **Create workspace**, choose **Use default settings**, local-only storage, S3-compatible storage or OpenCSG Codes alongside the name. OSS can use the S3-compatible option if its endpoint supports the conditional writes described below. For an existing workspace, open **Global settings → Storage**, select the workspace, choose a destination and save. Changing the default applies to workspaces that inherit it. Each daemon maintains its own selections.
@@ -121,8 +123,6 @@ The adapter uses the existing Codes file HTTP API. Reading uses a pinned Git com
 AgentDrive continues to manage workspace branches, autosaves, commits, merges, operation receipts and ownership. Git commits record individual storage operations, so an AgentDrive revision can require several Git commits. Repository contents use AgentDrive's internal format. With the default Codes configuration, each immutable object has a manifest and SHA-256-verified chunks of up to 4 MiB; base64 text preserves binary content through the JSON file API. Remote references retain the same AgentDrive metadata used with S3.
 
 Keep the storage branch and its internal files under AgentDrive's control. Remote physical deletion is disabled; Git history retains storage updates. Allow capacity for base64 expansion and Git history growth. Each object can require several HTTP requests and Git commits, so transfer latency depends on repository size and service response time. No Git executable is required on the AgentDrive host.
-
-Before moving a shared workspace to another destination, pause writes and branch creation on all participating machines, then pull the current remote history. AgentDrive checks the source branches before and after copying. If a writer publishes a new head during the copy, pull again and retry. Update the storage destination on every participating machine before resuming writes.
 
 ### OpenCSG Codes with XNet
 
