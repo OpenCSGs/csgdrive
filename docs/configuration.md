@@ -126,6 +126,8 @@ Keep the storage branch and its internal files under AgentDrive's control. Remot
 
 ### OpenCSG Codes with XNet
 
+The OpenCSG deployment must expose XNet token refresh for Codes repositories. AgentDrive checks this when saving a Codes configuration with XNet selected. If the token endpoint is unavailable, the save fails and the previous settings stay active. To use ordinary Codes storage on that deployment, clear the XNet checkbox and save.
+
 Enable XNet on the Codes repository and grant repository access to the daemon identity. On each machine that writes XNet content, install `hf-xet==1.1.10` in the Python environment used by the daemon. For a dedicated environment, set `AGENTDRIVE_XNET_PYTHON` to its Python executable before starting the service. The default executable is `python3`. For example:
 
 ```sh
