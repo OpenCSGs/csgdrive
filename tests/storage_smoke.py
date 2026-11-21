@@ -42,6 +42,12 @@ with tempfile.TemporaryDirectory(prefix='agentdrive-storage-') as temporary:
         except urllib.error.HTTPError as error:
             return error.code, json.load(error)
 
+    def create_workspace(payload):
+        request = urllib.request.Request(f'http://127.0.0.1:{port}/api/workspaces',
+            data=json.dumps(payload).encode(), headers={'Content-Type': 'application/json'})
+        with urllib.request.urlopen(request, timeout=90) as response:
+            return json.load(response)
+
     def save(current, runtime):
         status, response = settings({'revision': current['revision'], 'runtime': runtime})
         assert status == 200, response
@@ -87,6 +93,19 @@ with tempfile.TemporaryDirectory(prefix='agentdrive-storage-') as temporary:
         runtime['remote'] = {'enabled': True, 'bucket': 'agentdrive-integration', 'prefix': f'storage-tests/{uuid.uuid4()}', 'region': 'us-east-1', 'endpoint': endpoint, 'allow_http': True,
             'credentials': {'access_key_id': os.environ['AWS_ACCESS_KEY_ID'], 'secret_access_key': os.environ['AWS_SECRET_ACCESS_KEY']}}
         current = save(current, runtime)
+        local_request = {'request_id': str(uuid.uuid4()), 'name': 'private notes', 'storage': None}
+        local = create_workspace(local_request)['result']['workspace']['id']
+        assert create_workspace(local_request)['result']['workspace']['id'] == local
+        own_store = copy.deepcopy(runtime['remote'])
+        own_store['prefix'] = f'workspace-tests/{uuid.uuid4()}'
+        shared = create_workspace({'request_id': str(uuid.uuid4()), 'name': 'shared files',
+                                   'storage': own_store})['result']['workspace']['id']
+        assert call('workspace_status', {'workspace': shared})['capabilities']['remote_configured']
+        assert not call('workspace_status', {'workspace': local})['capabilities']['remote_configured']
+        call('sync', {'workspace': shared, 'direction': 'push'})
+        current = settings()[1]
+        assert current['runtime']['workspace_remotes'][local] is None
+        assert current['runtime']['workspace_remotes'][shared]['prefix'] == own_store['prefix']
         assert os.environ['AWS_SECRET_ACCESS_KEY'] not in json.dumps(current)
         assert call('workspace_status', {'workspace': workspace})['capabilities']['remote_configured']
         call('sync', {'workspace': workspace, 'direction': 'push'})
@@ -126,6 +145,8 @@ with tempfile.TemporaryDirectory(prefix='agentdrive-storage-') as temporary:
         destination = root / 'exchange' / 'after-restart'
         call('workspace_export', {'workspace': workspace, 'revision': revision, 'destination': str(destination)})
         assert (destination / 'image.bin').read_bytes() == payload
+        assert not call('workspace_status', {'workspace': local})['capabilities']['remote_configured']
+        assert call('workspace_status', {'workspace': shared})['capabilities']['remote_configured']
         print('Live storage switching, saved credentials, failed-switch recovery, file reload and restart passed')
     finally:
         if daemon and daemon.poll() is None:

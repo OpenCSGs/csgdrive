@@ -1,4 +1,4 @@
-use crate::RemoteStorage;
+use crate::{RemoteStorage, StorageRoutes};
 use agentdrive_model::*;
 use agentdrive_ports::HistoryRefreshStatus;
 use parking_lot::Mutex;
@@ -11,6 +11,7 @@ const REFRESH_INTERVAL_MS: u64 = 2_000;
 
 #[derive(Debug, Default)]
 struct Entry {
+    storage: Weak<RemoteStorage>,
     status: HistoryRefreshStatus,
     last_attempt_ms: Option<u64>,
     queued: bool,
@@ -19,23 +20,7 @@ struct Entry {
 
 #[derive(Debug, Default)]
 struct State {
-    storage: Option<Weak<RemoteStorage>>,
     entries: BTreeMap<WorkspaceId, Entry>,
-}
-
-impl State {
-    fn update_storage(&mut self, storage: Option<&Arc<RemoteStorage>>) -> bool {
-        let same = match (&self.storage, storage) {
-            (Some(previous), Some(current)) => previous.ptr_eq(&Arc::downgrade(current)),
-            (None, None) => true,
-            _ => false,
-        };
-        if !same {
-            self.entries.clear();
-            self.storage = storage.map(Arc::downgrade);
-        }
-        storage.is_some()
-    }
 }
 
 #[derive(Debug, Default)]
@@ -51,10 +36,18 @@ impl HistoryRefreshCoordinator {
         now_ms: u64,
     ) -> HistoryRefreshStatus {
         let mut state = self.state.lock();
-        if !state.update_storage(storage) {
+        let Some(storage) = storage else {
+            state.entries.remove(&workspace);
             return HistoryRefreshStatus::default();
-        }
+        };
         let entry = state.entries.entry(workspace).or_default();
+        let storage = Arc::downgrade(storage);
+        if !entry.storage.ptr_eq(&storage) {
+            *entry = Entry {
+                storage,
+                ..Default::default()
+            };
+        }
         if !entry.status.refreshing
             && entry
                 .last_attempt_ms
@@ -68,14 +61,16 @@ impl HistoryRefreshCoordinator {
 
     pub(crate) fn begin(
         self: &Arc<Self>,
-        storage: Option<&Arc<RemoteStorage>>,
+        routes: &StorageRoutes,
         now_ms: u64,
         now_ns: i64,
     ) -> Vec<HistoryRefreshAttempt> {
         let mut state = self.state.lock();
-        if !state.update_storage(storage) {
-            return Vec::new();
-        }
+        state.entries.retain(|workspace, entry| {
+            routes
+                .for_workspace(*workspace)
+                .is_some_and(|storage| entry.storage.ptr_eq(&Arc::downgrade(&storage)))
+        });
         let running = state
             .entries
             .values()
@@ -160,20 +155,22 @@ mod tests {
         for workspace in workspaces {
             assert!(coordinator.request(Some(&storage), workspace, 0).refreshing);
         }
-        let mut active = coordinator.begin(Some(&storage), 0, 1);
+        let routes = StorageRoutes::new(Some(storage.clone()), Default::default());
+        let mut active = coordinator.begin(&routes, 0, 1);
         assert_eq!(active.len(), 2);
-        assert!(coordinator.begin(Some(&storage), 0, 1).is_empty());
+        assert!(coordinator.begin(&routes, 0, 1).is_empty());
         active.pop().unwrap().finish(Ok(()), 2);
-        let next = coordinator.begin(Some(&storage), 0, 2);
+        let next = coordinator.begin(&routes, 0, 2);
         assert_eq!(next.len(), 1);
-        assert!(coordinator.begin(Some(&storage), 0, 2).is_empty());
+        assert!(coordinator.begin(&routes, 0, 2).is_empty());
         let replacement = Arc::new(RemoteStorage {
             objects: storage.objects.clone(),
             refs: storage.refs.clone(),
         });
         let status = coordinator.request(Some(&replacement), workspaces[0], 0);
         assert!(status.last_attempt_ns.is_none() && status.last_success_ns.is_none());
-        let replacement_attempt = coordinator.begin(Some(&replacement), 0, 3).pop().unwrap();
+        let routes = StorageRoutes::new(Some(replacement.clone()), Default::default());
+        let replacement_attempt = coordinator.begin(&routes, 0, 3).pop().unwrap();
         drop(active);
         drop(next);
         assert!(

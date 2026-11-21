@@ -1,10 +1,11 @@
 use crate::{CacheConfig, CollaborationConfig, Config, RemoteConfig, StartupConfig};
-use agentdrive_model::{Error, ErrorCode, Result};
+use agentdrive_model::{Error, ErrorCode, Result, WorkspaceId};
 use arc_swap::ArcSwap;
 use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::{
+    collections::BTreeMap,
     fs,
     io::{Read, Write},
     path::{Path, PathBuf},
@@ -18,6 +19,8 @@ const MAX_CONFIG_BYTES: usize = 1024 * 1024;
 pub struct RuntimeConfig {
     #[serde(default)]
     pub remote: Option<RemoteConfig>,
+    #[serde(default)]
+    pub workspace_remotes: BTreeMap<WorkspaceId, Option<RemoteConfig>>,
     pub cache: CacheConfig,
     pub allowed_origins: Vec<String>,
     #[serde(default)]
@@ -27,7 +30,11 @@ pub struct RuntimeConfig {
 impl RuntimeConfig {
     pub fn validate(&self) -> Result<()> {
         self.cache.validate()?;
-        if let Some(remote) = &self.remote {
+        for remote in self
+            .remote
+            .iter()
+            .chain(self.workspace_remotes.values().flatten())
+        {
             remote.validate()?;
         }
         for origin in &self.allowed_origins {
@@ -158,7 +165,11 @@ impl ConfigStore {
     pub fn settings(&self) -> Settings {
         let snapshot = self.live.load();
         let mut runtime = snapshot.values.clone();
-        if let Some(remote) = &mut runtime.remote {
+        for remote in runtime
+            .remote
+            .iter_mut()
+            .chain(runtime.workspace_remotes.values_mut().flatten())
+        {
             remote.redact();
         }
         Settings {
@@ -228,8 +239,51 @@ impl ConfigStore {
         result
     }
 
-    pub fn update(&self, mut update: SettingsUpdate) -> Result<Settings> {
+    /// Bind a server-assigned workspace ID before its first publication job becomes visible.
+    pub fn bind_new_workspace(&self, id: WorkspaceId, remote: Option<RemoteConfig>) -> Result<()> {
         let _writer = self.writer.lock();
+        let mut settings = self.settings();
+        if let Some(stored) = self.live.load().values.workspace_remotes.get(&id) {
+            return if stored == &remote {
+                Ok(())
+            } else {
+                Err(Error::new(
+                    ErrorCode::Conflict,
+                    "workspace already has different storage settings",
+                ))
+            };
+        }
+        settings.runtime.workspace_remotes.insert(id, remote);
+        self.update_locked(SettingsUpdate {
+            revision: settings.revision,
+            runtime: settings.runtime,
+        })?;
+        Ok(())
+    }
+
+    pub fn discard_new_binding(
+        &self,
+        id: WorkspaceId,
+        expected: &Option<RemoteConfig>,
+    ) -> Result<()> {
+        let _writer = self.writer.lock();
+        if self.live.load().values.workspace_remotes.get(&id) == Some(expected) {
+            let mut settings = self.settings();
+            settings.runtime.workspace_remotes.remove(&id);
+            self.update_locked(SettingsUpdate {
+                revision: settings.revision,
+                runtime: settings.runtime,
+            })?;
+        }
+        Ok(())
+    }
+
+    pub fn update(&self, update: SettingsUpdate) -> Result<Settings> {
+        let _writer = self.writer.lock();
+        self.update_locked(update)
+    }
+
+    fn update_locked(&self, mut update: SettingsUpdate) -> Result<Settings> {
         let current = self.live.load();
         if current.revision != update.revision || revision(&read(&self.path)?) != update.revision {
             return Err(Error::new(
@@ -239,6 +293,16 @@ impl ConfigStore {
         }
         if let Some(remote) = &mut update.runtime.remote {
             remote.restore_credentials(current.values.remote.as_ref())?;
+        }
+        for (workspace, remote) in &mut update.runtime.workspace_remotes {
+            if let Some(remote) = remote {
+                let saved = current
+                    .values
+                    .workspace_remotes
+                    .get(workspace)
+                    .and_then(Option::as_ref);
+                remote.restore_credentials(saved)?;
+            }
         }
         update.runtime.validate()?;
         let config = Config::with_runtime(self.startup.clone(), update.runtime);

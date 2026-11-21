@@ -92,7 +92,7 @@ impl CollaborationService {
                     "execution mount is not ready on the registered branch",
                 ));
             }
-            if !record.settings.enabled || !self.automatic_enabled() {
+            if !record.settings.enabled || !self.automatic_enabled_for(record.workspace) {
                 return Err(Error::invalid("automatic collaboration is disabled"));
             }
             if record.executions.len() >= 1024 {
@@ -177,7 +177,7 @@ impl CollaborationService {
                 !execution.pending_grant && execution.authority_epoch == branch.authority_epoch
             });
             if record.settings.enabled
-                && self.automatic_enabled()
+                && self.automatic_enabled_for(record.workspace)
                 && current_grant
                 && branch.owner == self.runtime.location
                 && branch.state == BranchState::Writable

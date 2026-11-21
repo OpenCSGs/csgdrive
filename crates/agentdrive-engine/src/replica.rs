@@ -111,7 +111,7 @@ impl ReplicaService {
         retained: Vec<ObjectRef>,
         progress: Option<&Arc<ProgressMutex<SyncProgress>>>,
     ) -> Result<()> {
-        let remote = self.content.remote().ok_or_else(|| {
+        let remote = self.content.remote(workspace).ok_or_else(|| {
             Error::new(
                 ErrorCode::RemoteRequired,
                 "remote storage is not configured",
@@ -310,16 +310,16 @@ impl ReplicaService {
         jobs: &[SyncJob],
         progress: &Arc<ProgressMutex<SyncProgress>>,
     ) -> Result<()> {
-        let refs = self.content.refs().ok_or_else(|| {
+        let job = jobs
+            .last()
+            .ok_or_else(|| Error::integrity("empty publication batch"))?;
+        let reference = &job.reference;
+        let refs = self.content.refs(reference.workspace).ok_or_else(|| {
             Error::new(
                 ErrorCode::RemoteRequired,
                 "remote storage is not configured",
             )
         })?;
-        let job = jobs
-            .last()
-            .ok_or_else(|| Error::integrity("empty publication batch"))?;
-        let reference = &job.reference;
         self.verify_batch(reference, jobs).await?;
         let operation = self
             .runtime
@@ -528,7 +528,7 @@ impl ReplicaPublisher for ReplicaService {
     async fn load_workspace(&self, actor: &Principal, workspace: WorkspaceId) -> Result<()> {
         if self.runtime.state.workspace(workspace).await?.is_none() {
             let _protection = self.runtime.objects.read().await;
-            let refs = self.content.refs().ok_or_else(|| {
+            let refs = self.content.refs(workspace).ok_or_else(|| {
                 Error::new(
                     ErrorCode::RemoteRequired,
                     "remote storage is not configured",
@@ -569,7 +569,7 @@ impl ReplicaPublisher for ReplicaService {
     }
 
     async fn publish_workspace(&self, workspace: WorkspaceId) -> Result<()> {
-        let refs = self.content.refs().ok_or_else(|| {
+        let refs = self.content.refs(workspace).ok_or_else(|| {
             Error::new(
                 ErrorCode::RemoteRequired,
                 "remote storage is not configured",
@@ -891,7 +891,11 @@ impl ReplicaPublisher for ReplicaService {
 
     fn request_history_refresh(&self, workspace: WorkspaceId) -> HistoryRefreshStatus {
         self.history_refresh.request(
-            self.content.storage.load_full().as_ref(),
+            self.content
+                .storage
+                .load()
+                .for_workspace(workspace)
+                .as_ref(),
             workspace,
             self.runtime.clock.monotonic_ms(),
         )
@@ -996,7 +1000,7 @@ impl ReplicaService {
 
     pub(crate) async fn refresh_requested_history(&self) {
         let attempts = self.history_refresh.begin(
-            self.content.storage.load_full().as_ref(),
+            &self.content.storage.load(),
             self.runtime.clock.monotonic_ms(),
             self.runtime.clock.now_ns(),
         );
@@ -1016,7 +1020,7 @@ impl ReplicaService {
         let ids = {
             let _protection = self.runtime.objects.read().await;
             self.content
-                .refs()
+                .refs(workspace)
                 .ok_or_else(|| {
                     Error::new(
                         ErrorCode::RemoteRequired,
@@ -1044,7 +1048,7 @@ impl ReplicaService {
                 None
             };
             let _protection = self.runtime.objects.read().await;
-            let refs = self.content.refs().ok_or_else(|| {
+            let refs = self.content.refs(workspace).ok_or_else(|| {
                 Error::new(
                     ErrorCode::RemoteRequired,
                     "remote storage is not configured",

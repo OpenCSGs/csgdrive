@@ -129,7 +129,7 @@ async function refresh(force=false) {
     const workspace = navigation.update(workspaces);
     $('error').hidden = !catalogError;
     if (catalogError) $('error').textContent = `远端工作区发现失败，当前显示本机记录：${catalogError.message}`;
-    if (isSettings()) return;
+    if (isSettings()) { settingsPage.setWorkspaces(workspaces); return; }
     if (location.pathname === '/sandboxes') {
       await sandboxesPage.load(workspaces.find(item => item.id === workspace) || null);
       if (request !== generation) return;

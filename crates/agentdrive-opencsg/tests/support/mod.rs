@@ -17,6 +17,11 @@ use std::{
 #[derive(Default)]
 pub struct Data {
     pub generation: u64,
+    pub xnet_token: Option<Value>,
+    pub xnet_download: Option<String>,
+    pub xnet_upload_mode: Option<String>,
+    pub xnet_paths: Vec<String>,
+    pub lose_pointer_response: bool,
     pub snapshots: BTreeMap<String, BTreeMap<String, String>>,
     pub ignore_start_sha: bool,
     pub ignore_create_start_sha: bool,
@@ -75,6 +80,7 @@ impl Server {
             prefix: "agentdrive/v1".into(),
             token: "private-test-token".into(),
             allow_http: true,
+            xnet: false,
         };
         Self { data, config, task }
     }
@@ -136,11 +142,55 @@ async fn handle(
         data.lose_read_response = false;
         return error(StatusCode::SERVICE_UNAVAILABLE);
     }
+    if uri.path().starts_with("/hf/codes/test/storage/xet-") {
+        return match &data.xnet_token {
+            Some(token) => axum::Json(token.clone()).into_response(),
+            None => error(StatusCode::NOT_FOUND),
+        };
+    }
+    if let Some(rest) = uri.path().strip_prefix("/hf/codes/test/storage/resolve/") {
+        let (revision, path) = rest.split_once('/').unwrap();
+        let Some(pointer) = data
+            .snapshots
+            .get(revision)
+            .and_then(|files| files.get(path))
+        else {
+            return error(StatusCode::NOT_FOUND);
+        };
+        let oid = pointer
+            .lines()
+            .find_map(|line| line.strip_prefix("oid sha256:"))
+            .unwrap();
+        let location = data.xnet_download.as_ref().unwrap().replace("{oid}", oid);
+        return (StatusCode::FOUND, [("location", location)]).into_response();
+    }
     let Some(path) = uri.path().strip_prefix("/api/v1/codes/test/storage/") else {
         return error(StatusCode::NOT_FOUND);
     };
     let url = url::Url::parse(&format!("http://localhost{uri}")).unwrap();
     let query: BTreeMap<_, _> = url.query_pairs().into_owned().collect();
+    if path == "preupload/main" && method == Method::POST {
+        let request: Value = serde_json::from_slice(&body).unwrap();
+        let path = request["files"][0]["path"].as_str().unwrap();
+        data.xnet_paths.push(path.to_owned());
+        return ok(
+            json!({"files":[{"path":path, "uploadMode":data.xnet_upload_mode,
+                          "shouldIgnore":false, "isDir":false}]}),
+        );
+    }
+    if path == "commit/main" && method == Method::POST {
+        let request: Value = serde_json::from_slice(&body).unwrap();
+        let file = &request["files"][0];
+        let path = file["path"].as_str().unwrap();
+        let bytes = STANDARD.decode(file["content"].as_str().unwrap()).unwrap();
+        let mut files = data.files().clone();
+        files.insert(path.to_owned(), String::from_utf8(bytes).unwrap());
+        data.publish(files);
+        if std::mem::take(&mut data.lose_pointer_response) {
+            return error(StatusCode::SERVICE_UNAVAILABLE);
+        }
+        return ok(Value::Null);
+    }
     if path == "branches" {
         return ok(json!([{"name":"main", "commit":{"id":data.head()}}]));
     }

@@ -20,6 +20,7 @@ pub struct WorkspaceService {
     driver: Arc<dyn MountDriver>,
     live: Arc<agentdrive_config::LiveConfig>,
     adoption: tokio::sync::Mutex<()>,
+    creation: tokio::sync::Mutex<()>,
 }
 
 impl std::fmt::Debug for WorkspaceService {
@@ -50,6 +51,7 @@ impl WorkspaceService {
             driver,
             live,
             adoption: tokio::sync::Mutex::new(()),
+            creation: tokio::sync::Mutex::new(()),
         })
     }
 
@@ -124,11 +126,11 @@ impl WorkspaceService {
         context: OperationContext,
         request: CreateWorkspace,
         source: Option<&std::path::Path>,
+        id: WorkspaceId,
     ) -> Result<OperationRecord> {
         validate_label(&request.name, "workspace name")?;
         let _protection = self.runtime.objects.read().await;
         let now = self.runtime.clock.now_ns();
-        let id = WorkspaceId::new();
         let initial_revision = RevisionId::new();
         let workspace = Workspace {
             deleted: false,
@@ -369,7 +371,12 @@ impl WorkspaceApi for WorkspaceService {
                             max_inodes: None,
                         };
                         match self
-                            .create_workspace(operation.clone(), create, Some(&request.path))
+                            .create_workspace(
+                                operation.clone(),
+                                create,
+                                Some(&request.path),
+                                WorkspaceId::new(),
+                            )
                             .await
                         {
                             Ok(record) => record,
@@ -485,20 +492,63 @@ impl WorkspaceApi for WorkspaceService {
         context: RequestContext,
         request: CreateWorkspace,
     ) -> Result<OperationRecord> {
-        let operation = match self
-            .operations
-            .start(context, "workspace_create", &request, None, None)
-            .await?
-        {
+        self.create_configured(context, request, None).await
+    }
+
+    async fn create_configured(
+        &self,
+        context: RequestContext,
+        request: CreateWorkspace,
+        initializer: Option<&dyn WorkspaceInitializer>,
+    ) -> Result<OperationRecord> {
+        let _creation = self.creation.lock().await;
+        let start = if let Some(initializer) = initializer {
+            self.operations
+                .start(
+                    context,
+                    "workspace_create",
+                    &(&request, initializer.selection()),
+                    None,
+                    None,
+                )
+                .await?
+        } else {
+            self.operations
+                .start(context, "workspace_create", &request, None, None)
+                .await?
+        };
+        let operation = match start {
+            OperationStart::Existing(record) if record.phase == OperationPhase::Reserved => {
+                OperationContext { operation: record }
+            }
             OperationStart::Existing(record) => return Ok(record),
             OperationStart::New(context) => context,
         };
+        if let Err(error) = validate_label(&request.name, "workspace name") {
+            return self.operations.fail(&operation, error).await;
+        }
+        let id = WorkspaceId::for_creation(operation.operation.id);
+        if let Some(initializer) = initializer
+            && let Err(error) = initializer.prepare(id).await
+        {
+            return self.operations.fail(&operation, error).await;
+        }
         match self
-            .create_workspace(operation.clone(), request, None)
+            .create_workspace(operation.clone(), request, None, id)
             .await
         {
             Ok(record) => Ok(record),
-            Err(error) => self.operations.fail(&operation, error).await,
+            Err(mut error) => {
+                if let Some(initializer) = initializer
+                    && let Err(cleanup) = initializer.discard(id).await
+                {
+                    error.message = format!(
+                        "{}; could not remove storage settings for {}: {}",
+                        error.message, id, cleanup
+                    );
+                }
+                self.operations.fail(&operation, error).await
+            }
         }
     }
 
@@ -540,7 +590,7 @@ impl WorkspaceApi for WorkspaceService {
                 .remote_refs(workspace.id)
                 .await?
                 .is_empty()
-            && self.revisions.trees.content.refs().is_some()
+            && self.revisions.trees.content.refs(workspace.id).is_some()
         {
             self.revisions
                 .publisher
@@ -550,7 +600,7 @@ impl WorkspaceApi for WorkspaceService {
         let branches = self.runtime.state.branches(workspace.id).await?;
         let remote_branches = self.branch_references(&workspace, &branches).await?;
         let pending_jobs = self.runtime.state.sync_jobs(workspace.id).await?.len();
-        let remote_configured = self.revisions.trees.content.remote().is_some();
+        let remote_configured = self.revisions.trees.content.remote(workspace.id).is_some();
         let synchronization = WorkspaceSynchronization::new(
             self.runtime.location,
             &branches,
@@ -597,7 +647,7 @@ impl WorkspaceApi for WorkspaceService {
         self.runtime
             .authorize(actor, workspace, None, Permission::Read)
             .await?;
-        if self.revisions.trees.content.remote().is_some() {
+        if self.revisions.trees.content.remote(workspace).is_some() {
             self.revisions.publisher.refresh_history(workspace).await?;
         }
         Ok(())

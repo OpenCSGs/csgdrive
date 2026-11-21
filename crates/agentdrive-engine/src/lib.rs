@@ -27,7 +27,7 @@ mod tree_queries;
 mod trees;
 mod workspaces;
 
-pub use content::{ContentService, RemoteStorage};
+pub use content::{ContentService, RemoteStorage, StorageRoutes};
 pub(crate) use operations::OperationService;
 pub use runtime::Runtime;
 pub(crate) use trees::TreeService;

@@ -40,18 +40,18 @@ impl OwnershipService {
         request: TransferOwnership,
     ) -> Result<OperationRecord> {
         let content = &self.revisions.trees.content;
-        let refs = content.refs().ok_or_else(|| {
-            Error::new(
-                ErrorCode::RemoteRequired,
-                "ownership transfer requires remote storage",
-            )
-        })?;
-        let branch = {
+        let (branch, refs) = {
             let _gate = self.runtime.lock_branch(request.guard.branch).await;
             self.runtime.check_mutation(request.guard.branch)?;
             self.runtime.check_sandbox(request.guard.branch)?;
             let _protection = self.runtime.objects.read().await;
             let mut branch = self.runtime.branch(request.guard.branch).await?;
+            let refs = content.refs(branch.workspace).ok_or_else(|| {
+                Error::new(
+                    ErrorCode::RemoteRequired,
+                    "ownership transfer requires remote storage",
+                )
+            })?;
             check_guard(&branch, &request.guard)?;
             if branch.owner != self.runtime.location {
                 return Err(Error::new(
@@ -102,7 +102,7 @@ impl OwnershipService {
                     })
                     .await?;
             }
-            branch
+            (branch, refs)
         };
         self.replica
             .drain(branch.workspace, Some(branch.id))

@@ -22,7 +22,7 @@ impl CollaborationService {
             .ok_or_else(|| Error::new(ErrorCode::NotFound, "workspace does not exist"))?;
         workspace_record.authorize(actor, Some(branch), permission)?;
         let _coordinate = self.coordinate(branch)?;
-        if self.revisions.trees.content.refs().is_none() {
+        if self.revisions.trees.content.refs(workspace).is_none() {
             return Err(Error::new(
                 ErrorCode::RemoteRequired,
                 "automatic collaboration requires remote storage",
@@ -36,7 +36,7 @@ impl CollaborationService {
             self.install_view(reference, version).await?;
         }
         let _lifecycle = self.runtime.lifecycle.lock().await;
-        if self.revisions.trees.content.refs().is_none() {
+        if self.revisions.trees.content.refs(workspace).is_none() {
             return Err(Error::new(
                 ErrorCode::RemoteRequired,
                 "automatic collaboration requires remote storage",
@@ -82,11 +82,12 @@ impl CollaborationService {
     async fn prepare_branch_access(
         &self,
         actor: &Principal,
+        workspace: WorkspaceId,
         branch_id: BranchId,
         permission: Permission,
         expected: Option<BranchGuard>,
     ) -> Result<()> {
-        if self.automatic_enabled()
+        if self.automatic_enabled_for(workspace)
             && self
                 .runtime
                 .state
@@ -94,8 +95,7 @@ impl CollaborationService {
                 .await?
                 .is_none_or(|record| !record.settings.enabled)
         {
-            let branch = self.runtime.branch(branch_id).await?;
-            self.register_branch(actor, branch.workspace, branch_id, permission)
+            self.register_branch(actor, workspace, branch_id, permission)
                 .await?;
         }
         let Some(record) = self.runtime.state.collaboration(branch_id).await? else {
@@ -104,7 +104,7 @@ impl CollaborationService {
         if !record.settings.enabled {
             return Ok(());
         }
-        if !self.automatic_enabled() {
+        if !self.automatic_enabled_for(workspace) {
             let _coordinate = self.coordinate(branch_id)?;
             let Some(mut record) = self.runtime.state.collaboration(branch_id).await? else {
                 return Ok(());
@@ -135,7 +135,7 @@ impl CollaborationService {
         if !record.settings.enabled {
             return Ok(());
         }
-        if !self.automatic_enabled() && !self.transition_active(&record) {
+        if !self.automatic_enabled_for(workspace) && !self.transition_active(&record) {
             return self.suspend(&mut record).await;
         }
         if self
@@ -184,7 +184,13 @@ impl CollaborationService {
 impl WriteAccess for CollaborationService {
     fn automatic_enabled(&self) -> bool {
         self.config.load().values.collaboration.enabled
-            && self.revisions.trees.content.refs().is_some()
+            && self.revisions.trees.content.remote_available()
+            && self.mounts.check_collaboration_support().is_ok()
+    }
+
+    fn automatic_enabled_for(&self, workspace: WorkspaceId) -> bool {
+        self.config.load().values.collaboration.enabled
+            && self.revisions.trees.content.remote_available_for(workspace)
             && self.mounts.check_collaboration_support().is_ok()
     }
 
@@ -214,8 +220,14 @@ impl WriteAccess for CollaborationService {
         if binding.access != AccessMode::ReadWrite || binding.revision.is_some() {
             return Err(Error::new(ErrorCode::ReadOnly, "mount is read-only"));
         }
-        self.prepare_branch_access(&binding.principal, binding.branch, Permission::Write, None)
-            .await
+        self.prepare_branch_access(
+            &binding.principal,
+            binding.workspace,
+            binding.branch,
+            Permission::Write,
+            None,
+        )
+        .await
     }
 
     async fn prepare_branch_write(
@@ -228,7 +240,7 @@ impl WriteAccess for CollaborationService {
         self.runtime
             .authorize(actor, before.workspace, Some(before.id), permission)
             .await?;
-        if !self.automatic_enabled() || before.protected {
+        if !self.automatic_enabled_for(before.workspace) || before.protected {
             crate::runtime::check_guard(&before, &guard)?;
             return Ok(guard);
         }
@@ -240,7 +252,7 @@ impl WriteAccess for CollaborationService {
                 "branch authority is newer than the local view",
             ));
         }
-        self.prepare_branch_access(actor, before.id, permission, Some(guard))
+        self.prepare_branch_access(actor, before.workspace, before.id, permission, Some(guard))
             .await?;
         let after = self.runtime.branch(before.id).await?;
         crate::runtime::check_content_guard(&after, &guard)?;

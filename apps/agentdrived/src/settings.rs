@@ -1,15 +1,12 @@
 use agentdrive_config::{ConfigApplier, RemoteConfig, RuntimeConfig};
-use agentdrive_engine::{Engine, RemoteStorage};
-use agentdrive_model::Result;
+use agentdrive_engine::{Engine, RemoteStorage, StorageRoutes};
+use agentdrive_model::{Result, WorkspaceId};
 use agentdrive_opencsg::OpenCsgBackend;
 use agentdrive_s3::S3Backend;
 use std::sync::Arc;
 
-pub fn remote_storage(config: Option<&RemoteConfig>) -> Result<Option<RemoteStorage>> {
-    let Some(config) = config.filter(|config| config.enabled()) else {
-        return Ok(None);
-    };
-    Ok(Some(match config {
+fn remote_storage(config: &RemoteConfig) -> Result<Arc<RemoteStorage>> {
+    Ok(Arc::new(match config {
         RemoteConfig::S3(config) => {
             let backend = S3Backend::new(config.clone())?;
             RemoteStorage {
@@ -27,13 +24,51 @@ pub fn remote_storage(config: Option<&RemoteConfig>) -> Result<Option<RemoteStor
     }))
 }
 
+/// Reuse existing clients so an edit only opens connections for newly selected settings.
+pub fn storage_routes<'a>(
+    next: &'a RuntimeConfig,
+    previous: Option<(&'a RuntimeConfig, &StorageRoutes)>,
+) -> Result<(StorageRoutes, Vec<Arc<RemoteStorage>>)> {
+    let mut clients = Vec::new();
+    if let Some((previous, routes)) = previous {
+        if let (Some(config), Some(client)) = (&previous.remote, &routes.default) {
+            clients.push((config, client.clone()));
+        }
+        for (id, config) in &previous.workspace_remotes {
+            if let (Some(config), Some(Some(client))) = (config, routes.workspaces.get(id)) {
+                clients.push((config, client.clone()));
+            }
+        }
+    }
+    let mut opened = Vec::new();
+    let mut resolve = |config: Option<&'a RemoteConfig>| -> Result<Option<Arc<RemoteStorage>>> {
+        let Some(config) = config.filter(|c| c.enabled()) else {
+            return Ok(None);
+        };
+        if let Some((_, client)) = clients.iter().find(|(existing, _)| *existing == config) {
+            return Ok(Some(client.clone()));
+        }
+        let client = remote_storage(config)?;
+        clients.push((config, client.clone()));
+        opened.push(client.clone());
+        Ok(Some(client))
+    };
+    let default = resolve(next.remote.as_ref())?;
+    let overrides = next
+        .workspace_remotes
+        .iter()
+        .map(|(id, config)| Ok((*id, resolve(config.as_ref())?)))
+        .collect::<Result<_>>()?;
+    Ok((StorageRoutes::new(default, overrides), opened))
+}
+
 #[derive(Debug)]
 pub struct StorageSettings {
     pub engine: Arc<Engine>,
     pub runtime: tokio::runtime::Handle,
 }
 
-fn credentials_only(previous: &RemoteConfig, next: &RemoteConfig) -> bool {
+fn same_namespace(previous: &RemoteConfig, next: &RemoteConfig) -> bool {
     match (previous, next) {
         (RemoteConfig::S3(previous), RemoteConfig::S3(next)) => {
             let mut same = previous.clone();
@@ -43,10 +78,20 @@ fn credentials_only(previous: &RemoteConfig, next: &RemoteConfig) -> bool {
         (RemoteConfig::OpenCsg(previous), RemoteConfig::OpenCsg(next)) => {
             let mut same = previous.clone();
             same.token = next.token.clone();
+            same.xnet = next.xnet;
             same == *next
         }
         _ => false,
     }
+}
+
+fn selected(config: &RuntimeConfig, workspace: WorkspaceId) -> Option<&RemoteConfig> {
+    config
+        .workspace_remotes
+        .get(&workspace)
+        .unwrap_or(&config.remote)
+        .as_ref()
+        .filter(|r| r.enabled())
 }
 
 impl ConfigApplier for StorageSettings {
@@ -56,25 +101,24 @@ impl ConfigApplier for StorageSettings {
         next: &RuntimeConfig,
         persist: &mut dyn FnMut() -> Result<()>,
     ) -> Result<()> {
-        let active = previous.remote.as_ref().filter(|remote| remote.enabled());
-        let requested = next.remote.as_ref().filter(|remote| remote.enabled());
-        if active == requested {
+        if previous.remote == next.remote && previous.workspace_remotes == next.workspace_remotes {
             return persist();
         }
         self.runtime.block_on(async {
-            let remote = remote_storage(requested)?;
-            if let Some(remote) = &remote {
+            let current = self.engine.storage_routes();
+            let (routes, opened) = storage_routes(next, Some((previous, &current)))?;
+            for remote in opened {
                 remote.refs.check_connection().await?;
             }
-            if let (Some(previous), Some(next), Some(remote)) = (active, requested, &remote)
-                && credentials_only(previous, next)
+            let moved = |workspace| match (selected(previous, workspace), selected(next, workspace))
             {
-                return self
-                    .engine
-                    .refresh_storage_connection(remote.clone(), persist)
-                    .await;
-            }
-            self.engine.switch_storage(remote, persist).await
+                (Some(a), Some(b)) => a != b && !same_namespace(a, b),
+                (None, None) => false,
+                _ => true,
+            };
+            self.engine
+                .switch_storage_routes(routes, moved, persist)
+                .await
         })
     }
 }
@@ -85,7 +129,7 @@ mod tests {
     use agentdrive_config::{OpenCsgConfig, S3Config, S3Credentials};
 
     #[test]
-    fn rotating_credentials_requires_the_same_remote_namespace() {
+    fn credentials_and_codes_transfer_mode_preserve_the_remote_namespace() {
         let previous = OpenCsgConfig {
             enabled: true,
             endpoint: "https://example.test".into(),
@@ -94,16 +138,22 @@ mod tests {
             prefix: "drive".into(),
             token: "old-test-token".into(),
             allow_http: false,
+            xnet: false,
         };
         let mut next = previous.clone();
         next.token = "new-test-token".into();
         let previous = RemoteConfig::OpenCsg(previous);
-        assert!(credentials_only(
+        assert!(same_namespace(
+            &previous,
+            &RemoteConfig::OpenCsg(next.clone())
+        ));
+        next.xnet = true;
+        assert!(same_namespace(
             &previous,
             &RemoteConfig::OpenCsg(next.clone())
         ));
         next.branch = "other".into();
-        assert!(!credentials_only(&previous, &RemoteConfig::OpenCsg(next)));
+        assert!(!same_namespace(&previous, &RemoteConfig::OpenCsg(next)));
 
         let previous = S3Config {
             enabled: true,
@@ -121,8 +171,8 @@ mod tests {
             session_token: None,
         });
         let previous = RemoteConfig::S3(previous);
-        assert!(credentials_only(&previous, &RemoteConfig::S3(next.clone())));
+        assert!(same_namespace(&previous, &RemoteConfig::S3(next.clone())));
         next.prefix = "other".into();
-        assert!(!credentials_only(&previous, &RemoteConfig::S3(next)));
+        assert!(!same_namespace(&previous, &RemoteConfig::S3(next)));
     }
 }

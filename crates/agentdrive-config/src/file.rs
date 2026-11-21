@@ -2,6 +2,7 @@ use crate::{CacheConfig, CollaborationConfig, RemoteConfig, RuntimeConfig};
 use agentdrive_model::*;
 use serde::{Deserialize, Serialize};
 use std::{
+    collections::BTreeMap,
     fs::{self, OpenOptions},
     io::Write,
     net::SocketAddr,
@@ -13,6 +14,8 @@ use std::{
 pub struct Config {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub remote: Option<RemoteConfig>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub workspace_remotes: BTreeMap<WorkspaceId, Option<RemoteConfig>>,
     #[serde(flatten)]
     pub startup: StartupConfig,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -69,6 +72,7 @@ impl Config {
     pub fn runtime(&self) -> RuntimeConfig {
         RuntimeConfig {
             remote: self.remote.clone(),
+            workspace_remotes: self.workspace_remotes.clone(),
             cache: self.cache.clone(),
             allowed_origins: self.allowed_origins.clone(),
             collaboration: self.collaboration.clone(),
@@ -77,6 +81,7 @@ impl Config {
     pub(crate) fn with_runtime(startup: StartupConfig, runtime: RuntimeConfig) -> Self {
         Self {
             remote: runtime.remote,
+            workspace_remotes: runtime.workspace_remotes,
             startup,
             cache: runtime.cache,
             allowed_origins: runtime.allowed_origins,
@@ -136,6 +141,7 @@ pub fn initialize(directory: &Path, listen: SocketAddr) -> Result<PathBuf> {
     fs::create_dir_all(&exchange)?;
     let config = Config {
         remote: None,
+        workspace_remotes: BTreeMap::new(),
         startup: StartupConfig {
             data_dir: directory.join("state"),
             listen,

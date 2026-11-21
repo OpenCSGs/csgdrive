@@ -9,7 +9,7 @@ use axum::{
     response::{Html, IntoResponse, Response},
     routing::{get, post},
 };
-use serde::Deserialize;
+use serde::{Deserialize, Deserializer};
 use serde_json::{Value, json};
 use std::{path::PathBuf, sync::Arc};
 
@@ -117,11 +117,12 @@ async fn management_command(
     ))
 }
 
-pub(crate) fn settings_api(settings: Arc<ConfigStore>) -> Router {
+pub(crate) fn settings_api(settings: Arc<ConfigStore>, services: Services) -> Router {
     Router::new()
         .route("/api/settings", get(get_settings).put(update_settings))
         .layer(axum::extract::DefaultBodyLimit::max(1024 * 1024))
-        .with_state(settings)
+        .with_state(settings.clone())
+        .merge(crate::workspace_storage::api(settings, services))
 }
 
 async fn get_settings(
@@ -130,13 +131,37 @@ async fn get_settings(
     Ok(Json(settings.settings()))
 }
 
+struct DashboardSettingsUpdate {
+    update: SettingsUpdate,
+    has_workspace_remotes: bool,
+}
+
+impl<'de> Deserialize<'de> for DashboardSettingsUpdate {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> std::result::Result<Self, D::Error> {
+        let value = Value::deserialize(deserializer)?;
+        let has_workspace_remotes = value.pointer("/runtime/workspace_remotes").is_some();
+        let update = serde_json::from_value(value).map_err(serde::de::Error::custom)?;
+        Ok(Self {
+            update,
+            has_workspace_remotes,
+        })
+    }
+}
+
 async fn update_settings(
     State(settings): State<Arc<ConfigStore>>,
-    Json(update): Json<SettingsUpdate>,
+    Json(input): Json<DashboardSettingsUpdate>,
 ) -> std::result::Result<Json<Settings>, ApiError> {
-    let result = tokio::task::spawn_blocking(move || settings.update(update))
-        .await
-        .map_err(|error| Error::new(ErrorCode::Io, error.to_string()))??;
+    let result = tokio::task::spawn_blocking(move || {
+        let mut update = input.update;
+        // Older clients submit only the daemon-wide fields they understand.
+        if !input.has_workspace_remotes {
+            update.runtime.workspace_remotes = settings.settings().runtime.workspace_remotes;
+        }
+        settings.update(update)
+    })
+    .await
+    .map_err(|error| Error::new(ErrorCode::Io, error.to_string()))??;
     Ok(Json(result))
 }
 

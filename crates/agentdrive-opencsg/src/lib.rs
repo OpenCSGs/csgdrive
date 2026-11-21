@@ -2,6 +2,7 @@
 mod http;
 mod objects;
 mod refs;
+mod xnet;
 
 use agentdrive_config::OpenCsgConfig;
 use agentdrive_model::*;
@@ -12,6 +13,7 @@ use tokio::sync::{Mutex, OnceCell};
 
 pub struct OpenCsgBackend {
     repository: Repository,
+    xnet: xnet::Xnet,
     prefix: String,
     verified: OnceCell<()>,
     writes: Mutex<()>,
@@ -30,6 +32,7 @@ impl OpenCsgBackend {
         config.validate()?;
         Ok(Arc::new(Self {
             repository: Repository::new(&config)?,
+            xnet: xnet::Xnet::new(&config)?,
             prefix: config.prefix,
             verified: OnceCell::new(),
             writes: Mutex::new(()),
@@ -44,6 +47,9 @@ impl OpenCsgBackend {
     }
 
     async fn probe(&self) -> Result<()> {
+        if self.xnet.enabled {
+            self.xnet.check(self.repository.branch()).await?;
+        }
         let path = format!("{}/checks/{}.json", self.prefix, OperationId::new());
         let create_path = format!("{path}.create");
         let result = async {
