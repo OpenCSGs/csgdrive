@@ -73,7 +73,7 @@ impl Repository {
         })
     }
 
-    fn request(&self, method: Method, path: &str) -> RequestBuilder {
+    pub(crate) fn request(&self, method: Method, path: &str) -> RequestBuilder {
         let mut url = self.base.clone();
         url.path_segments_mut()
             .expect("validated HTTP URL")
@@ -81,7 +81,7 @@ impl Repository {
         self.client.request(method, url)
     }
 
-    async fn response<T: DeserializeOwned>(&self, request: RequestBuilder) -> Result<T> {
+    pub(crate) async fn response<T: DeserializeOwned>(&self, request: RequestBuilder) -> Result<T> {
         let mut response = request.send().await.map_err(transport_error)?;
         let status = response.status();
         if response
@@ -146,6 +146,10 @@ impl Repository {
         serde_json::from_slice::<Envelope<T>>(&bytes)
             .map(|envelope| envelope.data)
             .map_err(|_| Error::integrity("OpenCSG returned an invalid response"))
+    }
+
+    pub(crate) fn branch(&self) -> &str {
+        &self.branch
     }
 
     pub async fn head(&self) -> Result<String> {

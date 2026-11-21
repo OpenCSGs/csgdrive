@@ -160,7 +160,8 @@ impl CacheApi for CacheService {
                 .await?;
             let (paths, objects) = self.selection(&request).await?;
             let cached = self.inspect(&request, paths.clone(), &objects).await?;
-            let protected = self.content.remote_available() && !cached.complete;
+            let protected =
+                self.content.remote_available_for(request.workspace) && !cached.complete;
             if protected {
                 self.content
                     .protect_remote(
@@ -407,8 +408,9 @@ impl CacheService {
         };
         let current = RetentionRoots::from_state(self.runtime.state.retention_state().await?);
         if current != *roots
-            || (batch.iter().any(|entry| entry.remote_confirmed)
-                && !self.content.remote_available())
+            || batch.iter().any(|entry| {
+                entry.remote_confirmed && !self.content.remote_available_for(entry.workspace)
+            })
         {
             return Ok(None);
         }
@@ -457,7 +459,10 @@ impl CacheService {
             for entry in cached {
                 if !entry.remote_confirmed && !retained.contains(&entry.reference.id) {
                     candidates.unreachable.push(entry);
-                } else if entry.remote_confirmed && !protected.contains(&entry.reference.id) {
+                } else if entry.remote_confirmed
+                    && self.content.remote_available_for(*workspace)
+                    && !protected.contains(&entry.reference.id)
+                {
                     candidates.evictable.push(entry);
                 }
             }

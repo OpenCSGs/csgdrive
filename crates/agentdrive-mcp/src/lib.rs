@@ -10,3 +10,5 @@ pub use gateway::{GatewayConfig, router};
 pub use server::{McpServer, tool_catalog};
 
 mod sandbox_proxy;
+
+mod workspace_storage;

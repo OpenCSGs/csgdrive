@@ -59,6 +59,9 @@ pub trait CollaborationApi: Send + Sync {
 #[async_trait]
 pub trait WriteAccess: Send + Sync {
     fn automatic_enabled(&self) -> bool;
+    fn automatic_enabled_for(&self, _workspace: WorkspaceId) -> bool {
+        self.automatic_enabled()
+    }
     async fn prepare_mount(
         &self,
         actor: &Principal,

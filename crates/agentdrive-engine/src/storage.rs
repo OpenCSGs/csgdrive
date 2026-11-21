@@ -1,4 +1,4 @@
-use crate::{ContentService, Engine, RemoteStorage, replica::decode_branch_ref};
+use crate::{ContentService, Engine, RemoteStorage, StorageRoutes, replica::decode_branch_ref};
 use agentdrive_model::*;
 use agentdrive_ports::*;
 use std::{collections::BTreeMap, sync::Arc};
@@ -13,14 +13,16 @@ impl Engine {
         let _lifecycle = self.runtime.lifecycle.lock().await;
         let _publication = self.publisher.publication.write().await;
         let content = &self.revisions.trees.content;
-        if content.storage.load_full().is_none() {
+        let mut routes = (*content.storage.load_full()).clone();
+        if routes.default.is_none() {
             return Err(Error::new(
                 ErrorCode::RemoteRequired,
                 "remote storage is not configured",
             ));
         }
         persist()?;
-        content.storage.store(Some(Arc::new(next)));
+        routes.default = Some(Arc::new(next));
+        content.storage.store(Arc::new(routes));
         Ok(())
     }
 
@@ -31,13 +33,36 @@ impl Engine {
         persist: &mut dyn FnMut() -> Result<()>,
     ) -> Result<()> {
         let _lifecycle = self.runtime.lifecycle.lock().await;
+        let previous = self.storage_routes();
+        let routes = StorageRoutes::new(next.map(Arc::new), previous.workspaces.clone());
+        self.apply_storage_routes(routes, |id| !previous.workspaces.contains_key(&id), persist)
+            .await
+    }
+
+    /// Migrate retained objects and branch references for changed namespaces, then publish the complete route table.
+    pub async fn switch_storage_routes(
+        &self,
+        next: StorageRoutes,
+        affected: impl Fn(WorkspaceId) -> bool + Send + Sync,
+        persist: &mut dyn FnMut() -> Result<()>,
+    ) -> Result<()> {
+        let _lifecycle = self.runtime.lifecycle.lock().await;
+        self.apply_storage_routes(next, affected, persist).await
+    }
+
+    async fn apply_storage_routes(
+        &self,
+        next: StorageRoutes,
+        affected: impl Fn(WorkspaceId) -> bool + Send + Sync,
+        persist: &mut dyn FnMut() -> Result<()>,
+    ) -> Result<()> {
         let workspaces: Vec<_> = self
             .runtime
             .state
             .workspaces()
             .await?
             .into_iter()
-            .filter(|w| !w.deleted)
+            .filter(|w| !w.deleted && affected(w.id))
             .collect();
         for workspace in &workspaces {
             if self
@@ -47,7 +72,8 @@ impl Engine {
                 .await?
                 .iter()
                 .any(|record| {
-                    (self.collaboration.automatic_enabled() && record.settings.enabled)
+                    (self.collaboration.automatic_enabled_for(workspace.id)
+                        && record.settings.enabled)
                         || record.transition.is_some()
                         || record.recovery.is_some()
                         || record.release.is_some()
@@ -64,6 +90,7 @@ impl Engine {
         let trees = &self.revisions.trees;
         let content = &trees.content;
         let mut retained = Vec::new();
+        let mut sources = Vec::new();
         for workspace in workspaces {
             if self
                 .runtime
@@ -94,22 +121,24 @@ impl Engine {
                     .into_iter()
                     .map(|branch| branch.working_root),
             );
+            let observed = self.runtime.state.remote_refs(workspace.id).await?;
+            let jobs = self.runtime.state.sync_jobs(workspace.id).await?;
+            let known_heads = observed.iter().chain(jobs.iter().map(|job| &job.reference));
+            if let Some(source) = content.storage.load().for_workspace(workspace.id) {
+                let heads = source_heads(&source, workspace.id).await?;
+                let mut missing: std::collections::BTreeSet<_> = heads.keys().copied().collect();
+                for reference in known_heads.clone() {
+                    if heads.get(&reference.branch) == Some(reference) {
+                        missing.remove(&reference.branch);
+                    }
+                }
+                if !missing.is_empty() {
+                    return Err(source_changed(workspace.id));
+                }
+                sources.push((workspace.id, source, heads));
+            }
             let mut references = BTreeMap::<BranchId, BranchRef>::new();
-            for reference in self
-                .runtime
-                .state
-                .remote_refs(workspace.id)
-                .await?
-                .into_iter()
-                .chain(
-                    self.runtime
-                        .state
-                        .sync_jobs(workspace.id)
-                        .await?
-                        .into_iter()
-                        .map(|job| job.reference),
-                )
-            {
+            for reference in known_heads {
                 roots.extend([
                     reference.working_root.clone(),
                     reference.record_index.clone(),
@@ -120,7 +149,7 @@ impl Engine {
                 if (reference.authority_epoch, reference.source_generation)
                     > (selected.authority_epoch, selected.source_generation)
                 {
-                    *selected = reference;
+                    *selected = reference.clone();
                 }
             }
             for pin in self.runtime.state.cache_pins(workspace.id).await? {
@@ -133,14 +162,10 @@ impl Engine {
             }
             retained.push((workspace, roots, objects, references));
         }
-        if let Some(next) = &next {
-            let destination = ContentService::new(
-                content.local.clone(),
-                Some(next.objects.clone()),
-                Some(next.refs.clone()),
-            );
-            let pin: OperationId = self.runtime.location.to_string().parse()?;
-            for (workspace, roots, objects, references) in &retained {
+        let destination = ContentService::with_routes(content.local.clone(), next.clone());
+        let pin: OperationId = self.runtime.location.to_string().parse()?;
+        for (workspace, roots, objects, references) in &retained {
+            if let Some(next) = next.for_workspace(workspace.id) {
                 let initial = trees
                     .revision(workspace.id, workspace.initial_revision)
                     .await?;
@@ -155,7 +180,7 @@ impl Engine {
                         )
                         .await?;
                 }
-                publish_workspace(next, workspace.clone(), initial).await?;
+                publish_workspace(&next, workspace.clone(), initial).await?;
                 destination
                     .protect_remote(workspace.id, pin, roots.clone())
                     .await?;
@@ -169,7 +194,7 @@ impl Engine {
                             .await?;
                     }
                     for reference in references.values() {
-                        publish_branch(next, reference, self.runtime.location).await?;
+                        publish_branch(&next, reference, self.runtime.location).await?;
                     }
                     Ok(())
                 }
@@ -179,11 +204,17 @@ impl Engine {
                 release?;
             }
         }
+        // Another location can publish while the destination is receiving objects.
+        for (workspace, source, original) in sources {
+            if source_heads(&source, workspace).await? != original {
+                return Err(source_changed(workspace));
+            }
+        }
         persist()?;
-        let enabled = next.is_some();
-        content.storage.store(next.map(Arc::new));
-        if enabled {
-            for (workspace, _, objects, _) in retained {
+        let next = Arc::new(next);
+        content.storage.store(next.clone());
+        for (workspace, _, objects, _) in retained {
+            if next.for_workspace(workspace.id).is_some() {
                 for object in objects {
                     if let Err(error) = content.local.confirm_remote(workspace.id, &object).await {
                         tracing::warn!(%error, "storage applied; local cache confirmation will require a later upload");
@@ -193,6 +224,39 @@ impl Engine {
         }
         Ok(())
     }
+}
+
+fn source_changed(workspace: WorkspaceId) -> Error {
+    Error::new(
+        ErrorCode::TargetMoved,
+        format!("source history changed for workspace {workspace}. Pause writes on all locations, pull all branches, and retry the storage change"),
+    ).retryable()
+}
+
+async fn source_heads(
+    source: &RemoteStorage,
+    workspace: WorkspaceId,
+) -> Result<BTreeMap<BranchId, BranchRef>> {
+    if let Some(control) = source.refs.get(&RefKey::Workspace(workspace)).await?
+        && crate::replica::decode_workspace_control(workspace, &control.bytes)?
+            .workspace
+            .deleted
+    {
+        return Err(Error::new(
+            ErrorCode::NotFound,
+            format!("source workspace {workspace} was deleted. Refresh workspace discovery"),
+        ));
+    }
+    let mut heads = BTreeMap::new();
+    for branch in source.refs.list_branches(workspace).await? {
+        let value = source
+            .refs
+            .get(&RefKey::Branch { workspace, branch })
+            .await?
+            .ok_or_else(|| source_changed(workspace))?;
+        heads.insert(branch, decode_branch_ref(workspace, branch, &value.bytes)?);
+    }
+    Ok(heads)
 }
 
 async fn publish_workspace(
@@ -267,7 +331,10 @@ async fn publish_branch(
                 return Ok(());
             }
             if reference.owner != location {
-                return Ok(());
+                return Err(Error::new(
+                    ErrorCode::TargetMoved,
+                    "destination contains a different head for a branch owned by another location. Reconcile it with its owner or select a fresh storage namespace",
+                ));
             }
             if remote.owner != reference.owner
                 || remote.authority_epoch != reference.authority_epoch

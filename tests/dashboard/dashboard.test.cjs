@@ -147,12 +147,14 @@ test('settings persist global collaboration and remote credentials and load exte
     startup:{listen:'127.0.0.1:7421',data_dir:'/private/data',mount_roots:[],directory_roots:[]}};
   await page.route('**/api/**', async route => {
     const url = new URL(route.request().url());
-    if (url.pathname === '/api/workspaces') return route.fulfill({json:[]});
+    if (url.pathname === '/api/workspaces') return route.fulfill({json:[{id:'alpha',name:'Alpha'},{id:'beta',name:'Beta'}]});
     if (url.pathname !== '/api/settings') return route.fulfill({status:404,json:{error:{message:'Unknown endpoint'}}});
     if (route.request().method() === 'PUT') {
       const request = route.request().postDataJSON(); updates.push(request);
       settings = {...settings,revision:'settings-'+updates.length,runtime:structuredClone(request.runtime)};
-      if (settings.runtime.remote?.backend === 'opencsg') settings.runtime.remote.token = '';
+      for (const profile of [settings.runtime.remote, ...Object.values(settings.runtime.workspace_remotes || {})]) {
+        if (profile?.backend === 'opencsg') profile.token = '';
+      }
     }
     return route.fulfill({json:settings});
   });
@@ -200,6 +202,24 @@ test('settings persist global collaboration and remote credentials and load exte
   await page.locator('#settings-reload').click();
   await page.waitForFunction(() => document.querySelector('#settings-collaboration-enabled').checked);
   assert.match(await page.locator('#settings-version').textContent(),/external-fil/);
+  const scope = page.locator('#storage-scope'), mode = page.locator('#storage-mode');
+  await scope.selectOption('alpha');
+  assert.equal(await mode.inputValue(),'inherit');
+  await mode.selectOption('opencsg');
+  await page.locator('#opencsg-endpoint').fill('https://codes.example');
+  await page.locator('#opencsg-repository').fill('owner/alpha');
+  await page.locator('#opencsg-token').fill('alpha-token');
+  await page.locator('#opencsg-xnet').check(); await save();
+  assert.equal(updates.at(-1).runtime.remote.backend,'s3');
+  assert.equal(updates.at(-1).runtime.workspace_remotes.alpha.xnet,true);
+  assert.equal(updates.at(-1).runtime.workspace_remotes.alpha.token,'alpha-token');
+  assert.equal(await page.locator('#opencsg-token').inputValue(),'');
+  await scope.selectOption('beta'); await mode.selectOption('local'); await save();
+  assert.equal(updates.at(-1).runtime.workspace_remotes.beta,null);
+  assert.equal(updates.at(-1).runtime.workspace_remotes.alpha.token,'');
+  await scope.selectOption('alpha'); await mode.selectOption('inherit'); await save();
+  assert.deepEqual(updates.at(-1).runtime.workspace_remotes,{beta:null});
+
 });
 
 test('history contains only revisions authored on the selected branch, including an empty child', async t => {

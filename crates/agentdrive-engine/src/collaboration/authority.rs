@@ -7,12 +7,17 @@ impl CollaborationService {
         workspace: WorkspaceId,
         branch: BranchId,
     ) -> Result<Option<(BranchRef, String)>> {
-        let refs = self.revisions.trees.content.refs().ok_or_else(|| {
-            Error::new(
-                ErrorCode::RemoteRequired,
-                "remote storage is not configured",
-            )
-        })?;
+        let refs = self
+            .revisions
+            .trees
+            .content
+            .refs(workspace)
+            .ok_or_else(|| {
+                Error::new(
+                    ErrorCode::RemoteRequired,
+                    "remote storage is not configured",
+                )
+            })?;
         let Some(value) = refs.get(&RefKey::Branch { workspace, branch }).await? else {
             return Ok(None);
         };
@@ -366,7 +371,7 @@ impl CollaborationService {
         }
         next.authority_epoch = increment(remote.authority_epoch)?;
         next.source_generation = increment(remote.source_generation)?;
-        if !self.automatic_enabled() {
+        if !self.automatic_enabled_for(record.workspace) {
             return Err(Error::invalid(
                 "automatic collaboration is disabled in daemon settings",
             ));

@@ -1,3 +1,5 @@
+import { storageEditor } from './settings.js';
+
 export function createWorkspaceActions({api, element, changed}) {
   const dialog = element('dialog', 'revision-dialog workspace-delete-dialog');
   const title = element('h2', '', '删除工作区'); title.id = 'workspace-delete-title';
@@ -51,7 +53,12 @@ export function createWorkspaceCreator({api, element, created}) {
   const actions = element('div', 'management-actions');
   const cancel = element('button', 'secondary', '取消'), submit = element('button', 'primary', '创建工作区');
   cancel.type = 'button'; submit.type = 'submit'; actions.append(cancel, submit);
-  form.append(label, error, note, actions); dialog.append(title, description, form); document.body.append(dialog);
+  const storage = document.getElementById('storage-editor').cloneNode(true);
+  storage.id = 'create-storage-editor';
+  for (const field of storage.querySelectorAll('[id]')) field.id = 'create-' + field.id;
+  const editor = storageEditor(id => storage.querySelector('#create-' + id));
+  storage.addEventListener('input', () => { editor.update(); error.textContent = ''; });
+  form.append(label, storage, error, note, actions); dialog.append(title, description, form); document.body.append(dialog);
   const key = 'agentdrive-workspace-create';
   let ticket = null, busy = false, trigger = null;
   function update() {
@@ -60,9 +67,13 @@ export function createWorkspaceCreator({api, element, created}) {
     input.setCustomValidity(valid ? '' : '请输入工作区名称，长度不超过 256 字节，且不包含控制字符。');
     submit.disabled = busy || !valid; cancel.disabled = busy;
     input.readOnly = busy || !!ticket;
+    for (const field of storage.querySelectorAll('select, input[type=checkbox]')) field.disabled = busy || !!ticket;
+    for (const field of storage.querySelectorAll('input:not([type=checkbox])')) {
+      field.readOnly = busy || (!!ticket && field.type !== 'password');
+    }
     submit.textContent = busy ? '正在创建…' : ticket ? '重试创建' : '创建工作区';
     note.hidden = !ticket;
-    note.textContent = ticket ? '创建结果尚未确认，重试会继续同一个请求。' : '';
+    note.textContent = ticket ? '创建结果尚未确认。重试会继续同一个请求，重新打开表单后需再次填写密钥。' : '';
   }
   function clearTicket() { ticket = null; sessionStorage.removeItem(key); }
   function close() { if (busy) return; dialog.close(); trigger?.focus({preventScroll:true}); }
@@ -73,9 +84,16 @@ export function createWorkspaceCreator({api, element, created}) {
     event.preventDefault(); update(); if (submit.disabled) return;
     busy = true; error.textContent = '';
     try {
-      ticket ||= {request_id:crypto.randomUUID(), request:{name:input.value.trim()}};
+      const profile = editor.read();
+      const request = {request_id:ticket?.request_id || crypto.randomUUID(), name:input.value.trim(), storage:profile};
+      ticket = structuredClone(request);
+      if (ticket.storage?.backend === 'opencsg') delete ticket.storage.token;
+      if (ticket.storage?.credentials) {
+        delete ticket.storage.credentials.secret_access_key;
+        delete ticket.storage.credentials.session_token;
+      }
       sessionStorage.setItem(key, JSON.stringify(ticket)); update();
-      const result = await api('/api/commands/workspace_create', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(ticket)});
+      const result = await api('/api/workspaces', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(request)});
       if (result.error) {
         if (['failed','cancelled'].includes(result.phase) && !result.error.retryable) clearTicket();
         throw new Error(result.error.message);
@@ -90,7 +108,11 @@ export function createWorkspaceCreator({api, element, created}) {
   return {show(button) {
     trigger = button;
     try { ticket = JSON.parse(sessionStorage.getItem(key)); } catch { ticket = null; }
-    if (!ticket?.request_id || typeof ticket.request?.name !== 'string') ticket = null;
-    input.value = ticket?.request.name || ''; error.textContent = ''; update(); dialog.showModal(); input.focus();
+    // Pending requests created before storage selection inherited the default.
+    if (ticket?.request?.name) ticket = {request_id:ticket.request_id, name:ticket.request.name};
+    if (!ticket?.request_id || typeof ticket.name !== 'string') ticket = null;
+    const mode = ticket?.storage === undefined ? 'inherit' : undefined;
+    editor.show(ticket?.storage, mode, true, false);
+    input.value = ticket?.name || ''; error.textContent = ''; update(); dialog.showModal(); input.focus();
   }};
 }

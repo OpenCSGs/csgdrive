@@ -41,19 +41,38 @@ pub struct Engine {
 }
 
 impl Engine {
-    pub async fn open(adapters: Adapters, config: EngineConfig) -> Result<Arc<Self>> {
+    pub async fn open(mut adapters: Adapters, config: EngineConfig) -> Result<Arc<Self>> {
         if adapters.remote_objects.is_some() != adapters.remote_refs.is_some() {
             return Err(Error::invalid(
                 "remote object and reference stores must be configured together",
             ));
         }
+        let default = adapters
+            .remote_objects
+            .take()
+            .zip(adapters.remote_refs.take())
+            .map(|(objects, refs)| Arc::new(RemoteStorage { objects, refs }));
+        Self::open_with_routes(
+            adapters,
+            config,
+            StorageRoutes::new(default, Default::default()),
+        )
+        .await
+    }
+
+    pub fn storage_routes(&self) -> Arc<StorageRoutes> {
+        self.revisions.trees.content.storage.load_full()
+    }
+
+    /// The supplied routes select both object and reference stores for each workspace.
+    pub async fn open_with_routes(
+        adapters: Adapters,
+        config: EngineConfig,
+        routes: StorageRoutes,
+    ) -> Result<Arc<Self>> {
         let runtime = Runtime::new(adapters.state, adapters.clock).await?;
         let operations = OperationService::new(runtime.clone());
-        let content = ContentService::new(
-            adapters.objects.clone(),
-            adapters.remote_objects,
-            adapters.remote_refs,
-        );
+        let content = ContentService::with_routes(adapters.objects.clone(), routes);
         let trees = TreeService::new(runtime.clone(), content.clone());
         let snapshots = SnapshotService::new(
             runtime.clone(),
@@ -217,7 +236,8 @@ impl Engine {
     }
 
     pub async fn sync_pending(&self) -> Result<()> {
-        if self.revisions.trees.content.remote().is_none() {
+        let content = &self.revisions.trees.content;
+        if !content.remote_available() {
             return Ok(());
         }
         let mut first_error = None;
@@ -229,6 +249,9 @@ impl Engine {
             .into_iter()
             .filter(|w| !w.deleted)
         {
+            if !content.remote_available_for(workspace.id) {
+                continue;
+            }
             if (!self.runtime.state.sync_jobs(workspace.id).await?.is_empty()
                 || !self
                     .runtime

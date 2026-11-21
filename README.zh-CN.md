@@ -42,7 +42,7 @@ Agent 通过 MCP 创建、挂载或转换工作区，随后继续使用普通文
 
 ### 2. 将本地成果同步到远端
 
-在 Dashboard 的 **设置** 中选择远程后端。S3 / RustFS 填写 Endpoint、Bucket 和凭据，OpenCSG Codes 填写域名、仓库和访问 token。多台机器使用相同的存储目标与项目访问身份，各自保留独立的本地配置和数据目录。[连接说明](docs/configuration.zh-CN.md)
+创建工作区时可以选择存储。已有工作区可在 Dashboard 的 **设置 → 配置范围** 中选择工作区，再选择仅本地、兼容 S3 的对象存储（包括 OSS、RustFS）或 OpenCSG Codes。使用已启用 XNet 的 Codes 仓库时，可以勾选 XNet，让 OpenCSG 按仓库规则处理大文件。协作机器为同一工作区配置相同的目标，各自保留独立的本地配置和数据目录。[连接说明](docs/configuration.zh-CN.md)
 
 > 将当前分支的成果保存到远端。确认远端保存成功后，告诉我 workspace ID、分支、版本以及交接说明的位置。
 

@@ -205,7 +205,7 @@ fn encode(value: impl Serialize) -> Result<Value> {
     serde_json::to_value(value).map_err(|error| Error::integrity(error.to_string()))
 }
 
-fn encode_operation(record: OperationRecord) -> Result<Value> {
+pub(crate) fn encode_operation(record: OperationRecord) -> Result<Value> {
     #[derive(Serialize)]
     struct Response {
         #[serde(flatten)]

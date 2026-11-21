@@ -38,6 +38,13 @@ identity!(
     HandleId
 );
 
+impl WorkspaceId {
+    /// A retried creation must bind the same storage even after a process restart.
+    pub fn for_creation(operation: OperationId) -> Self {
+        Self(operation.0)
+    }
+}
+
 #[derive(
     Clone,
     Copy,

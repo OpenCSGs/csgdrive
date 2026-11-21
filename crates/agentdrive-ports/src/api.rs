@@ -311,6 +311,15 @@ pub struct ReleaseMount {
     pub expected_binding_generation: u64,
 }
 
+/// Local storage setup for a newly allocated workspace. Only the redacted selection
+/// participates in request deduplication. Credentials stay with the configuration adapter.
+#[async_trait]
+pub trait WorkspaceInitializer: Send + Sync {
+    fn selection(&self) -> &str;
+    async fn prepare(&self, workspace: WorkspaceId) -> Result<()>;
+    async fn discard(&self, workspace: WorkspaceId) -> Result<()>;
+}
+
 #[async_trait]
 pub trait WorkspaceApi: Send + Sync {
     async fn discover(&self, actor: &Principal) -> Result<Vec<Workspace>>;
@@ -328,6 +337,12 @@ pub trait WorkspaceApi: Send + Sync {
         &self,
         context: RequestContext,
         request: CreateWorkspace,
+    ) -> Result<OperationRecord>;
+    async fn create_configured(
+        &self,
+        context: RequestContext,
+        request: CreateWorkspace,
+        initializer: Option<&dyn WorkspaceInitializer>,
     ) -> Result<OperationRecord>;
     async fn list(&self, actor: &Principal) -> Result<Vec<Workspace>>;
     async fn status(&self, actor: &Principal, workspace: WorkspaceId) -> Result<WorkspaceStatus>;

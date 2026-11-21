@@ -18,7 +18,8 @@ The generated file contains `data_dir`, `listen`, `mount_roots`, `directory_root
 | `allowed_origins` | Additional allowed HTTP origins, default `[]`. CLI and stdio connections omit Origin. |
 | `collaboration` | `{ "enabled": true }` by default; applies to all workspaces and writable mounts in the daemon. |
 | `cache` | Local immutable-object cache capacity: `max_bytes`, default `2147483648` (2 GiB), a positive integer. Used while remote storage is enabled. |
-| `remote` | S3 or OpenCSG configuration selected by `backend`. Omitted or `null` selects local storage. Existing configurations without `backend` select S3. |
+| `workspace_remotes` | Per-workspace storage keyed by workspace ID. An absent ID inherits `remote`, `null` selects local-only storage, and an S3 or OpenCSG profile selects that destination. Defaults to an empty object. |
+| `remote` | Default S3 or OpenCSG configuration selected by `backend`. Omitted or `null` selects local storage. Existing configurations without `backend` select S3. |
 
 All filesystem paths must be absolute. Create allowed roots before starting the daemon. JSON strings do not expand `~` or environment variables. Windows paths use escaped backslashes or forward slashes. Unknown fields are rejected and the file is limited to 1 MiB. Configuration and state use the daemon user's filesystem permissions.
 
@@ -26,11 +27,11 @@ Existing configurations retain the first configured principal when `principal` i
 
 ## Runtime updates and dashboard settings
 
-Open **Global settings** at the bottom left of the dashboard, or visit `/settings`. Settings apply to the whole daemon and remain accessible without any workspace. The form edits automatic collaboration, remote connections, local cache capacity in GiB and allowed HTTP origins. Saving persists the complete runtime configuration to the same `agentdrive.json` used to start the daemon.
+Open **Global settings** at the bottom left of the dashboard, or visit `/settings`. Global settings remain accessible without a workspace. In **Storage**, select the default or the name of a workspace to edit its destination. The form edits automatic collaboration, remote connections, local cache capacity in GiB and allowed HTTP origins. Saving persists the complete runtime configuration to the same `agentdrive.json` used to start the daemon.
 
 | Configuration | Effective time |
 | --- | --- |
-| `remote` | After preparing history and the destination connection, without restarting |
+| `remote`, `workspace_remotes` | After preparing history and the destination connection, without restarting |
 | `cache` | Next cache collection, every 30 seconds |
 | `allowed_origins` | Next HTTP request, including existing MCP sessions |
 | `collaboration.enabled` | Next filesystem operation or coordination tick; pending release and recovery continue |
@@ -41,7 +42,7 @@ Origins use exact `scheme://host[:port]` values without a path, trailing slash, 
 Invalid external changes preserve the active configuration and appear on the settings page. Correcting the file clears the error on the next check. Replace the file atomically when editing it. Startup changes require a restart.
 
 - `GET /api/settings` returns active `runtime`, read-only `startup`, `config_path`, `revision` and `reload_error`.
-- `PUT /api/settings` accepts `{ "revision": "<revision from GET>", "runtime": { "cache": { ... }, "allowed_origins": [], "remote": null, "collaboration": { "enabled": true } } }`. Supply the complete runtime object returned by GET.
+- `PUT /api/settings` accepts `{ "revision": "<revision from GET>", "runtime": { "cache": { ... }, "allowed_origins": [], "remote": null, "workspace_remotes": {}, "collaboration": { "enabled": true } } }`. Supply the complete runtime object returned by GET.
 
 Responses redact saved remote secrets. A stale revision or an external file edit returns 409. Validation failures preserve the file and active settings. The UI retains unsaved form values when it detects a newer revision and offers a reload action.
 
@@ -55,13 +56,24 @@ Disable automatic collaboration in Settings or `agentdrive.json` to manage stabl
 
 The single `cache.max_bytes` setting applies to cached immutable objects across all workspaces in this daemon. The collector checks every 30 seconds. Usage above the configured capacity starts collection toward 75% of that capacity, rounded down to whole bytes. The internal low-disk threshold is 64 MiB: collection also starts when available disk space is below that amount and continues until both the capacity target and free-space threshold are satisfied, or no eligible objects remain.
 
-Collection removes only remotely confirmed objects without active readers or protected references. Active branch contents, pending publications, merge candidates and explicit cache pins remain protected. Usage can exceed the setting when protected content requires more space. SQLite metadata, working files and staging files consume additional disk space. Local mode retains all history and does not run cache eviction; the Dashboard hides its cache field in that mode.
+Collection removes only remotely confirmed objects without active readers or protected references. Active branch contents, pending publications, merge candidates and explicit cache pins remain protected. Usage can exceed the setting when protected content requires more space. SQLite metadata, working files and staging files consume additional disk space. Local-only workspaces retain their history. The Dashboard shows cache capacity when any configured destination uses remote storage.
 
 ## Switching storage while running
 
 Disable automatic collaboration in Settings and finish pending handoffs before switching the remote backend or storage namespace, or disabling remote storage. The daemon rejects the change while an active coordinator still depends on that backend's write authority. Updating credentials or tokens for the same backend and namespace refreshes the connection directly and can proceed while collaboration remains enabled.
 
-Select local, S3, or OpenCSG mode in Settings and save. `remote.enabled: false` retains the selected remote profile and credentials for later use. One remote profile is stored at a time. Direct configuration-file edits use the same transition.
+In **Create workspace**, choose **Use default settings**, local-only storage, S3-compatible storage or OpenCSG Codes alongside the name. OSS can use the S3-compatible option if its endpoint supports the conditional writes described below. For an existing workspace, open **Global settings → Storage**, select the workspace, choose a destination and save. Changing the default applies to workspaces that inherit it. Each daemon maintains its own selections.
+
+For example, the following configuration uses S3 by default and keeps one workspace only on this machine. Removing its ID from `workspace_remotes` restores inheritance. The global default can also use `remote.enabled: false` to retain an inactive profile.
+
+```json
+{
+  "remote": {"backend": "s3", "bucket": "team-files", "region": "us-east-1"},
+  "workspace_remotes": {"7380e2a8-9c21-4ae7-99a1-9cc605f4b412": null}
+}
+```
+
+The Dashboard sends `POST /api/workspaces` with `request_id` and `name`. Omitting `storage` inherits the default, `"storage": null` selects local-only, and a remote profile supplies a dedicated destination. Retrying an unconfirmed creation uses the same request ID. Reopening the form prompts for any required secret again.
 
 Enabling a remote backend verifies its connection and conditional-write behavior, copies locally known history and branch references, then persists configuration and replaces the connection. Switching between S3 and OpenCSG uses this same process and preserves AgentDrive revision IDs and history. Returning to local storage downloads evicted history and disables historical cache eviction. Mounts and working directories remain available; pending publications are retained until remote storage is enabled again.
 
@@ -96,6 +108,7 @@ Create a dedicated Codes repository and initialize its storage branch, for examp
 | `repository` | Required | Existing Codes repository in `namespace/name` form. |
 | `branch` | `main` | Existing, initialized storage branch. Use a simple name without `/`. |
 | `prefix` | `agentdrive/v1` | Directory for AgentDrive data within that branch. |
+| `xnet` | `false` | Allow transfers through XNet for files classified as LFS by the Codes repository. |
 | `token` | Required | Repository access token, sent as Bearer authorization. |
 | `allow_http` | `false` | Explicitly enable an HTTP development endpoint. |
 
@@ -105,13 +118,31 @@ The dashboard stores the token in the configuration file with Unix permissions `
 
 The adapter uses the existing Codes file HTTP API. Reading uses a pinned Git commit; writes supply `start_sha` as the expected branch head. Connection checks verify normal updates, rejection of stale updates, and preservation of existing files during repeated creation. An incompatible or inconclusive service response prevents activation. Startup remains available offline; the first write performs the same check.
 
-AgentDrive continues to manage workspace branches, autosaves, commits, merges, operation receipts and ownership. Git commits record individual storage operations, so an AgentDrive revision can require several Git commits. Repository contents use AgentDrive's internal format. Each immutable object has a manifest and SHA-256-verified chunks of up to 4 MiB; base64 text preserves binary content through the JSON file API. Remote references retain the same AgentDrive metadata used with S3.
+AgentDrive continues to manage workspace branches, autosaves, commits, merges, operation receipts and ownership. Git commits record individual storage operations, so an AgentDrive revision can require several Git commits. Repository contents use AgentDrive's internal format. With the default Codes configuration, each immutable object has a manifest and SHA-256-verified chunks of up to 4 MiB; base64 text preserves binary content through the JSON file API. Remote references retain the same AgentDrive metadata used with S3.
 
 Keep the storage branch and its internal files under AgentDrive's control. Remote physical deletion is disabled; Git history retains storage updates. Allow capacity for base64 expansion and Git history growth. Each object can require several HTTP requests and Git commits, so transfer latency depends on repository size and service response time. No Git executable is required on the AgentDrive host.
 
+Before moving a shared workspace to another destination, pause writes and branch creation on all participating machines, then pull the current remote history. AgentDrive checks the source branches before and after copying. If a writer publishes a new head during the copy, pull again and retry. Update the storage destination on every participating machine before resuming writes.
+
+### OpenCSG Codes with XNet
+
+Enable XNet on the Codes repository and grant repository access to the daemon identity. On each machine that writes XNet content, install `hf-xet==1.1.10` in the Python environment used by the daemon. For a dedicated environment, set `AGENTDRIVE_XNET_PYTHON` to its Python executable before starting the service. The default executable is `python3`. For example:
+
+```sh
+python3 -m venv ~/.agentdrive-xnet
+~/.agentdrive-xnet/bin/python -m pip install 'hf-xet==1.1.10'
+export AGENTDRIVE_XNET_PYTHON="$HOME/.agentdrive-xnet/bin/python"
+```
+
+Start the daemon with this environment.
+
+Select **OpenCSG Codes** and enable the XNet checkbox, or set `"xnet": true` in that Codes profile. The repository's `preupload` response decides which nonempty file objects use XNet. The decision uses AgentDrive's internal repository path and file size. Codes stores the file pointer, workspace records and branch references. Objects classified as regular use the existing Codes format. Allow temporary disk space for files being transferred.
+
+AgentDrive reads XNet files through the Codes resolve endpoint at a fixed Git commit and verifies their length and content hash. Reading existing files does not require Python.
+
 ## S3 fields
 
-The following object belongs under the **top-level `remote` key** in `agentdrive.json`:
+Use this profile as the global default under `remote` or as the value for a workspace ID under `workspace_remotes`:
 
 ```json
 {
@@ -191,13 +222,13 @@ jq -n --arg operation "$(jq -r '.id' "$AGENTDRIVE_DIRECTORY/demo-import.json")" 
   agentdrive call operation_get --json -
 ```
 
-Check `remote_confirmed` on the original operation. `workspace_status.capabilities.remote_configured` reports whether S3 or OpenCSG is currently enabled, and `pending_jobs` reports the queue length. A saved profile with `remote.enabled: false` reports `remote_configured: false`. The daemon retries pending synchronization every three seconds while remote storage is enabled. A `local_saved: true` receipt can still contain a remote error; retain its operation ID and follow [recovery guidance](operations.md).
+Check `remote_confirmed` on the original operation. `workspace_status.capabilities.remote_configured` reports whether this workspace uses S3 or OpenCSG, and `pending_jobs` reports the queue length. A saved profile with `remote.enabled: false` reports `remote_configured: false`. The daemon retries pending synchronization every three seconds while remote storage is enabled. A `local_saved: true` receipt can still contain a remote error; retain its operation ID and follow [recovery guidance](operations.md).
 
 For a compatibility check covering conditional writes, competing updates, 20 MiB multipart content, and two-daemon replication, use the isolated [S3/RustFS tests](validation.md). Those tests use a separate test bucket and are not a production health check.
 
 ## Multiple machines
 
-Configure each daemon with the same backend and destination: S3 endpoint, bucket, prefix and signing region, or OpenCSG domain, repository, storage branch and prefix. Each machine needs its own initialized state directory and `LocationId`; share the workspace ID returned by the source daemon. The destination's local principal must be the workspace owner or have suitable grants. Each machine uses its own daemon connection to remote storage.
+For a shared workspace, configure the same backend and destination on each participating daemon: S3 endpoint, bucket, prefix and signing region, or OpenCSG domain, repository, storage branch and prefix. If the receiving machine has a different default, add the source workspace ID to its `workspace_remotes` with the same remote destination. Each machine uses its own state directory and `LocationId`. The destination's local principal must be the workspace owner or have suitable grants. Each machine uses its own daemon connection to remote storage.
 
 Push on the source, then call `sync` with `direction: "pull"` and the same workspace ID on the destination. Pull imports history and remote branch references. Use a retained revision to create a local branch, or complete an online `ownership_transfer` before adopting an existing writable branch. See [operations](operations.md) and the [MCP reference](mcp.md).
 

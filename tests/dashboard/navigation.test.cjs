@@ -32,12 +32,12 @@ async function setup(t, options = {}) {
     requests.push(url);
     assert.equal(request.headers().authorization, undefined);
     if (url.pathname === '/api/settings') return route.fulfill({json:{revision:'config',config_path:'/config',runtime:{cache:{max_bytes:2147483648},allowed_origins:[],remote:null},startup:{listen:'127.0.0.1:7421',data_dir:'/state',mount_roots:[],directory_roots:[]}}});
-    if (url.pathname === '/api/workspaces') return data.listError ? route.fulfill({status:503,json:{error:{message:'Workspaces unavailable'}}}) : route.fulfill({json:data.workspaces});
-    if (url.pathname === '/api/commands/workspace_create') {
+    if (url.pathname === '/api/workspaces' && request.method() === 'GET') return data.listError ? route.fulfill({status:503,json:{error:{message:'Workspaces unavailable'}}}) : route.fulfill({json:data.workspaces});
+    if (url.pathname === '/api/workspaces' && request.method() === 'POST') {
       const input = request.postDataJSON(); (data.creations ||= []).push(input);
       if (data.createPending) await data.createPending();
       if (data.createError) return route.fulfill({status:data.createStatus || 503,json:{error:{message:data.createError}}});
-      const workspace = {id:'created',name:input.request.name};
+      const workspace = {id:'created',name:input.name};
       if (!data.workspaces.some(item=>item.id===workspace.id)) data.workspaces.push(workspace);
       return route.fulfill({json:{local_saved:true,phase:'local_saved',error:null,result:{workspace}}});
     }
@@ -293,8 +293,46 @@ test('workspace creation is available without workspaces and selects the new pro
   assert.equal(new URL(page.url()).pathname,'/archive');
   assert.equal(new URL(page.url()).searchParams.get('workspace'),'created');
   assert.equal(await page.locator('#workspace-name').textContent(),'新项目');
-  assert.equal(data.creations.length,1);assert.equal(data.creations[0].request.name,'新项目');
+  assert.equal(data.creations.length,1);assert.equal(data.creations[0].name,'新项目'); assert(!('storage' in data.creations[0]));
   assert.equal(await page.evaluate(()=>sessionStorage.getItem('agentdrive-workspace-create')),null);
+});
+
+test('workspace creation keeps scoped Codes settings across retries without storing the token', async t => {
+  const {page,data}=await setup(t,{createError:'Offline'});
+  await page.goto(endpoint+'/archive'); await settled(page);
+  const trigger=page.locator('#workspace-create'), dialog=page.getByRole('dialog',{name:'创建工作区',exact:true});
+  await trigger.click();
+  await dialog.getByLabel('工作区名称').fill('语料库');
+  await dialog.getByLabel('存储模式').selectOption('opencsg');
+  await dialog.getByLabel('OpenCSG 域名').fill('https://codes.example');
+  await dialog.getByLabel('Codes 仓库').fill('team/corpus');
+  await dialog.getByLabel('Access Token',{exact:true}).fill('test-token-private');
+  await dialog.getByLabel('通过 XNet 传输仓库的大文件').check();
+  await dialog.getByRole('button',{name:'创建工作区',exact:true}).click();
+  await dialog.getByRole('alert').filter({hasText:'Offline'}).waitFor();
+  const original=data.creations[0];
+  assert.equal(original.storage.token,'test-token-private');
+  assert.equal(original.storage.xnet,true);
+  assert(!JSON.stringify(await page.evaluate(()=>({...sessionStorage}))).includes('test-token-private'));
+  await page.reload(); await settled(page); await trigger.click();
+  const token=dialog.getByLabel('Access Token',{exact:true});
+  assert.equal(await token.inputValue(),''); assert(await token.evaluate(node=>node.required));
+  assert(await dialog.getByLabel('通过 XNet 传输仓库的大文件').isChecked());
+  await token.fill('test-token-private'); data.createError=null;
+  await dialog.getByRole('button',{name:'重试创建'}).click();
+  await dialog.waitFor({state:'hidden'});
+  assert.deepEqual(data.creations[1],original);
+});
+
+test('workspace creation can explicitly select local storage', async t => {
+  const {page,data}=await setup(t); await page.goto(endpoint+'/archive'); await settled(page);
+  await page.locator('#workspace-create').click();
+  const dialog=page.getByRole('dialog',{name:'创建工作区',exact:true});
+  await dialog.getByLabel('工作区名称').fill('仅本机使用');
+  await dialog.getByLabel('存储模式').selectOption('local');
+  await dialog.getByRole('button',{name:'创建工作区',exact:true}).click();
+  await dialog.waitFor({state:'hidden'});
+  assert.equal(data.creations[0].storage,null);
 });
 
 test('workspace creation retries the same request after failure and reload', async t => {

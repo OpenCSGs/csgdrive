@@ -167,14 +167,18 @@ impl CollaborationService {
         let synchronization = BranchSynchronization::new(
             &branch,
             observed.as_ref(),
-            self.revisions.trees.content.refs().is_some(),
+            self.revisions
+                .trees
+                .content
+                .refs(branch.workspace)
+                .is_some(),
         );
         let remote_confirmed = !pending
             && record.recovery.is_none()
             && record.transition.is_none()
             && synchronization.remote_confirmed;
         let mut settings = record.settings.clone();
-        settings.enabled = settings.enabled && self.automatic_enabled();
+        settings.enabled = settings.enabled && self.automatic_enabled_for(record.workspace);
         let phase = if !settings.enabled && !self.transition_active(record) {
             CollaborationPhase::Disabled
         } else {
@@ -367,7 +371,7 @@ impl CollaborationService {
         {
             return self.begin_recovery(record).await;
         }
-        if !self.automatic_enabled() {
+        if !self.automatic_enabled_for(record.workspace) {
             if record.phase == CollaborationPhase::Switching {
                 return self.resume_view_switch(record).await;
             }
@@ -463,7 +467,14 @@ impl CollaborationApi for CollaborationService {
         if request.enabled {
             self.mounts.check_collaboration_support()?;
         }
-        if request.enabled && self.revisions.trees.content.refs().is_none() {
+        if request.enabled
+            && self
+                .revisions
+                .trees
+                .content
+                .refs(binding.workspace)
+                .is_none()
+        {
             return Err(Error::new(
                 ErrorCode::RemoteRequired,
                 "automatic collaboration requires remote storage",
