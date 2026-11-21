@@ -49,6 +49,9 @@ pub trait OperationCoordinator: Send + Sync {
 #[async_trait]
 pub trait ContentResolver: Send + Sync {
     fn remote_available(&self) -> bool;
+    fn remote_available_for(&self, _workspace: WorkspaceId) -> bool {
+        self.remote_available()
+    }
     async fn open(&self, workspace: WorkspaceId, reference: &ObjectRef) -> Result<ObjectStream>;
     async fn read_range(
         &self,

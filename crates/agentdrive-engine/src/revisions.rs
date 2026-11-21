@@ -576,7 +576,7 @@ impl DurabilityService for RevisionService {
                         observed
                             .iter()
                             .find(|reference| reference.branch == branch.id),
-                        self.trees.content.refs().is_some(),
+                        self.trees.content.refs(branch.workspace).is_some(),
                     );
                     let pending = self
                         .runtime

@@ -61,14 +61,14 @@ async fn serve(settings: Arc<ConfigStore>) -> Result<()> {
     let config = settings.startup();
     let local = Arc::new(LocalBackend::open(&config.data_dir)?);
     let driver = NativeMountDriver::new(config.mount_roots.clone())?;
-    let remote = settings::remote_storage(settings.live().load().values.remote.as_ref())?;
-    let engine = Engine::open(
+    let (routes, _) = settings::storage_routes(&settings.live().load().values, None)?;
+    let engine = Engine::open_with_routes(
         Adapters {
             state: local.clone(),
             objects: local.clone(),
             working: local.clone(),
-            remote_objects: remote.as_ref().map(|store| store.objects.clone()),
-            remote_refs: remote.map(|store| store.refs),
+            remote_objects: None,
+            remote_refs: None,
             clock: Arc::new(SystemClock::default()),
             mounts: driver,
             directories: HostDirectories::new(config.directory_roots.clone())?,
@@ -77,6 +77,7 @@ async fn serve(settings: Arc<ConfigStore>) -> Result<()> {
             live: settings.live(),
             identity: local_identity(),
         },
+        routes,
     )
     .await?;
     settings.set_applier(Arc::new(settings::StorageSettings {

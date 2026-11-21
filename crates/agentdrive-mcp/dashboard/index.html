@@ -70,7 +70,7 @@
         <footer class="page-footer"><span>AgentDrive <span class="footer-separator">/</span> 持久化 Agent 工作区</span><span>每 2 秒自动刷新</span></footer>
       </div>
       <div id="settings-page" class="content settings-content" hidden>
-        <div class="page-heading"><div><div class="eyebrow">DAEMON SETTINGS</div><h1>设置<span class="heading-dot">.</span></h1><p>管理此 daemon 的运行配置，适用于全部工作区。</p></div><span class="pill">运行时更新</span></div>
+        <div class="page-heading"><div><div class="eyebrow">DAEMON SETTINGS</div><h1>设置<span class="heading-dot">.</span></h1><p>管理默认设置和各工作区的存储位置。</p></div><span class="pill">运行时更新</span></div>
         <div id="settings-error" class="error-banner" role="alert" hidden></div>
         <div id="settings-notice" class="settings-notice" role="status" hidden></div>
         <div id="reload-error" class="error-banner" role="alert" hidden></div>
@@ -84,7 +84,9 @@
             </section>
             <section class="panel settings-panel" aria-labelledby="storage-title">
               <div class="settings-heading"><div><h2 id="storage-title">存储设置</h2><p>远程存储保存工作区内容和版本记录。切换会传输已有历史，完成后继续使用当前挂载目录。</p></div><span class="pill">保存后切换</span></div>
-              <div class="storage-fields storage-selector"><label>存储模式<select id="storage-mode"><option value="local">本地存储</option><option value="s3">S3 存储</option><option value="opencsg">OpenCSG Codes 存储</option></select></label></div>
+              <div class="storage-fields storage-selector"><label>配置范围<select id="storage-scope"><option value="">全部工作区的默认设置</option></select></label></div>
+              <div id="storage-editor">
+              <div class="storage-fields storage-selector"><label>存储模式<select id="storage-mode"><option value="inherit">使用默认设置</option><option value="local">仅本地存储</option><option value="s3">S3 兼容存储（含 OSS）</option><option value="opencsg">OpenCSG Codes</option></select></label></div>
               <fieldset id="s3-fields" hidden disabled>
               <div class="storage-fields">
                 <label>Endpoint<input id="s3-endpoint" type="url" placeholder="https://s3.example.com" spellcheck="false"></label>
@@ -107,10 +109,12 @@
                   <label>存储目录<input id="opencsg-prefix" value="agentdrive/v1" spellcheck="false"></label>
                   <label>Access Token<input id="opencsg-token" type="password" autocomplete="new-password" placeholder="请输入仓库访问 token" spellcheck="false"></label>
                 </div>
+                <label class="storage-check"><input id="opencsg-xnet" type="checkbox">通过 XNet 传输仓库的大文件</label>
                 <label class="storage-check"><input id="opencsg-http" type="checkbox">允许使用 HTTP 域名</label>
-                <p class="settings-help">请选择专用 Codes 仓库和已有分支，token 需要仓库读写权限。版本管理继续使用 AgentDrive。保存时会验证连接和条件更新能力。</p>
+                <p class="settings-help">选择已初始化存储分支的 Codes 仓库。Token 需要仓库读写权限。使用 XNet 需要仓库已启用 XNet，且服务能够为 Codes 签发 XNet 令牌。保存时会检查。</p>
                 <p class="settings-help">token 保存在当前配置文件中，页面不会返回已保存的值。修改域名或仓库时需要重新填写 token。</p>
               </fieldset>
+              </div>
             </section>
             <section id="cache-panel" class="panel settings-panel" aria-labelledby="cache-title" hidden>
               <div class="settings-heading"><div><h2 id="cache-title">本地缓存</h2><p>后台每 30 秒检查一次。超过容量时，自动清理到设置容量的 75%；磁盘空间不足时也会尝试清理。</p></div><span class="pill">保存后生效</span></div>

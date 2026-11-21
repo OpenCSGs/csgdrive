@@ -18,6 +18,8 @@ mod merge_recording;
 mod mount_messages;
 #[path = "workflows/relationships.rs"]
 mod relationships;
+#[path = "workflows/workspace_storage.rs"]
+mod workspace_storage;
 use agentdrive_ports::*;
 use agentdrive_test_support::*;
 use bytes::Bytes;

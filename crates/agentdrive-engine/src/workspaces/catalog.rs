@@ -25,38 +25,58 @@ impl WorkspaceService {
         for workspace in locals.iter().filter(|w| w.deleted) {
             self.release_deleted_mounts(workspace).await?;
         }
-        if let Some(storage) = self.revisions.trees.content.storage.load_full() {
-            let refs = &storage.refs;
-            let deleted: std::collections::BTreeSet<_> =
-                locals.iter().filter(|w| w.deleted).map(|w| w.id).collect();
-            let mut ids: std::collections::BTreeSet<_> = locals.iter().map(|w| w.id).collect();
-            if actor.is_some() {
-                ids.extend(refs.list_workspaces().await?);
-            }
-            for id in ids.difference(&deleted).copied() {
-                let Some(value) = refs.get(&RefKey::Workspace(id)).await? else {
-                    continue;
-                };
-                let control = crate::replica::decode_workspace_control(id, &value.bytes)?;
-                let local = self.runtime.state.workspace(id).await?;
-                if control.workspace.deleted {
-                    if let Some(local) = local {
-                        self.record_deletion(local.clone(), &storage).await?;
-                        self.release_deleted_mounts(&local).await?;
-                    }
-                } else if local.is_none()
-                    && actor.is_some_and(|actor| {
-                        control
-                            .workspace
-                            .authorize(actor, None, Permission::Read)
-                            .is_ok()
-                    })
-                {
-                    self.cache_discovered_workspace(control, &storage).await?;
+        let routes = self.revisions.trees.content.storage.load_full();
+        let mut ids: std::collections::BTreeSet<_> = locals.iter().map(|w| w.id).collect();
+        let mut failure = None;
+        if actor.is_some() {
+            ids.extend(routes.workspaces.keys().copied());
+            if let Some(default) = &routes.default {
+                match default.refs.list_workspaces().await {
+                    Ok(discovered) => ids.extend(discovered),
+                    Err(error) => failure = Some(error),
                 }
             }
         }
+        for workspace in locals.iter().filter(|w| w.deleted) {
+            ids.remove(&workspace.id);
+        }
+        for id in ids {
+            if let Some(storage) = routes.for_workspace(id)
+                && let Err(error) = self.refresh_catalog_workspace(id, &storage, actor).await
+            {
+                failure.get_or_insert(error);
+            }
+        }
         *self.catalog_checked.lock() = Some(self.runtime.clock.monotonic_ms());
+        failure.map_or(Ok(()), Err)
+    }
+
+    async fn refresh_catalog_workspace(
+        &self,
+        id: WorkspaceId,
+        storage: &Arc<crate::RemoteStorage>,
+        actor: Option<&Principal>,
+    ) -> Result<()> {
+        let Some(value) = storage.refs.get(&RefKey::Workspace(id)).await? else {
+            return Ok(());
+        };
+        let control = crate::replica::decode_workspace_control(id, &value.bytes)?;
+        let local = self.runtime.state.workspace(id).await?;
+        if control.workspace.deleted {
+            if let Some(local) = local {
+                self.record_deletion(local.clone(), storage).await?;
+                self.release_deleted_mounts(&local).await?;
+            }
+        } else if local.is_none()
+            && actor.is_some_and(|actor| {
+                control
+                    .workspace
+                    .authorize(actor, None, Permission::Read)
+                    .is_ok()
+            })
+        {
+            self.cache_discovered_workspace(control, storage).await?;
+        }
         Ok(())
     }
 
@@ -66,7 +86,7 @@ impl WorkspaceService {
         storage: &Arc<crate::RemoteStorage>,
     ) -> Result<()> {
         let _lifecycle = self.runtime.lifecycle.lock().await;
-        self.check_catalog_storage(storage)?;
+        self.check_catalog_storage(control.workspace.id, storage)?;
         let _objects = self.runtime.objects.read().await;
         let id = control.workspace.id;
         self.revisions
@@ -92,13 +112,18 @@ impl WorkspaceService {
         Ok(())
     }
 
-    fn check_catalog_storage(&self, expected: &Arc<crate::RemoteStorage>) -> Result<()> {
+    fn check_catalog_storage(
+        &self,
+        workspace: WorkspaceId,
+        expected: &Arc<crate::RemoteStorage>,
+    ) -> Result<()> {
         if self
             .revisions
             .trees
             .content
             .storage
-            .load_full()
+            .load()
+            .for_workspace(workspace)
             .is_none_or(|current| !Arc::ptr_eq(&current, expected))
         {
             return Err(Error::new(
@@ -116,7 +141,7 @@ impl WorkspaceService {
         storage: &Arc<crate::RemoteStorage>,
     ) -> Result<()> {
         let _lifecycle = self.runtime.lifecycle.lock().await;
-        self.check_catalog_storage(storage)?;
+        self.check_catalog_storage(workspace.id, storage)?;
         self.commit_deletion(workspace).await
     }
 
@@ -223,7 +248,7 @@ impl WorkspaceService {
                     "请先在挂载点管理中卸载此工作区的本机目录，再删除工作区",
                 ));
             }
-            if (self.revisions.trees.content.refs().is_some()
+            if (self.revisions.trees.content.refs(id).is_some()
                 && !self.runtime.state.sync_jobs(id).await?.is_empty())
                 || self
                     .runtime
@@ -250,7 +275,7 @@ impl WorkspaceService {
                 .await?;
             self.commit_deletion(workspace.clone()).await?;
             let mut completed = operation.clone();
-            completed.operation.remote_confirmed = self.revisions.trees.content.refs().is_some();
+            completed.operation.remote_confirmed = self.revisions.trees.content.refs(id).is_some();
             self.operations
                 .finish(completed, CommandResult::Updated, LocalCommit::default())
                 .await
@@ -263,7 +288,7 @@ impl WorkspaceService {
     }
 
     async fn delete_remote(&self, workspace: &Workspace, actor: &Principal) -> Result<()> {
-        let Some(refs) = self.revisions.trees.content.refs() else {
+        let Some(refs) = self.revisions.trees.content.refs(workspace.id) else {
             return Ok(());
         };
         let key = RefKey::Workspace(workspace.id);

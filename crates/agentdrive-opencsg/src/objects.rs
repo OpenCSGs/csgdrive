@@ -66,6 +66,19 @@ impl OpenCsgBackend {
 impl RemoteObjectStore for OpenCsgBackend {
     async fn upload(&self, workspace: WorkspaceId, mut source: ObjectStream) -> Result<()> {
         self.check_connection().await?;
+        if self.xnet.enabled
+            && source.reference.kind == ObjectKind::File
+            && source.reference.size != 0
+        {
+            let path = self.file_object_path(workspace, &source.reference);
+            if self
+                .repository
+                .uses_lfs(&path, source.reference.size)
+                .await?
+            {
+                return self.upload_lfs(&path, source).await;
+            }
+        }
         if source.reference.size.div_ceil(CHUNK_BYTES as u64) > (MAX_METADATA_BYTES / 70) as u64 {
             return Err(Error::new(
                 ErrorCode::CapacityExceeded,
@@ -108,11 +121,16 @@ impl RemoteObjectStore for OpenCsgBackend {
 
     async fn download(&self, workspace: WorkspaceId, object: &ObjectRef) -> Result<ObjectStream> {
         let head = self.repository.head().await?;
-        let manifest = Arc::new(
-            self.manifest(workspace, object, &head)
-                .await?
-                .ok_or_else(|| Error::new(ErrorCode::NotFound, "OpenCSG object does not exist"))?,
-        );
+        let Some(manifest) = self.manifest(workspace, object, &head).await? else {
+            if let Some(oid) = self.native_oid(workspace, object, &head).await? {
+                return self.download_lfs(workspace, object, &head, &oid).await;
+            }
+            return Err(Error::new(
+                ErrorCode::NotFound,
+                "OpenCSG object does not exist",
+            ));
+        };
+        let manifest = Arc::new(manifest);
         if object.size == 0 {
             verify_object(object, &[])?;
         }
@@ -170,6 +188,7 @@ impl RemoteObjectStore for OpenCsgBackend {
 
     async fn contains(&self, workspace: WorkspaceId, object: &ObjectRef) -> Result<bool> {
         let head = self.repository.head().await?;
-        Ok(self.manifest(workspace, object, &head).await?.is_some())
+        Ok(self.manifest(workspace, object, &head).await?.is_some()
+            || self.native_oid(workspace, object, &head).await?.is_some())
     }
 }

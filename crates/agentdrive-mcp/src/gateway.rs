@@ -45,7 +45,10 @@ pub fn router(services: Services, config: GatewayConfig) -> Result<Router> {
             .with_cancellation_token(config.cancellation.clone()),
     );
     let api = crate::web::api(services.clone())
-        .merge(crate::web::settings_api(config.settings.clone()))
+        .merge(crate::web::settings_api(
+            config.settings.clone(),
+            services.clone(),
+        ))
         .merge(
             Router::new()
                 .route("/mcp", any(handle))

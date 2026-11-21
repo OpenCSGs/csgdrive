@@ -452,3 +452,55 @@ fn s3_settings_persist_secrets_without_returning_them_and_preserve_blank_passwor
             .contains("test-secret")
     );
 }
+
+#[test]
+fn workspace_bindings_round_trip_and_keep_credentials_in_their_scope() {
+    use agentdrive_model::WorkspaceId;
+    let (_directory, store) = setup();
+    let a = WorkspaceId::new();
+    let b = WorkspaceId::new();
+    let c = WorkspaceId::new();
+    let codes = |token: &str| -> RemoteConfig {
+        serde_json::from_value(
+            json!({"backend":"opencsg","endpoint":"https://example.test",
+            "repository":"owner/storage","token":token,"xnet":true}),
+        )
+        .unwrap()
+    };
+    store
+        .bind_new_workspace(a, Some(codes("private-a")))
+        .unwrap();
+    store.bind_new_workspace(b, None).unwrap();
+    let settings = store.settings();
+    assert!(
+        !serde_json::to_string(&settings)
+            .unwrap()
+            .contains("private-a")
+    );
+    let reopened = ConfigStore::open(&settings.config_path).unwrap();
+    let snapshot = reopened.live().load();
+    assert_eq!(
+        snapshot.values.workspace_remotes[&a],
+        Some(codes("private-a"))
+    );
+    assert_eq!(snapshot.values.workspace_remotes[&b], None);
+    assert!(!snapshot.values.workspace_remotes.contains_key(&c));
+    let mut runtime = settings.runtime;
+    runtime.workspace_remotes.insert(c, Some(codes("")));
+    assert!(
+        store
+            .update(SettingsUpdate {
+                revision: settings.revision,
+                runtime
+            })
+            .is_err()
+    );
+    store
+        .discard_new_binding(a, &Some(codes("different")))
+        .unwrap();
+    assert!(store.settings().runtime.workspace_remotes.contains_key(&a));
+    store
+        .discard_new_binding(a, &Some(codes("private-a")))
+        .unwrap();
+    assert!(!store.settings().runtime.workspace_remotes.contains_key(&a));
+}

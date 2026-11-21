@@ -45,7 +45,7 @@ impl RemoteConfig {
         }
     }
 
-    pub(crate) fn redact(&mut self) {
+    pub fn redact(&mut self) {
         match self {
             Self::S3(config) => config.redact(),
             Self::OpenCsg(config) => config.token.clear(),
@@ -59,7 +59,9 @@ impl RemoteConfig {
                     && credentials.secret_access_key.is_empty()
                 {
                     let saved = match previous {
-                        Some(Self::S3(saved)) => saved.credentials.as_ref(),
+                        Some(Self::S3(saved)) if saved.endpoint == config.endpoint => {
+                            saved.credentials.as_ref()
+                        }
                         _ => None,
                     }
                     .filter(|saved| saved.access_key_id == credentials.access_key_id)
@@ -102,6 +104,8 @@ pub struct OpenCsgConfig {
     pub token: String,
     #[serde(default)]
     pub allow_http: bool,
+    #[serde(default)]
+    pub xnet: bool,
 }
 
 impl std::fmt::Debug for OpenCsgConfig {
@@ -112,6 +116,7 @@ impl std::fmt::Debug for OpenCsgConfig {
             .field("repository", &self.repository)
             .field("branch", &self.branch)
             .field("prefix", &self.prefix)
+            .field("xnet", &self.xnet)
             .field("allow_http", &self.allow_http)
             .finish_non_exhaustive()
     }

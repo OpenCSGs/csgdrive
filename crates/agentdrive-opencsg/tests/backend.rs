@@ -314,3 +314,138 @@ async fn credentials_are_not_forwarded_to_redirects() {
     assert!(server.backend().check_connection().await.is_err());
     assert_eq!(destination.data.lock().unwrap().requests, 0);
 }
+
+/// Exercises the Rust adapter and the real hf-xet native library with a separately
+/// running XNet server. Supply AGENTDRIVE_TEST_XNET_TOKEN_FILE (scoped JSON token)
+/// and AGENTDRIVE_TEST_XNET_DOWNLOAD_URL (the test server's signed URL with {oid}).
+#[tokio::test]
+#[ignore = "requires a running XNet CAS, repository credentials, a download URL and hf-xet"]
+async fn codes_xnet_recovers_a_lost_pointer_response_and_reads_binary_content() {
+    let mut server = Server::new().await;
+    server.config.xnet = true;
+    let token_file = std::env::var_os("AGENTDRIVE_TEST_XNET_TOKEN_FILE").unwrap();
+    let token = serde_json::from_slice(&std::fs::read(token_file).unwrap()).unwrap();
+    {
+        let mut data = server.data.lock().unwrap();
+        data.xnet_token = Some(token);
+        data.xnet_upload_mode = Some("lfs".into());
+        data.lose_pointer_response = true;
+        data.xnet_download = Some(std::env::var("AGENTDRIVE_TEST_XNET_DOWNLOAD_URL").unwrap());
+    }
+    let workspace = WorkspaceId::new();
+    let mut bytes = vec![0; 3 * 1024 * 1024 + 31];
+    bytes[..16].copy_from_slice(&workspace.to_string().as_bytes()[..16]);
+    let reference = object_ref(ObjectKind::File, &bytes);
+    let backend = server.backend();
+    backend
+        .upload(workspace, stream(bytes.clone()))
+        .await
+        .unwrap();
+    let pointer_path = format!("agentdrive/v1/{workspace}/files/{}", reference.id);
+    let hash = sha2::Sha256::digest(&bytes);
+    {
+        let data = server.data.lock().unwrap();
+        assert_eq!(
+            data.xnet_paths.as_slice(),
+            std::slice::from_ref(&pointer_path)
+        );
+        assert_eq!(
+            data.files()[&pointer_path],
+            format!(
+                "version https://git-lfs.github.com/spec/v1\noid sha256:{hash:x}\nsize {}\n",
+                bytes.len()
+            )
+        );
+    }
+    let mut restored = Vec::new();
+    server
+        .backend()
+        .download(workspace, &reference)
+        .await
+        .unwrap()
+        .reader
+        .read_to_end(&mut restored)
+        .await
+        .unwrap();
+    assert_eq!(restored, bytes);
+    assert!(backend.contains(workspace, &reference).await.unwrap());
+
+    server.data.lock().unwrap().xnet_upload_mode = Some("regular".into());
+    let small = b"normal Codes storage".to_vec();
+    let small_ref = object_ref(ObjectKind::File, &small);
+    backend
+        .upload(workspace, stream(small.clone()))
+        .await
+        .unwrap();
+    let mut result = Vec::new();
+    backend
+        .download(workspace, &small_ref)
+        .await
+        .unwrap()
+        .reader
+        .read_to_end(&mut result)
+        .await
+        .unwrap();
+    assert_eq!(result, small);
+
+    server.data.lock().unwrap().xnet_upload_mode = Some("unexpected".into());
+    assert_eq!(
+        backend
+            .upload(workspace, stream(b"x".to_vec()))
+            .await
+            .unwrap_err()
+            .code,
+        ErrorCode::Integrity
+    );
+}
+
+#[tokio::test]
+async fn native_pointer_reads_use_the_fixed_revision_and_keep_credentials_at_the_hub() {
+    use axum::{Router, body::Bytes as HttpBytes, http::HeaderMap, routing::get};
+    let server = Server::new().await;
+    let storage = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = storage.local_addr().unwrap();
+    let expected = b"content through XNet";
+    let workspace = WorkspaceId::new();
+    let object = object_ref(ObjectKind::File, expected);
+    let oid = format!("{:x}", sha2::Sha256::digest(expected));
+    let file_path = format!("agentdrive/v1/{workspace}/files/{}", object.id);
+    {
+        let mut data = server.data.lock().unwrap();
+        let mut files = data.files().clone();
+        files.insert(
+            file_path,
+            format!(
+                "version https://git-lfs.github.com/spec/v1\noid sha256:{oid}\nsize {}\n",
+                expected.len()
+            ),
+        );
+        data.publish(files);
+        data.xnet_download = Some(format!("http://{address}/object"));
+    }
+    let app = Router::new()
+        .route(
+            "/object",
+            get(move |headers: HeaderMap| async move {
+                assert!(headers.get("Authorization").is_none());
+                HttpBytes::from_static(expected)
+            }),
+        )
+        .route("/corrupt", get(|| async { "invalid" }));
+    let service = tokio::spawn(async move { axum::serve(storage, app).await.unwrap() });
+    let backend = server.backend();
+    let mut restored = Vec::new();
+    backend
+        .download(workspace, &object)
+        .await
+        .unwrap()
+        .reader
+        .read_to_end(&mut restored)
+        .await
+        .unwrap();
+    assert_eq!(restored, expected);
+    server.data.lock().unwrap().xnet_download = Some(format!("http://{address}/corrupt"));
+    let error = backend.download(workspace, &object).await.unwrap_err();
+    assert_eq!(error.code, ErrorCode::Integrity);
+    service.abort();
+}

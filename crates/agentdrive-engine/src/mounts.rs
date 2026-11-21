@@ -78,7 +78,7 @@ impl MountService {
             .write_access
             .get()
             .and_then(Weak::upgrade)
-            .is_some_and(|access| access.automatic_enabled())
+            .is_some_and(|access| access.automatic_enabled_for(branch.workspace))
             && self
                 .runtime
                 .state
@@ -873,7 +873,7 @@ impl MountApi for MountService {
                 && request.revision.is_none()
                 && write_access
                     .as_ref()
-                    .is_some_and(|access| access.automatic_enabled()));
+                    .is_some_and(|access| access.automatic_enabled_for(request.workspace)));
         let automatic_branch = if automatic {
             if request.access != AccessMode::ReadWrite || request.revision.is_some() {
                 return Err(Error::invalid(

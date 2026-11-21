@@ -42,7 +42,8 @@ impl CollaborationService {
             {
                 continue;
             }
-            if mount.state == MountState::Released
+            if !self.automatic_enabled_for(mount.workspace)
+                || mount.state == MountState::Released
                 || mount.access != AccessMode::ReadWrite
                 || mount.revision.is_some()
             {
@@ -66,7 +67,7 @@ impl CollaborationService {
                 .await
             {
                 Ok(()) => {}
-                Err(_) if !self.automatic_enabled() => return Ok(()),
+                Err(_) if !self.automatic_enabled_for(mount.workspace) => continue,
                 Err(error)
                     if matches!(
                         error.code,

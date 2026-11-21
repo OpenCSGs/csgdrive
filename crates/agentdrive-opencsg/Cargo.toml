@@ -20,13 +20,13 @@ sha2.workspace = true
 tokio.workspace = true
 tokio-util.workspace = true
 url.workspace = true
+tempfile.workspace = true
 
 [dev-dependencies]
 axum.workspace = true
 agentdrive-engine.workspace = true
 agentdrive-local.workspace = true
 agentdrive-test-support.workspace = true
-tempfile.workspace = true
 
 [lints]
 workspace = true

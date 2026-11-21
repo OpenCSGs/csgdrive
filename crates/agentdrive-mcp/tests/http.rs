@@ -694,7 +694,32 @@ async fn local_mcp_clients_share_operations_without_credentials() {
             .status(),
         422
     );
-    let cleared = json!({"revision":applied["revision"],"runtime":initial["runtime"]});
+    let local_workspace = WorkspaceId::new();
+    settings.bind_new_workspace(local_workspace, None).unwrap();
+    let mut old_client =
+        json!({"revision":settings.settings().revision,"runtime":applied["runtime"]});
+    old_client["runtime"]
+        .as_object_mut()
+        .unwrap()
+        .remove("workspace_remotes");
+    let retained: Value = http
+        .put(&settings_url)
+        .json(&old_client)
+        .send()
+        .await
+        .unwrap()
+        .error_for_status()
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert!(
+        retained["runtime"]["workspace_remotes"]
+            .get(local_workspace.to_string())
+            .unwrap()
+            .is_null()
+    );
+    let cleared = json!({"revision":retained["revision"],"runtime":initial["runtime"]});
     assert_eq!(
         http.put(&settings_url)
             .json(&cleared)
