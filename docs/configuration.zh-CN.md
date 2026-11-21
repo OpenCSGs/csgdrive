@@ -126,6 +126,8 @@ AgentDrive 继续管理 workspace、branch、autosave、commit、merge、操作�
 
 ### 在 OpenCSG Codes 中启用 XNet
 
+OpenCSG 服务需要能够为 Codes 仓库签发 XNet 令牌。勾选 XNet 并保存时，AgentDrive 会检查接口是否可用。接口不可用时，保存会失败，原有配置继续生效。若要在该服务上使用普通 Codes 存储，可取消勾选 XNet 并保存。
+
 在 Codes 仓库启用 XNet，并向 daemon 使用的身份授予仓库读写权限。在每台需要写入 XNet 文件的机器上，为 daemon 使用的 Python 环境安装 `hf-xet==1.1.10`。如使用独立环境，启动 daemon 前将 `AGENTDRIVE_XNET_PYTHON` 设置为该环境的 Python 可执行文件路径。默认使用 `python3`。下面的命令创建独立环境。
 
 ```sh
