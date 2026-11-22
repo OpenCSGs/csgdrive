@@ -108,11 +108,8 @@ export function createWorkspaceCreator({api, element, created}) {
   return {show(button) {
     trigger = button;
     try { ticket = JSON.parse(sessionStorage.getItem(key)); } catch { ticket = null; }
-    // Pending requests created before storage selection inherited the default.
-    if (ticket?.request?.name) ticket = {request_id:ticket.request_id, name:ticket.request.name};
     if (!ticket?.request_id || typeof ticket.name !== 'string') ticket = null;
-    const mode = ticket?.storage === undefined ? 'inherit' : undefined;
-    editor.show(ticket?.storage, mode, true, false);
+    editor.show(ticket?.storage, false);
     input.value = ticket?.name || ''; error.textContent = ''; update(); dialog.showModal(); input.focus();
   }};
 }

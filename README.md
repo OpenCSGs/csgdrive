@@ -42,7 +42,7 @@ The agent creates, mounts or adopts a workspace through MCP, then continues usin
 
 ### 2. Synchronize local results to remote storage
 
-Choose storage when creating a workspace, or select an existing workspace under **Settings → Configuration scope**. Use local storage, S3-compatible storage (including OSS and RustFS), or OpenCSG Codes. For a Codes repository with XNet enabled, select XNet to use the repository’s large-file rules. Collaborating machines use the same destination for the workspace and keep independent local state. [Connection guide](docs/configuration.md)
+Choose storage when creating a workspace, or select an existing workspace under **Settings → Storage**. Use local storage, S3-compatible storage (including OSS and RustFS), or OpenCSG Codes. For a Codes repository with XNet enabled, select XNet to use the repository’s large-file rules. Collaborating machines use the same destination for the workspace and keep independent local state. [Connection guide](docs/configuration.md)
 
 > Save this branch remotely. After remote publication is confirmed, report the workspace ID, branch, version and handoff document path.
 

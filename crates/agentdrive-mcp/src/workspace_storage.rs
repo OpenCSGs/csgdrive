@@ -3,7 +3,7 @@ use agentdrive_config::{ConfigStore, RemoteConfig};
 use agentdrive_model::*;
 use agentdrive_ports::{CreateWorkspace, RequestContext, Services, WorkspaceInitializer};
 use axum::{Extension, Json, Router, extract::State, routing::post};
-use serde::{Deserialize, Deserializer};
+use serde::Deserialize;
 use serde_json::Value;
 use std::sync::Arc;
 
@@ -13,25 +13,17 @@ pub(crate) fn api(settings: Arc<ConfigStore>, services: Services) -> Router {
         .with_state((settings, services))
 }
 
-// A missing field inherits the default. An explicit null selects local storage.
-fn selected_storage<'de, D: Deserializer<'de>>(
-    value: D,
-) -> std::result::Result<Option<Option<RemoteConfig>>, D::Error> {
-    Option::deserialize(value).map(Some)
-}
-
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Create {
     request_id: String,
     name: String,
-    #[serde(default, deserialize_with = "selected_storage")]
-    storage: Option<Option<RemoteConfig>>,
+    storage: Option<RemoteConfig>,
 }
 
 struct Binding {
     settings: Arc<ConfigStore>,
-    remote: Option<RemoteConfig>,
+    remote: RemoteConfig,
     selection: String,
 }
 
@@ -44,7 +36,7 @@ impl WorkspaceInitializer for Binding {
     async fn prepare(&self, id: WorkspaceId) -> Result<()> {
         let settings = self.settings.clone();
         let remote = self.remote.clone();
-        tokio::task::spawn_blocking(move || settings.bind_new_workspace(id, remote))
+        tokio::task::spawn_blocking(move || settings.bind_new_workspace(id, Some(remote)))
             .await
             .map_err(|error| Error::new(ErrorCode::Io, error.to_string()))?
     }
@@ -52,7 +44,7 @@ impl WorkspaceInitializer for Binding {
     async fn discard(&self, id: WorkspaceId) -> Result<()> {
         let settings = self.settings.clone();
         let remote = self.remote.clone();
-        tokio::task::spawn_blocking(move || settings.discard_new_binding(id, &remote))
+        tokio::task::spawn_blocking(move || settings.discard_new_binding(id, &Some(remote)))
             .await
             .map_err(|error| Error::new(ErrorCode::Io, error.to_string()))?
     }
@@ -71,11 +63,9 @@ async fn create(
     let binding = input
         .storage
         .map(|remote| -> Result<Binding> {
+            remote.validate()?;
             let mut selection = remote.clone();
-            if let Some(config) = &mut selection {
-                config.validate()?;
-                config.redact();
-            }
+            selection.redact();
             Ok(Binding {
                 settings,
                 remote,

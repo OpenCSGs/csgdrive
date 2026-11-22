@@ -18,8 +18,7 @@
 | `allowed_origins` | 额外允许的 HTTP Origin，默认 `[]`；CLI 和 stdio 连接省略 Origin。 |
 | `collaboration` | 默认 `{ "enabled": true }`，适用于此 daemon 的全部工作区与可写挂载。 |
 | `cache` | 本地版本内容缓存容量 `max_bytes`，默认 `2147483648`（2 GiB），必须为正整数；使用远程存储时生效。 |
-| `workspace_remotes` | 按工作区 ID 指定存储，默认为空对象。省略某个 ID 表示使用默认设置，值为 `null` 表示仅保存在本机，值为 S3 或 OpenCSG 配置表示使用指定目标。 |
-| `remote` | 工作区默认存储，通过 `backend` 选择 S3 或 OpenCSG，省略或 `null` 使用本地存储。已有配置未指定 `backend` 时使用 S3。 |
+| `workspace_remotes` | 按工作区 ID 指定 S3 或 OpenCSG 存储。省略该 ID 或使用 `null` 表示仅保存在本机。 |
 
 文件系统路径必须为绝对路径。启动前创建允许的根目录。JSON 字符串不展开 `~` 或环境变量；Windows 路径可以使用转义反斜线或正斜线。未知字段会被拒绝，配置文件最大为 1 MiB。配置和状态通过 daemon 用户的文件系统权限管理。
 
@@ -27,11 +26,11 @@
 
 ## 运行时更新与 Dashboard 设置
 
-通过左下角的“全局设置”或 `/settings` 编辑整个 daemon 的配置。没有工作区时也可以使用设置页面。表单提供自动协作、远程连接、本地缓存容量和 HTTP 访问来源配置。保存时更新启动使用的同一个 `agentdrive.json`。
+通过左下角的“设置”或 `/settings` 编辑整个 daemon 的配置。没有工作区时也可以使用设置页面。表单提供自动协作、远程连接、本地缓存容量和 HTTP 访问来源配置。保存时更新启动使用的同一个 `agentdrive.json`。
 
 | 配置 | 生效时间 |
 | --- | --- |
-| `remote`、`workspace_remotes` | 历史内容与目标连接准备完成后生效，无需重启 |
+| `workspace_remotes` | 历史内容与目标连接准备完成后生效，无需重启 |
 | `cache` | 下次缓存检查，每 30 秒执行一次 |
 | `allowed_origins` | 下一次 HTTP 请求，包括已有 MCP 会话 |
 | `collaboration.enabled` | 下一次文件操作或协作检查；正在释放和恢复的操作继续执行 |
@@ -42,7 +41,7 @@ Origin 使用 `scheme://host[:port]` 格式，不能包含路径、结尾斜线�
 外部文件修改无效时，保留当前配置并在设置页面显示错误。修正文件后，下次检查清除错误。编辑配置时应使用原子替换；启动配置修改需要重启。
 
 - `GET /api/settings` 返回当前 `runtime`、只读 `startup`、`config_path`、`revision` 和 `reload_error`。
-- `PUT /api/settings` 接受 `{ "revision": "<GET 返回的 revision>", "runtime": { "cache": { ... }, "allowed_origins": [], "remote": null, "workspace_remotes": {}, "collaboration": { "enabled": true } } }`，需要提供 GET 返回的完整运行配置。
+- `PUT /api/settings` 接受 `{ "revision": "<GET 返回的 revision>", "runtime": { "cache": { ... }, "allowed_origins": [], "workspace_remotes": {}, "collaboration": { "enabled": true } } }`，需要提供 GET 返回的完整运行配置。
 
 响应会隐藏已保存的远程密钥。配置版本过期或文件被外部修改时返回 409。校验失败保留当前配置与文件。页面发现新版本时保留尚未保存的表单内容，并提供重新载入操作。
 
@@ -64,18 +63,23 @@ Origin 使用 `scheme://host[:port]` 格式，不能包含路径、结尾斜线�
 
 更换远端后端或存储命名空间、禁用远端存储之前，需要在设置中关闭自动协作并完成待处理的交接。协作流程仍依赖当前后端的写权限时，后台会拒绝该配置修改。同一后端和命名空间的凭据或 token 更新会直接刷新连接，可以在自动协作开启期间完成。
 
-点击“创建工作区”，填写名称并选择“使用默认设置”、“仅本地存储”、“S3 兼容存储（含 OSS）”或“OpenCSG Codes”。OSS 的 S3 兼容接口须支持下文的条件写入。对于已有工作区，进入“全局设置 → 存储设置”，在“配置范围”中选择工作区名称，修改存储模式并保存。修改默认目标会影响使用默认设置的工作区。每台机器分别管理自己的配置。
+创建工作区时，选择“仅本地存储”、“S3 兼容存储（含 OSS）”或“OpenCSG Codes”。已有工作区可在“设置 → 存储设置”中选择工作区名称并修改。切换工作区会保留页面内的草稿，“保存并应用”只保存当前选中的工作区及本次修改的全局设置。
 
-下面的配置让工作区默认使用 S3，指定的工作区只保存在本机。从 `workspace_remotes` 移除这个 ID 就会恢复默认设置。全局默认配置也可以使用 `remote.enabled: false` 暂停远程存储并保留凭据。
+以下配置将一个工作区保存到 S3。其他工作区使用各自的配置。
 
 ```json
 {
-  "remote": {"backend": "s3", "bucket": "team-files", "region": "us-east-1"},
-  "workspace_remotes": {"7380e2a8-9c21-4ae7-99a1-9cc605f4b412": null}
+  "workspace_remotes": {
+    "7380e2a8-9c21-4ae7-99a1-9cc605f4b412": {
+      "backend": "s3",
+      "bucket": "team-files",
+      "region": "us-east-1"
+    }
+  }
 }
 ```
 
-Dashboard 调用 `POST /api/workspaces` 创建工作区，提交 `request_id` 和 `name`。省略 `storage` 表示使用默认设置，`"storage": null` 表示仅保存在本机，也可以通过 `storage` 提交完整的远程配置。创建结果尚未确认时，重试使用相同的请求 ID。重新打开表单后，需要再次填写本次请求所需的密钥。
+Dashboard 调用 `POST /api/workspaces` 创建工作区，提交 `request_id` 和 `name`。省略 `storage` 或提交 `"storage": null` 表示仅保存在本机，也可以通过 `storage` 提交完整的远程配置。创建结果尚未确认时，重试使用相同的请求 ID。重新打开表单后，需要再次填写本次请求所需的密钥。
 
 启用远程后端时检查目标连接和条件写入行为，复制本地已知的历史内容和分支引用，随后保存配置并更换连接。S3 与 OpenCSG 之间的切换复用此流程，并保留 AgentDrive revision ID 和历史关系。切换回本地时补齐已被缓存清理的历史内容，并停止清理本地历史文件。工作目录和挂载继续使用；待同步操作保留到下一次启用远程存储。
 
@@ -89,20 +93,22 @@ Dashboard 调用 `POST /api/workspaces` 创建工作区，提交 `request_id` �
 
 ```json
 {
-  "remote": {
-    "backend": "opencsg",
-    "enabled": true,
-    "endpoint": "https://opencsg-stg.com",
-    "repository": "your-namespace/agentdrive-storage",
-    "branch": "main",
-    "prefix": "agentdrive/v1",
-    "token": "your-access-token",
-    "allow_http": false
+  "workspace_remotes": {
+    "7380e2a8-9c21-4ae7-99a1-9cc605f4b412": {
+      "backend": "opencsg",
+      "enabled": true,
+      "endpoint": "https://opencsg-stg.com",
+      "repository": "your-namespace/agentdrive-storage",
+      "branch": "main",
+      "prefix": "agentdrive/v1",
+      "token": "your-access-token",
+      "allow_http": false
+    }
   }
 }
 ```
 
-| `remote` 字段 | 必填要求 / 默认值 | 行为 |
+| 工作区存储字段 | 必填要求 / 默认值 | 行为 |
 | --- | --- | --- |
 | `backend` | 必填，`opencsg` | 选择 Codes HTTP 适配器。 |
 | `enabled` | `true` | 设置为 `false` 使用本地模式，并保留此配置。 |
@@ -142,23 +148,25 @@ export AGENTDRIVE_XNET_PYTHON="$HOME/.agentdrive-xnet/bin/python"
 
 ## S3 字段
 
-将 S3 配置写入 `remote` 可设为全局默认值，也可以将它作为 `workspace_remotes` 中指定工作区 ID 的值。
+将 S3 配置写入对应工作区 ID 的条目。
 
 ```json
 {
-  "remote": {
-    "bucket": "agentdrive",
-    "prefix": "agentdrive/v1",
-    "region": "us-east-1",
-    "endpoint": "http://127.0.0.1:9000",
-    "allow_http": true
+  "workspace_remotes": {
+    "7380e2a8-9c21-4ae7-99a1-9cc605f4b412": {
+      "bucket": "agentdrive",
+      "prefix": "agentdrive/v1",
+      "region": "us-east-1",
+      "endpoint": "http://127.0.0.1:9000",
+      "allow_http": true
+    }
   }
 }
 ```
 
 这是使用本地 RustFS S3 API endpoint 的配置片段，请保留其他已生成的字段。`endpoint` 是 S3 API 的基础 URL，不包含 bucket 名称、凭据、查询参数或 fragment。适配器使用 path-style 请求，并追加 bucket 名称。端口应采用部署环境提供的 S3 API 端口。
 
-| `remote` 字段 | 必填要求 / 默认值 | 行为 |
+| 工作区存储字段 | 必填要求 / 默认值 | 行为 |
 | --- | --- | --- |
 | `backend` | `s3` | 已有 S3 配置可以继续省略此字段。 |
 | `enabled` | `true` | 设置为 `false` 使用本地模式，并保留 S3 配置。 |
@@ -173,11 +181,13 @@ export AGENTDRIVE_XNET_PYTHON="$HOME/.agentdrive-xnet/bin/python"
 
 ```json
 {
-  "remote": {
-    "bucket": "your-existing-bucket",
-    "prefix": "agentdrive/v1",
-    "region": "eu-west-1",
-    "allow_http": false
+  "workspace_remotes": {
+    "7380e2a8-9c21-4ae7-99a1-9cc605f4b412": {
+      "bucket": "your-existing-bucket",
+      "prefix": "agentdrive/v1",
+      "region": "eu-west-1",
+      "allow_http": false
+    }
   }
 }
 ```
@@ -222,13 +232,13 @@ jq -n --arg operation "$(jq -r '.id' "$AGENTDRIVE_DIRECTORY/demo-import.json")" 
   agentdrive call operation_get --json -
 ```
 
-检查原始操作的 `remote_confirmed`。`workspace_status.capabilities.remote_configured` 表示该工作区是否启用 S3 或 OpenCSG，`pending_jobs` 表示队列长度。保存配置但设置 `remote.enabled: false` 时，返回 `remote_configured: false`。启用远程存储后，守护进程每三秒重试待同步任务。`local_saved: true` 的结果记录仍然可能包含远端错误；请保留 operation ID，并参考[恢复说明](operations.zh-CN.md)。
+检查原始操作的 `remote_confirmed`。`workspace_status.capabilities.remote_configured` 表示该工作区是否启用 S3 或 OpenCSG，`pending_jobs` 表示队列长度。保存配置但设置 `enabled: false` 时，返回 `remote_configured: false`。启用远程存储后，守护进程每三秒重试待同步任务。`local_saved: true` 的结果记录仍然可能包含远端错误；请保留 operation ID，并参考[恢复说明](operations.zh-CN.md)。
 
 要检查条件写入、并发更新、20 MiB 分段内容和两个守护进程之间的同步，请使用隔离的 [S3/RustFS 测试](validation.zh-CN.md)。这些测试使用独立的测试 bucket，不适合作为生产环境健康检查。
 
 ## 多台机器
 
-参与同一工作区的守护进程需要为该工作区选择相同后端和目标：S3 使用相同的 endpoint、bucket、prefix 和签名 region；OpenCSG 使用相同的域名、仓库、存储分支和 prefix。若接收端使用不同的默认目标，在接收端的 `workspace_remotes` 中填写源工作区 ID 和相同的远程目标。每台机器使用独立的状态目录和 `LocationId`。目标机器上本地 principal 需要是工作区所有者，或者获得适当授权。各机器通过自己的 daemon 连接远程存储。
+参与同一工作区的守护进程需要为该工作区选择相同后端和目标：S3 使用相同的 endpoint、bucket、prefix 和签名 region；OpenCSG 使用相同的域名、仓库、存储分支和 prefix。在接收端的 `workspace_remotes` 中填写源工作区 ID 和相同的远程目标。每台机器使用独立的状态目录和 `LocationId`。目标机器上本地 principal 需要是工作区所有者，或者获得适当授权。各机器通过自己的 daemon 连接远程存储。
 
 在源机器执行推送，然后在目标机器使用相同 workspace ID 调用 `sync`，设置 `direction: "pull"`。拉取会导入历史和远端分支引用。可以使用已保留的版本创建本地分支；需要接管已有可写分支时，完成在线 `ownership_transfer`。详见[操作说明](operations.zh-CN.md)和 [MCP 参考](mcp.zh-CN.md)。
 

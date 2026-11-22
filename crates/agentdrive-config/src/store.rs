@@ -17,9 +17,6 @@ const MAX_CONFIG_BYTES: usize = 1024 * 1024;
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct RuntimeConfig {
-    #[serde(default)]
-    pub remote: Option<RemoteConfig>,
-    #[serde(default)]
     pub workspace_remotes: BTreeMap<WorkspaceId, Option<RemoteConfig>>,
     pub cache: CacheConfig,
     pub allowed_origins: Vec<String>,
@@ -30,11 +27,7 @@ pub struct RuntimeConfig {
 impl RuntimeConfig {
     pub fn validate(&self) -> Result<()> {
         self.cache.validate()?;
-        for remote in self
-            .remote
-            .iter()
-            .chain(self.workspace_remotes.values().flatten())
-        {
+        for remote in self.workspace_remotes.values().flatten() {
             remote.validate()?;
         }
         for origin in &self.allowed_origins {
@@ -165,11 +158,7 @@ impl ConfigStore {
     pub fn settings(&self) -> Settings {
         let snapshot = self.live.load();
         let mut runtime = snapshot.values.clone();
-        for remote in runtime
-            .remote
-            .iter_mut()
-            .chain(runtime.workspace_remotes.values_mut().flatten())
-        {
+        for remote in runtime.workspace_remotes.values_mut().flatten() {
             remote.redact();
         }
         Settings {
@@ -290,9 +279,6 @@ impl ConfigStore {
                 ErrorCode::Conflict,
                 "configuration changed; reload settings before saving",
             ));
-        }
-        if let Some(remote) = &mut update.runtime.remote {
-            remote.restore_credentials(current.values.remote.as_ref())?;
         }
         for (workspace, remote) in &mut update.runtime.workspace_remotes {
             if let Some(remote) = remote {

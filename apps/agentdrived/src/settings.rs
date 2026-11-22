@@ -31,9 +31,6 @@ pub fn storage_routes<'a>(
 ) -> Result<(StorageRoutes, Vec<Arc<RemoteStorage>>)> {
     let mut clients = Vec::new();
     if let Some((previous, routes)) = previous {
-        if let (Some(config), Some(client)) = (&previous.remote, &routes.default) {
-            clients.push((config, client.clone()));
-        }
         for (id, config) in &previous.workspace_remotes {
             if let (Some(config), Some(Some(client))) = (config, routes.workspaces.get(id)) {
                 clients.push((config, client.clone()));
@@ -53,13 +50,12 @@ pub fn storage_routes<'a>(
         opened.push(client.clone());
         Ok(Some(client))
     };
-    let default = resolve(next.remote.as_ref())?;
     let overrides = next
         .workspace_remotes
         .iter()
         .map(|(id, config)| Ok((*id, resolve(config.as_ref())?)))
         .collect::<Result<_>>()?;
-    Ok((StorageRoutes::new(default, overrides), opened))
+    Ok((StorageRoutes::new(None, overrides), opened))
 }
 
 #[derive(Debug)]
@@ -89,8 +85,7 @@ fn selected(config: &RuntimeConfig, workspace: WorkspaceId) -> Option<&RemoteCon
     config
         .workspace_remotes
         .get(&workspace)
-        .unwrap_or(&config.remote)
-        .as_ref()
+        .and_then(Option::as_ref)
         .filter(|r| r.enabled())
 }
 
@@ -101,7 +96,7 @@ impl ConfigApplier for StorageSettings {
         next: &RuntimeConfig,
         persist: &mut dyn FnMut() -> Result<()>,
     ) -> Result<()> {
-        if previous.remote == next.remote && previous.workspace_remotes == next.workspace_remotes {
+        if previous.workspace_remotes == next.workspace_remotes {
             return persist();
         }
         self.runtime.block_on(async {
