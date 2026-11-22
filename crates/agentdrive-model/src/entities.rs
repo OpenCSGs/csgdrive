@@ -51,6 +51,9 @@ pub struct Grant {
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct Workspace {
+    /// Digest of the destination chosen at creation. Local workspaces omit it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub storage_target: Option<String>,
     #[serde(default)]
     pub deleted: bool,
     pub id: WorkspaceId,

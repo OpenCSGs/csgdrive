@@ -52,13 +52,14 @@ impl S3Backend {
         if prefix.is_empty() {
             return Err(Error::invalid("S3 namespace prefix must not be empty"));
         }
+        let endpoint = config.effective_endpoint();
         let mut builder = AmazonS3Builder::from_env()
             .with_bucket_name(config.bucket)
             .with_region(config.region)
             .with_allow_http(config.allow_http)
             .with_conditional_put(S3ConditionalPut::ETagMatch)
             .with_virtual_hosted_style_request(false);
-        if let Some(endpoint) = config.endpoint {
+        if let Some(endpoint) = endpoint {
             let url = object_store::signer::Url::parse(&endpoint)
                 .map_err(|_| Error::invalid("invalid S3 endpoint"))?;
             if !url.username().is_empty()

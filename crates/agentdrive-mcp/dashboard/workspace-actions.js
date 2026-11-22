@@ -1,5 +1,3 @@
-import { storageEditor } from './settings.js';
-
 export function createWorkspaceActions({api, element, changed}) {
   const dialog = element('dialog', 'revision-dialog workspace-delete-dialog');
   const title = element('h2', '', '删除工作区'); title.id = 'workspace-delete-title';
@@ -40,11 +38,73 @@ export function createWorkspaceActions({api, element, changed}) {
   }};
 }
 
+function storageEditor($) {
+  function show(remote) {
+    const backend = remote?.backend || 's3';
+    $('storage-mode').value = remote && remote.enabled !== false ? backend : 'local';
+    const s3 = backend === 's3' ? remote : null;
+    const opencsg = backend === 'opencsg' ? remote : null;
+    $('s3-endpoint').value = s3?.endpoint || '';
+    $('s3-bucket').value = s3?.bucket || '';
+    $('s3-region').value = s3?.region || 'us-east-1';
+    $('s3-prefix').value = s3?.prefix || 'agentdrive/v1';
+    $('s3-http').checked = s3?.allow_http || false;
+    $('s3-auth').value = s3?.credentials ? 'saved' : 'environment';
+    $('s3-access-key').value = s3?.credentials?.access_key_id || '';
+    $('s3-secret-key').value = ''; $('s3-session-token').value = '';
+    $('opencsg-endpoint').value = opencsg?.endpoint || '';
+    $('opencsg-repository').value = opencsg?.repository || '';
+    $('opencsg-branch').value = opencsg?.branch || 'main';
+    $('opencsg-prefix').value = opencsg?.prefix || 'agentdrive/v1';
+    $('opencsg-http').checked = opencsg?.allow_http || false;
+    $('opencsg-xnet').checked = opencsg?.xnet || false;
+    $('opencsg-token').value = '';
+    update();
+  }
+  function read() {
+    const mode = $('storage-mode').value;
+    let remote = null;
+    if (mode === 's3') {
+      const bucket = $('s3-bucket').value.trim();
+      if (!bucket) throw new Error('请填写 S3 Bucket。');
+      remote = {
+        backend:'s3', enabled:true, bucket, endpoint:$('s3-endpoint').value.trim() || null,
+        region:$('s3-region').value.trim(), prefix:$('s3-prefix').value.trim(), allow_http:$('s3-http').checked,
+        credentials:$('s3-auth').value === 'saved' ? {
+          access_key_id:$('s3-access-key').value.trim(), secret_access_key:$('s3-secret-key').value,
+          session_token:$('s3-session-token').value || null,
+        } : null,
+      };
+    } else if (mode === 'opencsg') {
+      remote = {backend:'opencsg', enabled:true, endpoint:$('opencsg-endpoint').value.trim(),
+        repository:$('opencsg-repository').value.trim(), branch:$('opencsg-branch').value.trim(),
+        prefix:$('opencsg-prefix').value.trim(), xnet:$('opencsg-xnet').checked, token:$('opencsg-token').value, allow_http:$('opencsg-http').checked};
+      if (!remote.endpoint || !remote.repository) throw new Error('请填写 OpenCSG 域名和仓库。');
+    }
+    return remote;
+  }
+  function update() {
+    const mode = $('storage-mode').value;
+    $('s3-fields').hidden = mode !== 's3';
+    $('s3-fields').disabled = mode !== 's3';
+    $('opencsg-fields').hidden = mode !== 'opencsg';
+    $('opencsg-fields').disabled = mode !== 'opencsg';
+    for (const name of ['bucket', 'region', 'prefix']) $('s3-' + name).required = mode === 's3';
+    const saved = mode === 's3' && $('s3-auth').value === 'saved';
+    for (const id of ['s3-access-key', 's3-secret-key', 's3-session-token']) $(id).disabled = !saved;
+    $('s3-access-key').required = saved;
+    for (const name of ['endpoint','repository','branch','prefix']) $('opencsg-'+name).required = mode === 'opencsg';
+    $('s3-secret-key').required = saved;
+    $('opencsg-token').required = mode === 'opencsg';
+  }
+  return {show, read, update};
+}
+
 export function createWorkspaceCreator({api, element, created}) {
   const dialog = element('dialog', 'revision-dialog workspace-create-dialog');
   const title = element('h2', '', '创建工作区'); title.id = 'workspace-create-title';
   dialog.setAttribute('aria-labelledby', title.id);
-  const description = element('p', '', '创建项目空间和默认的 main 分支。创建后可以添加文件、挂载本机目录或启动 Sandbox。');
+  const description = element('p', '', '选择文件和版本记录的存储位置。工作区创建后，存储位置固定。');
   const form = element('form');
   const label = element('label', '', '工作区名称');
   const input = element('input'); input.required = true; input.autocomplete = 'off'; input.placeholder = '例如：市场调研'; label.append(input);
@@ -53,9 +113,7 @@ export function createWorkspaceCreator({api, element, created}) {
   const actions = element('div', 'management-actions');
   const cancel = element('button', 'secondary', '取消'), submit = element('button', 'primary', '创建工作区');
   cancel.type = 'button'; submit.type = 'submit'; actions.append(cancel, submit);
-  const storage = document.getElementById('storage-editor').cloneNode(true);
-  storage.id = 'create-storage-editor';
-  for (const field of storage.querySelectorAll('[id]')) field.id = 'create-' + field.id;
+  const storage = document.getElementById('create-storage-template').content.firstElementChild.cloneNode(true);
   const editor = storageEditor(id => storage.querySelector('#create-' + id));
   storage.addEventListener('input', () => { editor.update(); error.textContent = ''; });
   form.append(label, storage, error, note, actions); dialog.append(title, description, form); document.body.append(dialog);
@@ -94,8 +152,8 @@ export function createWorkspaceCreator({api, element, created}) {
       }
       sessionStorage.setItem(key, JSON.stringify(ticket)); update();
       const result = await api('/api/workspaces', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(request)});
-      if (result.error) {
-        if (['failed','cancelled'].includes(result.phase) && !result.error.retryable) clearTicket();
+      if (result.error && !result.local_saved) {
+        if (['failed','cancelled'].includes(result.phase)) clearTicket();
         throw new Error(result.error.message);
       }
       if (!result.local_saved || !result.result?.workspace?.id) throw new Error('创建尚未确认，请重试同一个请求。');
@@ -109,7 +167,7 @@ export function createWorkspaceCreator({api, element, created}) {
     trigger = button;
     try { ticket = JSON.parse(sessionStorage.getItem(key)); } catch { ticket = null; }
     if (!ticket?.request_id || typeof ticket.name !== 'string') ticket = null;
-    editor.show(ticket?.storage, false);
+    editor.show(ticket?.storage);
     input.value = ticket?.name || ''; error.textContent = ''; update(); dialog.showModal(); input.focus();
   }};
 }

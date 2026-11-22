@@ -24,13 +24,13 @@ struct Create {
 struct Binding {
     settings: Arc<ConfigStore>,
     remote: RemoteConfig,
-    selection: String,
+    target: String,
 }
 
 #[async_trait::async_trait]
 impl WorkspaceInitializer for Binding {
-    fn selection(&self) -> &str {
-        &self.selection
+    fn storage_target(&self) -> Option<&str> {
+        Some(&self.target)
     }
 
     async fn prepare(&self, id: WorkspaceId) -> Result<()> {
@@ -64,12 +64,16 @@ async fn create(
         .storage
         .map(|remote| -> Result<Binding> {
             remote.validate()?;
-            let mut selection = remote.clone();
-            selection.redact();
+            if !remote.enabled() {
+                return Err(Error::invalid(
+                    "select local storage by omitting the remote profile",
+                ));
+            }
+            let target = remote.storage_target()?;
             Ok(Binding {
                 settings,
                 remote,
-                selection: serde_json::to_string(&selection)?,
+                target,
             })
         })
         .transpose()?;

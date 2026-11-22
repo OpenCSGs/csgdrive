@@ -1,6 +1,6 @@
 mod support;
 use agentdrive_config::{LiveConfig, RuntimeConfig};
-use agentdrive_engine::{Adapters, Engine, EngineConfig, RemoteStorage};
+use agentdrive_engine::{Adapters, Engine, EngineConfig};
 use agentdrive_local::LocalBackend;
 use agentdrive_model::*;
 use agentdrive_opencsg::OpenCsgBackend;
@@ -58,11 +58,11 @@ async fn open(
 }
 
 #[tokio::test]
-async fn storage_switch_preserves_autosaves_commits_and_history_on_a_fresh_location() {
+async fn codes_publishes_autosaves_commits_and_history_for_a_fresh_location() {
     let server = Server::new().await;
     let first_dir = tempfile::tempdir().unwrap();
     let second_dir = tempfile::tempdir().unwrap();
-    let (local, engine, clock) = open(first_dir.path(), None).await;
+    let (local, engine, clock) = open(first_dir.path(), Some(server.backend())).await;
     let created = success(
         engine
             .services
@@ -162,23 +162,7 @@ async fn storage_switch_preserves_autosaves_commits_and_history_on_a_fresh_locat
     let CommandResult::Revision { revision, .. } = committed.result.unwrap() else {
         panic!("revision");
     };
-    let backend = server.backend();
-    backend.check_connection().await.unwrap();
-    let mut persisted = false;
-    engine
-        .switch_storage(
-            Some(RemoteStorage {
-                objects: backend.clone(),
-                refs: backend,
-            }),
-            &mut || {
-                persisted = true;
-                Ok(())
-            },
-        )
-        .await
-        .unwrap();
-    assert!(persisted);
+    engine.sync_pending().await.unwrap();
     let (second_local, second, _) = open(second_dir.path(), Some(server.backend())).await;
     success(
         second
@@ -223,8 +207,6 @@ async fn storage_switch_preserves_autosaves_commits_and_history_on_a_fresh_locat
             local.evict(workspace.id, &object.reference).await.unwrap();
         }
     }
-    engine.switch_storage(None, &mut || Ok(())).await.unwrap();
-    server.data.lock().unwrap().unavailable = true;
     let bytes = engine
         .services
         .revisions
@@ -239,4 +221,21 @@ async fn storage_switch_preserves_autosaves_commits_and_history_on_a_fresh_locat
         .await
         .unwrap();
     assert_eq!(bytes, content);
+    server.data.lock().unwrap().unavailable = true;
+    assert_eq!(
+        engine
+            .services
+            .revisions
+            .read_file(
+                &actor(),
+                workspace.id,
+                revision,
+                "/binary.dat".to_owned().try_into().unwrap(),
+                0,
+                1024
+            )
+            .await
+            .unwrap(),
+        content
+    );
 }

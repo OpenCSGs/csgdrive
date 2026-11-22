@@ -349,7 +349,7 @@ async fn delayed_history_observation_preserves_newer_remote_and_local_branch_sta
 }
 
 #[tokio::test]
-async fn refresh_status_reports_failures_retries_and_disabled_storage() {
+async fn refresh_status_reports_failures_and_retries() {
     let harness = Harness::new().await;
     harness.remote.inner.set_available(false);
     assert!(harness.request().await.refreshing);
@@ -364,21 +364,6 @@ async fn refresh_status_reports_failures_retries_and_disabled_storage() {
     harness.engine.refresh_requested_history().await;
     let status = harness.request().await;
     assert!(status.error.is_none() && status.last_success_ns.is_some());
-    harness.clock.advance(2_000);
-    assert!(harness.request().await.refreshing);
-    harness
-        .engine
-        .switch_storage(None, &mut || Ok(()))
-        .await
-        .unwrap();
-    harness.engine.refresh_requested_history().await;
-    let status = harness.request().await;
-    assert!(!status.refreshing);
-    assert!(
-        status.error.is_none()
-            && status.last_attempt_ns.is_none()
-            && status.last_success_ns.is_none()
-    );
 }
 
 #[tokio::test]

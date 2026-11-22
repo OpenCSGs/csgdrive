@@ -35,7 +35,7 @@
 | `engine/mounts` | 选择工作区在本机使用的分支、复用挂载关联、保存挂载文件、协调挂载切换 |
 | `engine/replica`、`engine/ownership` | 同步任务、远程条件写入与写入所有权交接 |
 | `engine/collaboration` | 按分支跟随更新、自动申请与交还写权限、登记执行事件及协调恢复 |
-| `engine/storage` | 历史内容补齐、远程引用复制与存储切换 |
+| `engine/storage` | 管理各工作区的存储连接 |
 | `engine/cache` | 预取、固定缓存，以及按照当前配置回收允许清理的内容 |
 | `engine/merge` | 准备合并候选内容、编辑文件、解决冲突与应用结果 |
 | `engine/operations` | 请求去重、操作进度与持久化结果记录 |
@@ -49,7 +49,7 @@
 
 `agentdrive-ports` 定义 engine 使用的接口，存储和平台适配器负责实现接口。配置模块依赖 model 中的数据类型，数据库、挂载和网络服务由 daemon 创建。daemon 将同一个 `LiveConfig` 传给 engine 和 HTTP 入口；`ConfigStore` 统一发布配置，使用配置的模块为每次操作取得完整快照。启动和运行期间修改均通过 `apps/agentdrived/settings::remote_storage` 选择远程适配器。
 
-两种远程后端均实现 `RemoteObjectStore` 和 `RemoteRefStore`。engine 复用已有的发布顺序、持久化重试、历史导入、所有权和存储切换流程。OpenCSG HTTP 路径、Bearer 认证、响应解析、数据块编码及 Git 分支版本检查由 `agentdrive-opencsg` 管理，领域对象和 MCP 工具继续使用原有版本含义。
+两种远程后端均实现 `RemoteObjectStore` 和 `RemoteRefStore`。engine 复用已有的发布顺序、持久化重试、历史导入和所有权管理流程。OpenCSG HTTP 路径、Bearer 认证、响应解析、数据块编码及 Git 分支版本检查由 `agentdrive-opencsg` 管理，领域对象和 MCP 工具继续使用原有版本含义。
 
 工作区发现通过 `RemoteRefStore` 枚举 ID，校验控制记录并缓存有权访问的元数据，不创建挂载。工作区服务为手动刷新和 daemon 每 2 秒执行的刷新提供同一套流程。全局删除通过条件更新修改已有控制记录并关闭发布入口，随后持久化本机删除标记；已删除状态不能被旧元数据覆盖。删除记录发布后禁止新增发布和历史保留操作。其他 location 复用检查句柄的正常卸载流程清理挂载。内容对象与 Git 历史继续保留，Dashboard 负责选择、确认和错误展示。
 
@@ -120,7 +120,7 @@ MCP 和 HTTP webhook 都通过应用接口调用 engine。工作目录的 NFS、
 
 daemon 每秒检查配置文件。Dashboard 保存与文件加载使用同一个 `ConfigStore` 和写入锁。保存时检查配置版本，在同目录写入并同步临时文件，替换配置文件，然后发布快照；Unix 还会同步目录。文件错误、无效内容以及启动配置变化都会保留当前有效配置，并提供错误信息。配置版本检查会拒绝过期的 API 保存请求及已经检测到的外部修改；外部编辑器不使用 daemon 的写入锁，建议通过原子替换文件提交修改。
 
-设置通过 `ConfigStore` 管理整个 daemon，与工作区选择分别处理。接口隐藏已保存的远程密钥。修改本地目录、principal 或监听地址需要重启。`ConfigApplier` 检查远程连接、准备内容、保存配置，并在生命周期、发布和内容保护期间更换适配器。参见[配置说明](configuration.zh-CN.md)。
+daemon 通过 `ConfigStore` 管理每个工作区的存储位置，并通过工作区元数据验证存储位置。接口隐藏已保存的远程密钥。修改本地目录、principal 或监听地址需要重启。`ConfigApplier` 检查远程连接、保存配置，并在生命周期、发布和内容保护期间更换适配器。参见[配置说明](configuration.zh-CN.md)。
 
 ## 本地持久化
 

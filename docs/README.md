@@ -5,7 +5,7 @@
 | Guide | Contents |
 | --- | --- |
 | [Installation](installation.md) | Platform dependencies, source build and startup |
-| [Configuration and remote storage](configuration.md) | Dashboard settings, cache capacity, live storage switching, S3 credentials, OpenCSG domain/token, and multi-machine setup |
+| [Configuration and remote storage](configuration.md) | Dashboard settings, cache capacity, workspace storage selection, S3 credentials, OpenCSG domain/token, and multi-machine setup |
 | [Command-line usage](cli.md) | Commands, connection options, executable examples, JSON input, and exit codes |
 | [MCP reference](mcp.md) | stdio/HTTP connections, all 32 tools, parameters, receipts, and capabilities |
 | [Architecture](architecture.md) | Crate responsibilities, persistence, replication, ownership, merging, and access boundaries |

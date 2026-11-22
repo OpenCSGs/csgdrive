@@ -7,24 +7,69 @@ fn storage(remote: &Arc<MemoryRemote>) -> Arc<RemoteStorage> {
     })
 }
 
+struct TestStorage {
+    engine: Arc<Engine>,
+    target: String,
+    remote: Arc<RemoteStorage>,
+}
+
+#[async_trait::async_trait]
+impl WorkspaceInitializer for TestStorage {
+    fn storage_target(&self) -> Option<&str> {
+        Some(&self.target)
+    }
+    async fn prepare(&self, id: WorkspaceId) -> Result<()> {
+        let mut routes = (*self.engine.storage_routes()).clone();
+        routes.bind(id, self.target.clone(), self.remote.clone());
+        self.engine
+            .configure_workspace_storage(routes, || Ok(()))
+            .await
+    }
+    async fn discard(&self, _: WorkspaceId) -> Result<()> {
+        Ok(())
+    }
+}
+
+async fn remote_workspace(
+    harness: &Harness,
+    target: &str,
+    remote: &Arc<MemoryRemote>,
+) -> Workspace {
+    let request = CreateWorkspace {
+        name: target.into(),
+        grants: vec![],
+        max_file_bytes: None,
+        max_working_bytes: None,
+        max_inodes: None,
+    };
+    let binding = TestStorage {
+        engine: harness.engine.clone(),
+        target: target.into(),
+        remote: storage(remote),
+    };
+    let operation = success(
+        harness
+            .engine
+            .services
+            .workspace
+            .create_configured(context(), request, Some(&binding))
+            .await
+            .unwrap(),
+    );
+    let Some(CommandResult::Workspace { workspace }) = operation.result else {
+        panic!("expected workspace")
+    };
+    workspace
+}
+
 #[tokio::test]
 async fn workspace_routes_isolate_publication_discovery_and_cold_reads() {
     let a = Arc::new(MemoryRemote::default());
     let b = Arc::new(MemoryRemote::default());
     let writer = Harness::new(None).await;
-    let first = writer.workspace().await;
-    let second = writer.workspace().await;
+    let first = remote_workspace(&writer, "first-store", &a).await;
+    let second = remote_workspace(&writer, "second-store", &b).await;
     let offline = writer.workspace().await;
-    let routes = StorageRoutes::new(
-        Some(storage(&a)),
-        [(second.id, Some(storage(&b))), (offline.id, None)].into(),
-    );
-    writer
-        .engine
-        .switch_storage_routes(routes.clone(), |_| true, &mut || Ok(()))
-        .await
-        .unwrap();
-
     let mut revisions = Vec::new();
     for (workspace, text) in [(&first, "first"), (&second, "second"), (&offline, "local")] {
         let (mount, fs) = writer.branch_mount(workspace.id, text, None).await;
@@ -36,26 +81,10 @@ async fn workspace_routes_isolate_publication_discovery_and_cold_reads() {
     assert_eq!(b.list_workspaces().await.unwrap(), vec![second.id]);
     assert!(!writer.local.sync_jobs(offline.id).await.unwrap().is_empty());
 
-    // A previous default namespace can still contain workspace records after migration.
-    let key = RefKey::Workspace(second.id);
-    let mut obsolete: WorkspaceControl =
-        decode(&b.get(&key).await.unwrap().unwrap().bytes).unwrap();
-    obsolete.workspace.deleted = true;
-    assert!(matches!(
-        a.compare_exchange(RefUpdate {
-            key,
-            expected_version: None,
-            bytes: encode(&obsolete).unwrap().into()
-        })
-        .await
-        .unwrap(),
-        CasOutcome::Applied { .. }
-    ));
-
     let reader = Harness::new(None).await;
     reader
         .engine
-        .switch_storage_routes(routes, |_| true, &mut || Ok(()))
+        .configure_workspace_storage((*writer.engine.storage_routes()).clone(), || Ok(()))
         .await
         .unwrap();
     let discovered: std::collections::BTreeSet<_> = reader
@@ -84,24 +113,22 @@ async fn workspace_routes_isolate_publication_discovery_and_cold_reads() {
         assert_eq!(bytes.as_ref(), expected.as_bytes());
     }
 
-    let migrated = Arc::new(MemoryRemote::default());
-    b.set_available(false);
     let mut next = (*writer.engine.storage_routes()).clone();
-    next.workspaces.insert(first.id, Some(storage(&migrated)));
-    writer
+    next.bind(first.id, "second-store".into(), storage(&b));
+    let err = writer
         .engine
-        .switch_storage_routes(next, |id| id == first.id, &mut || Ok(()))
+        .configure_workspace_storage(next, || panic!("must reject before persisting"))
         .await
-        .unwrap();
-    assert_eq!(migrated.list_workspaces().await.unwrap(), vec![first.id]);
+        .unwrap_err();
+    assert_eq!(err.code, ErrorCode::Conflict);
 }
 
 #[tokio::test]
 async fn local_workspace_retains_confirmed_history_while_another_can_evict() {
     let remote = Arc::new(MemoryRemote::default());
-    let harness = Harness::new(Some(remote)).await;
+    let harness = Harness::new(None).await;
     let keep = harness.workspace().await;
-    let evict = harness.workspace().await;
+    let evict = remote_workspace(&harness, "remote-store", &remote).await;
     let mut objects = Vec::new();
     for (workspace, name) in [(&keep, "local"), (&evict, "remote")] {
         let (mount, fs) = harness.branch_mount(workspace.id, name, None).await;
@@ -126,15 +153,10 @@ async fn local_workspace_retains_confirmed_history_while_another_can_evict() {
             .await
             .unwrap();
         harness.commit(mount.branch).await;
-        harness.sync(workspace.id, SyncDirection::Push).await;
+        if workspace.id == evict.id {
+            harness.sync(workspace.id, SyncDirection::Push).await;
+        }
     }
-    let mut routes = (*harness.engine.storage_routes()).clone();
-    routes.workspaces.insert(keep.id, None);
-    harness
-        .engine
-        .switch_storage_routes(routes, |id| id == keep.id, &mut || Ok(()))
-        .await
-        .unwrap();
     harness.engine.services.cache.collect().await.unwrap();
     assert!(harness.local.contains(keep.id, &objects[0]).await.unwrap());
     assert!(!harness.local.contains(evict.id, &objects[1]).await.unwrap());
@@ -148,8 +170,8 @@ async fn configured_creation_reuses_the_reserved_id_after_interruption() {
     }
     #[async_trait::async_trait]
     impl WorkspaceInitializer for Binding {
-        fn selection(&self) -> &str {
-            "local"
+        fn storage_target(&self) -> Option<&str> {
+            None
         }
         async fn prepare(&self, id: WorkspaceId) -> Result<()> {
             self.prepared.send(id).unwrap();
@@ -203,91 +225,4 @@ async fn configured_creation_reuses_the_reserved_id_after_interruption() {
     assert!(saved.local_saved);
     assert_eq!(saved.workspace, Some(reserved));
     assert_eq!(service.list(&actor()).await.unwrap().len(), 1);
-}
-
-#[tokio::test]
-async fn migration_requires_the_current_source_head_of_every_branch() {
-    let source = Arc::new(MemoryRemote::default());
-    let target = Arc::new(MemoryRemote::default());
-    let first = Harness::new(Some(source.clone())).await;
-    let workspace = first.workspace().await;
-    first.sync(workspace.id, SyncDirection::Push).await;
-    let other = Harness::new(Some(source.clone())).await;
-    other.sync(workspace.id, SyncDirection::Pull).await;
-    let (mount, fs) = other.branch_mount(workspace.id, "review", None).await;
-    other.write_new(&fs, "draft", b"review").await;
-    other.commit(mount.branch).await;
-    other.sync(workspace.id, SyncDirection::Push).await;
-    let mut routes = (*first.engine.storage_routes()).clone();
-    routes
-        .workspaces
-        .insert(workspace.id, Some(storage(&target)));
-    for revision in 0..2 {
-        let error = first
-            .engine
-            .switch_storage_routes(routes.clone(), |id| id == workspace.id, &mut || {
-                panic!("migration published incomplete history")
-            })
-            .await
-            .unwrap_err();
-        assert_eq!(error.code, ErrorCode::TargetMoved);
-        assert!(target.list_workspaces().await.unwrap().is_empty());
-        first.sync(workspace.id, SyncDirection::Pull).await;
-        if revision == 0 {
-            other.write_new(&fs, "final", b"another revision").await;
-            other.commit(mount.branch).await;
-            other.sync(workspace.id, SyncDirection::Push).await;
-        }
-    }
-    let interrupted_target = Arc::new(MemoryRemote::default());
-    let mut interrupted_routes = routes.clone();
-    interrupted_routes
-        .workspaces
-        .insert(workspace.id, Some(storage(&interrupted_target)));
-    let (publishing, resume) = interrupted_target.pause_next_branch_cas();
-    let migrate = async {
-        first
-            .engine
-            .switch_storage_routes(
-                interrupted_routes.clone(),
-                |id| id == workspace.id,
-                &mut || panic!("source advanced before persistence"),
-            )
-            .await
-    };
-    let advance_source = async {
-        publishing.await.unwrap();
-        other
-            .write_new(&fs, "late", b"published during migration")
-            .await;
-        other.commit(mount.branch).await;
-        other.sync(workspace.id, SyncDirection::Push).await;
-        resume.send(()).unwrap();
-    };
-    let (result, ()) = tokio::join!(migrate, advance_source);
-    assert_eq!(result.unwrap_err().code, ErrorCode::TargetMoved);
-    first.sync(workspace.id, SyncDirection::Pull).await;
-    let error = first
-        .engine
-        .switch_storage_routes(interrupted_routes, |id| id == workspace.id, &mut || {
-            panic!("destination has a divergent foreign branch")
-        })
-        .await
-        .unwrap_err();
-    assert_eq!(error.code, ErrorCode::TargetMoved);
-    first
-        .engine
-        .switch_storage_routes(routes, |id| id == workspace.id, &mut || Ok(()))
-        .await
-        .unwrap();
-    for branch in source.list_branches(workspace.id).await.unwrap() {
-        let key = RefKey::Branch {
-            workspace: workspace.id,
-            branch,
-        };
-        assert_eq!(
-            target.get(&key).await.unwrap().unwrap().bytes,
-            source.get(&key).await.unwrap().unwrap().bytes
-        );
-    }
 }

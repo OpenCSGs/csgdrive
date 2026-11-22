@@ -1153,15 +1153,6 @@ async fn global_disable_finishes_an_interrupted_release_and_allows_credential_re
     let (binding, fs) = first.branch_mount(workspace.id, "shared-work", None).await;
     first.sync(workspace.id, SyncDirection::Push).await;
     configure(&first, &binding).await;
-    assert_eq!(
-        first
-            .engine
-            .switch_storage(None, &mut || Ok(()))
-            .await
-            .unwrap_err()
-            .code,
-        ErrorCode::Busy
-    );
     finish_turn(&first, binding.id).await;
     remote.set_available(false);
     assert_eq!(
@@ -1258,11 +1249,6 @@ async fn global_disable_finishes_an_interrupted_release_and_allows_credential_re
             .state,
         BranchState::Available
     );
-    first
-        .engine
-        .switch_storage(None, &mut || Ok(()))
-        .await
-        .unwrap();
 }
 
 #[tokio::test]

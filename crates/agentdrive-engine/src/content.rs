@@ -23,33 +23,59 @@ impl std::fmt::Debug for RemoteStorage {
     }
 }
 
-/// An explicit local route overrides the daemon's default remote.
 #[derive(Debug, Clone, Default)]
 pub struct StorageRoutes {
-    pub default: Option<Arc<RemoteStorage>>,
-    pub workspaces: BTreeMap<WorkspaceId, Option<Arc<RemoteStorage>>>,
+    pub(crate) default: Option<Arc<RemoteStorage>>,
+    workspaces: BTreeMap<WorkspaceId, (String, Arc<RemoteStorage>)>,
 }
 
 impl StorageRoutes {
-    pub fn new(
-        default: Option<Arc<RemoteStorage>>,
-        workspaces: BTreeMap<WorkspaceId, Option<Arc<RemoteStorage>>>,
-    ) -> Self {
+    pub(crate) fn with_default(default: Option<Arc<RemoteStorage>>) -> Self {
         Self {
             default,
-            workspaces,
+            ..Self::default()
         }
+    }
+
+    pub fn bind(&mut self, workspace: WorkspaceId, target: String, remote: Arc<RemoteStorage>) {
+        self.workspaces.insert(workspace, (target, remote));
+    }
+
+    pub(crate) fn workspace_ids(&self) -> impl Iterator<Item = WorkspaceId> + '_ {
+        self.workspaces.keys().copied()
+    }
+
+    pub async fn check_existing(&self, state: &dyn LocalStateStore) -> Result<()> {
+        for workspace in state.workspaces().await? {
+            if workspace.deleted && !self.workspaces.contains_key(&workspace.id) {
+                continue;
+            }
+            self.check_target(workspace.id, workspace.storage_target.as_deref())?;
+        }
+        Ok(())
+    }
+
+    pub(crate) fn check_target(&self, id: WorkspaceId, target: Option<&str>) -> Result<()> {
+        if self.workspaces.get(&id).map(|(key, _)| key.as_str()) != target {
+            return Err(Error::new(
+                ErrorCode::Conflict,
+                format!(
+                    "storage for workspace {id} was fixed at creation; use its original destination"
+                ),
+            ));
+        }
+        Ok(())
     }
 
     pub fn for_workspace(&self, workspace: WorkspaceId) -> Option<Arc<RemoteStorage>> {
         self.workspaces
             .get(&workspace)
-            .unwrap_or(&self.default)
-            .clone()
+            .map(|(_, remote)| remote.clone())
+            .or_else(|| self.default.clone())
     }
 
     fn has_remote(&self) -> bool {
-        self.default.is_some() || self.workspaces.values().any(Option::is_some)
+        self.default.is_some() || !self.workspaces.is_empty()
     }
 }
 
@@ -76,7 +102,7 @@ impl ContentService {
         let default = remote
             .zip(refs)
             .map(|(objects, refs)| Arc::new(RemoteStorage { objects, refs }));
-        Self::with_routes(local, StorageRoutes::new(default, BTreeMap::new()))
+        Self::with_routes(local, StorageRoutes::with_default(default))
     }
 
     pub(crate) fn with_routes(

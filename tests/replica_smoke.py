@@ -20,6 +20,11 @@ exe = '.exe' if os.name == 'nt' else ''
 endpoint = os.environ['AGENTDRIVE_TEST_S3_ENDPOINT']
 prefix = 'daemon-tests/' + str(uuid.uuid4())
 
+profile = {
+    'backend': 's3', 'bucket': 'agentdrive-integration', 'prefix': prefix,
+    'region': 'us-east-1', 'endpoint': endpoint, 'allow_http': True,
+}
+
 class Daemon:
     def __init__(self, root):
         self.root = root
@@ -67,12 +72,13 @@ class Daemon:
                     raise AssertionError((path, failure, (self.root / 'daemon.log').read_text(encoding='utf-8'))) from error
                 time.sleep(0.1)
 
+    def create_workspace(self, name):
+        result = self.api('/api/workspaces', {'request_id': str(uuid.uuid4()), 'name': name, 'storage': profile}, 'POST')
+        return result['result']['workspace']['id']
+
     def connect_workspace(self, workspace):
         settings = self.api('/api/settings')
-        settings['runtime']['workspace_remotes'][workspace] = {
-            'backend': 's3', 'bucket': 'agentdrive-integration', 'prefix': prefix,
-            'region': 'us-east-1', 'endpoint': endpoint, 'allow_http': True,
-        }
+        settings['runtime']['workspace_remotes'][workspace] = profile
         self.api('/api/settings', {'revision': settings['revision'], 'runtime': settings['runtime']}, 'PUT')
 
     def event(self, binding, turn, phase):
@@ -122,8 +128,8 @@ with tempfile.TemporaryDirectory(prefix='agentdrive-replica-') as temporary:
         for name in ['one', 'two']:
             daemons.append(Daemon(Path(temporary) / name))
         first, second = daemons
-        workspace = first.call('workspace_create', {'name': 'replica-integration'}, 'create')['result']['workspace']['id']
-        for daemon in daemons:
+        workspace = first.create_workspace('replica-integration')
+        for daemon in daemons[1:]:
             daemon.connect_workspace(workspace)
         source = first.root / 'exchange' / 'source'
         source.mkdir()
@@ -149,8 +155,8 @@ with tempfile.TemporaryDirectory(prefix='agentdrive-replica-') as temporary:
         assert adopted['owner'] == status['location'] and adopted['state'] == 'writable', adopted
         assert adopted['authority_epoch'] == current['authority_epoch'] + 1
         if status['capabilities']['platform_mount'] in ('linux-fuse', 'windows-winfsp', 'macos-nfs'):
-            mounted_workspace = first.call('workspace_create', {'name': 'shared-mounts'}, 'mount-create')['result']['workspace']['id']
-            for daemon in daemons:
+            mounted_workspace = first.create_workspace('shared-mounts')
+            for daemon in daemons[1:]:
                 daemon.connect_workspace(mounted_workspace)
             mount_path = first.root / 'mounts' / 'shared'
             original = first.call('mount_prepare', {'workspace': mounted_workspace, 'path': str(mount_path)}, 'mount-root')['result']['binding']
@@ -194,8 +200,8 @@ with tempfile.TemporaryDirectory(prefix='agentdrive-replica-') as temporary:
             for daemon, binding, _ in mounts:
                 daemon.disable_collaboration()
                 wait_for(f'{daemon.root.name} disables collaboration', lambda: daemon.collaboration(binding)['phase'] == 'disabled')
-            mounted_workspace = first.call('workspace_create', {'name': 'manual-location-mounts'}, 'manual-create')['result']['workspace']['id']
-            for daemon in daemons:
+            mounted_workspace = first.create_workspace('manual-location-mounts')
+            for daemon in daemons[1:]:
                 daemon.connect_workspace(mounted_workspace)
             mount_path = first.root / 'mounts' / 'manual'
             original = first.call('mount_prepare', {'workspace': mounted_workspace, 'path': str(mount_path)}, 'manual-root')['result']['binding']

@@ -137,96 +137,50 @@ async function openRevision(page, id = 'child-autosave') {
 }
 function differenceReads(requests) { return requests.filter(url => /\/(changes|diff)$/.test(url.pathname)); }
 
-test('settings persist global collaboration and remote credentials and load external changes', async t => {
-  const page = await browser.newPage({viewport:{width:1440,height:1100}});
+test('workspace storage is read-only and saving daemon settings preserves every destination', async t => {
+  const page = await browser.newPage();
   const errors = [], updates = [];
   page.on('pageerror', error => errors.push(error.message));
   t.after(async () => { await page.close(); assert.deepEqual(errors, []); });
-  let settings = {revision:'initial-settings', config_path:'/private/agentdrive.json', reload_error:null,
-    runtime:{workspace_remotes:{}, cache:{max_bytes:2147483648}, allowed_origins:[]},
-    startup:{listen:'127.0.0.1:7421',data_dir:'/private/data',mount_roots:[],directory_roots:[]}};
+  const remotes = {
+    alpha:{backend:'opencsg',endpoint:'https://codes.example',repository:'team/archive',branch:'main',prefix:'drive',xnet:true,token:''},
+    beta:{backend:'s3',bucket:'files',endpoint:'https://oss.example',region:'us-east-1',prefix:'beta'},
+  };
+  let settings = {revision:'initial',config_path:'/private/config',reload_error:null,
+    runtime:{workspace_remotes:remotes,cache:{max_bytes:2147483648},allowed_origins:[]},
+    startup:{listen:'127.0.0.1:7421',data_dir:'/state',mount_roots:[],directory_roots:[]}};
   await page.route('**/api/**', async route => {
     const url = new URL(route.request().url());
-    if (url.pathname === '/api/workspaces') return route.fulfill({json:[{id:'alpha',name:'Alpha'},{id:'beta',name:'Beta'}]});
-    if (url.pathname !== '/api/settings') return route.fulfill({status:404,json:{error:{message:'Unknown endpoint'}}});
+    if (url.pathname === '/api/workspaces') return route.fulfill({json:[{id:'alpha',name:'Alpha'},{id:'beta',name:'Beta'},{id:'gamma',name:'Gamma'}]});
+    if (url.pathname !== '/api/settings') return route.fulfill({status:404,json:{}});
     if (route.request().method() === 'PUT') {
-      const request = route.request().postDataJSON(); updates.push(request);
-      settings = {...settings,revision:'settings-'+updates.length,runtime:structuredClone(request.runtime)};
-      for (const profile of Object.values(settings.runtime.workspace_remotes)) {
-        if (profile?.backend === 'opencsg') profile.token = '';
-      }
+      const update = route.request().postDataJSON();
+      updates.push(update);
+      settings = {...settings,revision:'saved',runtime:update.runtime};
     }
     return route.fulfill({json:settings});
   });
   await page.goto(endpoint+'/settings');
-  await page.locator('#settings-form').waitFor();
-  assert.equal(await page.locator('#settings-collaboration-enabled').isChecked(),true);
-  await page.locator('#storage-mode').selectOption('opencsg');
-  assert.equal(await page.locator('#s3-fields').isVisible(), false);
-  assert.equal(await page.locator('#s3-bucket').isDisabled(), true);
-  await page.locator('#opencsg-endpoint').fill('https://opencsg-stg.com');
-  await page.locator('#opencsg-repository').fill('owner/storage');
-  await page.locator('#opencsg-token').fill('new-private-token');
-  assert.equal(await page.locator('#opencsg-token').getAttribute('type'), 'password');
-  async function save() {
-    const response = page.waitForResponse(r => r.url().endsWith('/api/settings') && r.request().method() === 'PUT');
-    await page.locator('#settings-save').click(); await response;
-    await page.waitForFunction(() => document.querySelector('#settings-save').disabled);
-  }
-  await save();
-  assert.equal(updates[0].runtime.workspace_remotes.alpha.backend, 'opencsg');
-  assert.equal(updates[0].runtime.workspace_remotes.alpha.token, 'new-private-token');
-  assert.equal(updates[0].runtime.workspace_remotes.alpha.endpoint, 'https://opencsg-stg.com');
-  assert.deepEqual(updates[0].runtime.collaboration,{enabled:true});
-  assert.equal(await page.locator('#opencsg-token').inputValue(), '');
+  const details = page.locator('#storage-details'), scope = page.locator('#storage-scope');
+  await details.waitFor();
+  assert.match(await details.textContent(), /OpenCSG Codes.*team\/archive.*XNet已启用/);
+  assert.equal(await page.locator('#settings-form input[type=password], #settings-form #storage-mode').count(), 0);
+  await scope.selectOption('beta');
+  assert.match(await details.textContent(), /S3.*oss\.example.*Bucketfiles/);
+  await scope.selectOption('gamma');
+  assert.match(await details.textContent(), /仅本地存储/);
+  assert(await page.locator('#settings-save').isDisabled());
   await page.locator('#settings-collaboration-enabled').uncheck();
-  await page.locator('#cache-max').fill('3'); await save();
-  assert.equal(updates[1].runtime.workspace_remotes.alpha.token, '');
-  assert.equal(updates[1].runtime.cache.max_bytes, 3221225472);
-  assert.deepEqual(updates[1].runtime.collaboration,{enabled:false});
-  assert.equal(await page.locator('#settings-collaboration-enabled').isChecked(),false);
-  await page.locator('#opencsg-endpoint').fill('https://another.example.com');
-  assert.equal(await page.locator('#opencsg-token').evaluate(input => input.required), true);
-  await page.locator('#opencsg-token').fill('replacement-token'); await save();
-  assert.equal(updates[2].runtime.workspace_remotes.alpha.token, 'replacement-token');
-  await page.locator('#storage-mode').selectOption('local'); await save();
-  assert.equal(updates[3].runtime.workspace_remotes.alpha, null);
-  assert.equal(await page.locator('#cache-panel').isVisible(), false);
-  await page.locator('#storage-mode').selectOption('s3');
-  await page.locator('#s3-bucket').fill('bucket'); await save();
-  assert.equal(updates[4].runtime.workspace_remotes.alpha.backend, 's3');
-  assert.deepEqual(updates[4].runtime.collaboration,{enabled:false});
-  assert.equal('token' in updates[4].runtime.workspace_remotes.alpha, false);
-  assert.equal(await page.locator('#opencsg-token').isDisabled(), true);
-  settings.runtime.collaboration.enabled = true; settings.revision = 'external-file-edit';
+  await page.locator('#cache-max').fill('3');
+  await page.locator('#settings-save').click();
+  await page.waitForFunction(() => document.querySelector('#settings-version').textContent.includes('saved'));
+  assert.equal(updates.length, 1);
+  assert.deepEqual(updates[0].runtime.workspace_remotes, remotes);
+  assert.deepEqual(updates[0].runtime.collaboration, {enabled:false});
+  assert.equal(updates[0].runtime.cache.max_bytes, 3 * 1024 ** 3);
+  settings.runtime.collaboration.enabled = true; settings.revision = 'external';
   await page.locator('#settings-reload').click();
   await page.waitForFunction(() => document.querySelector('#settings-collaboration-enabled').checked);
-  assert.match(await page.locator('#settings-version').textContent(),/external-fil/);
-  const scope = page.locator('#storage-scope'), mode = page.locator('#storage-mode');
-  assert.deepEqual(await scope.locator('option').allTextContents(), ['Alpha','Beta']);
-  assert.equal(await scope.inputValue(), 'alpha');
-  await scope.selectOption('beta');
-  assert.equal(await mode.inputValue(),'local');
-  await mode.selectOption('opencsg');
-  await page.locator('#opencsg-endpoint').fill('https://codes.example');
-  await page.locator('#opencsg-repository').fill('owner/beta');
-  await page.locator('#opencsg-token').fill('beta-token');
-  await page.locator('#opencsg-xnet').check();
-  assert.equal(await scope.isEnabled(), true);
-  await scope.selectOption('alpha');
-  assert.equal(await mode.inputValue(),'s3');
-  await mode.selectOption('local'); await save();
-  assert.equal(updates.at(-1).runtime.workspace_remotes.alpha,null);
-  assert.equal('beta' in updates.at(-1).runtime.workspace_remotes,false);
-  await scope.selectOption('beta');
-  assert.equal(await mode.inputValue(),'opencsg');
-  assert.equal(await page.locator('#opencsg-token').inputValue(),'beta-token');
-  await save();
-  assert.equal(updates.at(-1).runtime.workspace_remotes.beta.xnet,true);
-  assert.equal(updates.at(-1).runtime.workspace_remotes.beta.token,'beta-token');
-  assert.equal(await page.locator('#opencsg-token').inputValue(),'');
-  assert.equal('remote' in updates.at(-1).runtime,false);
-
 });
 
 test('history contains only revisions authored on the selected branch, including an empty child', async t => {

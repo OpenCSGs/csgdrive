@@ -449,6 +449,7 @@ async fn merge_history_pagination_is_bounded_and_bound_to_filters_and_actor() {
     );
     let visitor: Principal = "visitor".to_owned().try_into().unwrap();
     let workspace = Workspace {
+        storage_target: None,
         grants: vec![Grant {
             principal: visitor.clone(),
             branch: None,

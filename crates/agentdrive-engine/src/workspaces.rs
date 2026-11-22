@@ -127,12 +127,20 @@ impl WorkspaceService {
         request: CreateWorkspace,
         source: Option<&std::path::Path>,
         id: WorkspaceId,
+        storage_target: Option<&str>,
     ) -> Result<OperationRecord> {
         validate_label(&request.name, "workspace name")?;
         let _protection = self.runtime.objects.read().await;
         let now = self.runtime.clock.now_ns();
         let initial_revision = RevisionId::new();
+        self.revisions
+            .trees
+            .content
+            .storage
+            .load()
+            .check_target(id, storage_target)?;
         let workspace = Workspace {
+            storage_target: storage_target.map(str::to_owned),
             deleted: false,
             id,
             name: request.name,
@@ -376,6 +384,7 @@ impl WorkspaceApi for WorkspaceService {
                                 create,
                                 Some(&request.path),
                                 WorkspaceId::new(),
+                                None,
                             )
                             .await
                         {
@@ -507,7 +516,7 @@ impl WorkspaceApi for WorkspaceService {
                 .start(
                     context,
                     "workspace_create",
-                    &(&request, initializer.selection()),
+                    &(&request, initializer.storage_target()),
                     None,
                     None,
                 )
@@ -534,7 +543,13 @@ impl WorkspaceApi for WorkspaceService {
             return self.operations.fail(&operation, error).await;
         }
         match self
-            .create_workspace(operation.clone(), request, None, id)
+            .create_workspace(
+                operation.clone(),
+                request,
+                None,
+                id,
+                initializer.and_then(|i| i.storage_target()),
+            )
             .await
         {
             Ok(record) => Ok(record),

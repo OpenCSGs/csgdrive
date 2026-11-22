@@ -263,6 +263,7 @@ mod tests {
             branches,
             remote_branches,
             workspace: Workspace {
+                storage_target: None,
                 deleted: false,
                 id: root.workspace,
                 name: "project".into(),
