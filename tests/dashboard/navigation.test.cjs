@@ -121,7 +121,7 @@ test('two-second refresh preserves workspace search, collapse and scroll state',
 test('global settings work with no workspaces and do not load workspace contents', async t => {
   const {page,requests} = await setup(t,{workspaces:[]});
   await page.goto(endpoint+'/settings?workspace=missing&branch=old');
-  await page.locator('#settings-form').waitFor();
+  await page.locator('#settings-values').waitFor();
   await page.locator('#storage-empty').waitFor();
   assert.equal(await page.locator('#storage-details').isVisible(), false);
   await page.waitForFunction(()=>!document.querySelector('#refresh').disabled);
@@ -153,15 +153,15 @@ test('storage details follow the selected workspace during a dashboard refresh',
   } finally { release.resolve(); }
   await page.waitForFunction(() => !document.querySelector('#refresh').disabled);
   assert.equal(await scope.inputValue(), 'first');
-  assert(await page.locator('#settings-save').isDisabled());
+  assert.equal(await page.locator('#settings-page button').count(), 0);
 });
 
 test('settings remain available when listing workspaces fails', async t => {
   const {page} = await setup(t,{listError:true});
   await page.goto(endpoint+'/settings');
-  await page.locator('#settings-form').waitFor();
+  await page.locator('#settings-values').waitFor();
   await page.locator('#error').filter({hasText:'Workspaces unavailable'}).waitFor();
-  assert.equal(await page.locator('#cache-max').inputValue(),'2');
+  assert.equal(await page.locator('#cache-capacity').textContent(),'2 GiB');
 });
 
 test('missing workspace links fall back to the first workspace and clear scoped state', async t => {
@@ -197,7 +197,7 @@ test('compact navigation remains reachable after resizing and keyboard collapse'
   await page.locator('#workspace-toggle').click(); await page.keyboard.press('Escape');
   assert.equal(await page.locator('#workspace-toggle').getAttribute('aria-expanded'),'false');
   assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth <= innerWidth),true);
-  await page.locator('#settings-nav').click(); await page.locator('#settings-form').waitFor();
+  await page.locator('#settings-nav').click(); await page.locator('#settings-values').waitFor();
   assert.equal(await page.locator('#workspace-menu').isVisible(),false);
 });
 

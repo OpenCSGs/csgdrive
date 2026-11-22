@@ -26,7 +26,7 @@ Existing configurations retain the first configured principal when `principal` i
 
 ## Runtime updates and dashboard settings
 
-Open **Settings** at the bottom left of the dashboard, or visit `/settings`. Global settings remain accessible without a workspace. In **Storage**, select the name of a workspace to view its destination. The form edits automatic collaboration, local cache capacity in GiB and allowed HTTP origins. Saving persists the complete runtime configuration to the same `agentdrive.json` used to start the daemon.
+Open **Settings** at the bottom left of the dashboard, or visit `/settings`. This read-only page shows automatic collaboration, cache capacity, allowed HTTP origins and startup settings, even without a workspace. Select a workspace to view its storage destination. To change a daemon setting, edit the `agentdrive.json` file shown under startup settings.
 
 | Configuration | Effective time |
 | --- | --- |
@@ -43,19 +43,19 @@ Invalid external changes preserve the active configuration and appear on the set
 - `GET /api/settings` returns active `runtime`, read-only `startup`, `config_path`, `revision` and `reload_error`.
 - `PUT /api/settings` accepts `{ "revision": "<revision from GET>", "runtime": { "cache": { ... }, "allowed_origins": [], "workspace_remotes": {}, "collaboration": { "enabled": true } } }`. Supply the complete runtime object returned by GET.
 
-Responses redact saved remote secrets. A stale revision or an external file edit returns 409. Validation failures preserve the file and active settings. The UI retains unsaved form values when it detects a newer revision and offers a reload action.
+Responses redact saved remote secrets. A stale revision or an external file edit returns 409. Validation failures preserve the file and active settings. The page displays the active revision and refreshes automatically.
 
 ## Automatic collaboration
 
 With `collaboration.enabled` and remote storage configured, the first modification requests branch write ownership. An agent registers each turn and sends a terminal callback when work finishes. AgentDrive commits and publishes the changes, then releases ownership after the final turn and remote confirmation. Mounts shows the writer, active executions and publication status.
 
-Disable automatic collaboration in Settings or `agentdrive.json` to manage stable branches manually. Pending publication and recovery continue.
+Set `collaboration.enabled` to `false` in `agentdrive.json` to manage stable branches manually. Pending publication and recovery continue.
 
 ## Local cache capacity
 
 The single `cache.max_bytes` setting applies to cached immutable objects across all workspaces in this daemon. The collector checks every 30 seconds. Usage above the configured capacity starts collection toward 75% of that capacity, rounded down to whole bytes. The internal low-disk threshold is 64 MiB: collection also starts when available disk space is below that amount and continues until both the capacity target and free-space threshold are satisfied, or no eligible objects remain.
 
-Collection removes only remotely confirmed objects without active readers or protected references. Active branch contents, pending publications, merge candidates and explicit cache pins remain protected. Usage can exceed the setting when protected content requires more space. SQLite metadata, working files and staging files consume additional disk space. Local-only workspaces retain their history. The Dashboard shows cache capacity when any configured destination uses remote storage.
+Collection removes only remotely confirmed objects without active readers or protected references. Active branch contents, pending publications, merge candidates and explicit cache pins remain protected. Usage can exceed the setting when protected content requires more space. SQLite metadata, working files and staging files consume additional disk space. Local-only workspaces retain their history. The dashboard shows the configured capacity in GiB.
 
 ## Selecting workspace storage
 
