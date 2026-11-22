@@ -63,6 +63,8 @@ Origin 使用 `scheme://host[:port]` 格式，不能包含路径、结尾斜线�
 
 可以在配置文件中更新同一目标的访问凭据。已有工作区的存储目标记录在工作区元数据中。设置接口、配置文件重新加载和服务启动都会核对该记录。另一台机器连接此工作区时，使用相同的目标和自己的访问凭据。
 
+如果重新加载配置文件时提示工作区的存储位置已在创建时确定，请在 `agentdrive.json` 中为该工作区 ID 恢复原来的存储位置。运行中的服务会继续使用上次生效的配置，文件修正后会自动重新加载。如果同一错误导致服务启动失败，请修正文件后重新启动。
+
 以下配置将一个工作区保存到 S3。其他工作区使用各自的配置。
 
 ```json
@@ -77,7 +79,9 @@ Origin 使用 `scheme://host[:port]` 格式，不能包含路径、结尾斜线�
 }
 ```
 
-Dashboard 调用 `POST /api/workspaces` 创建工作区，提交 `request_id` 和 `name`。省略 `storage` 或提交 `"storage": null` 表示仅保存在本机，也可以通过 `storage` 提交完整的远程配置。创建结果尚未确认时，重试使用相同的请求 ID。重新打开表单后，需要再次填写本次请求所需的密钥。
+Dashboard 调用 `POST /api/workspaces` 创建工作区，提交 `request_id` 和 `name`。省略 `storage` 或提交 `"storage": null` 表示仅保存在本机，也可以通过 `storage` 提交完整的远程配置。
+
+如果响应丢失，或操作仍处于 `reserved` 状态，点击“重试创建”会使用原来的 `request_id`。刷新页面后仍会保留这个 ID，重新打开表单时需要再次填写所需的密钥。如果服务返回 `failed` 且 `local_saved: false`，表单会恢复编辑。修正配置并重新提交时，Dashboard 会生成新的 `request_id`，即使错误标记为 `retryable: true`。
 
 创建工作区时会验证远程连接。S3 检查在 `.connection-check/` 下创建并删除临时对象。Codes 检查在 `<prefix>/checks/` 下创建并清理临时文件，Git 会记录这些操作。
 

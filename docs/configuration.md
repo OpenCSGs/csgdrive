@@ -63,6 +63,8 @@ In **Create workspace**, select local storage, S3-compatible storage (including 
 
 Update credentials for the same destination in the configuration file. The settings API, file reload and daemon startup check the destination against the workspace metadata. A second machine can attach the same destination using its own credentials.
 
+If a file reload reports that a workspace's storage was fixed at creation, restore the original destination for that workspace ID in `agentdrive.json`. The running daemon keeps using its last accepted configuration and reloads the corrected file automatically. If the same error prevented startup, correct the file and start the daemon again.
+
 This example selects an S3 destination for one workspace.
 
 ```json
@@ -77,7 +79,9 @@ This example selects an S3 destination for one workspace.
 }
 ```
 
-The Dashboard sends `POST /api/workspaces` with `request_id` and `name`. Omitting `storage` or supplying `"storage": null` selects local storage, and a remote profile supplies a dedicated destination. Retrying an unconfirmed creation uses the same request ID. Reopening the form prompts for any required secret again.
+The Dashboard sends `POST /api/workspaces` with `request_id` and `name`. Omitting `storage` or supplying `"storage": null` selects local storage, and a remote profile supplies a dedicated destination.
+
+If the response is lost or the operation is still `reserved`, retry with the same `request_id`. The Dashboard retains it across a page reload and prompts for any required secret when the form reopens. If the daemon reports `failed` with `local_saved: false`, the form becomes editable. Correct the settings and submit again. The Dashboard sends a new `request_id` even when the error has `retryable: true`.
 
 Creation verifies a new remote connection. S3 checks create and delete temporary objects beneath `.connection-check/`. Codes checks create and clean up temporary files beneath `<prefix>/checks/`, which records those operations in Git history.
 
