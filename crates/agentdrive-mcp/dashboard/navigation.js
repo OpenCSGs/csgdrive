@@ -66,7 +66,7 @@ export function createNavigation({element, $, navigate, deleteWorkspace}) {
     if (branch) url.searchParams.set('branch', branch);
     follow(event, url);
   });
-  $('settings-nav').addEventListener('click', event => follow(event, new URL('/settings', location.origin)));
+  $('settings-nav').addEventListener('click', event => follow(event, new URL($('settings-nav').href)));
   $('brand-link').addEventListener('click', event => follow(event, new URL('/archive', location.origin)));
 
   function page() {
@@ -94,7 +94,11 @@ export function createNavigation({element, $, navigate, deleteWorkspace}) {
       // Preserve direct links without an explicit workspace on initial entry.
       if (!requested) for (const [key,value] of new URLSearchParams(location.search)) url.searchParams.set(key,value);
       history.replaceState(null, '', url.pathname + url.search);
-    } else if (settings && url.search) history.replaceState(null, '', '/settings');
+    } else if (settings && url.search) {
+      const query = requested === selected?.id ? '?workspace=' + encodeURIComponent(requested) : '';
+      if (query !== url.search) history.replaceState(null, '', '/settings' + query);
+    }
+    $('settings-nav').href = selected ? '/settings?workspace=' + encodeURIComponent(selected.id) : '/settings';
     const key = JSON.stringify(items.map(value => [value.id,value.name]));
     if (key !== listKey) {
       const focused = document.activeElement?.dataset.workspace, scroll = $('workspace-list').scrollTop;

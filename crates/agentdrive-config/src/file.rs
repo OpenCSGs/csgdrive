@@ -12,8 +12,6 @@ use std::{
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Config {
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub remote: Option<RemoteConfig>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub workspace_remotes: BTreeMap<WorkspaceId, Option<RemoteConfig>>,
     #[serde(flatten)]
@@ -71,7 +69,6 @@ impl Config {
     }
     pub fn runtime(&self) -> RuntimeConfig {
         RuntimeConfig {
-            remote: self.remote.clone(),
             workspace_remotes: self.workspace_remotes.clone(),
             cache: self.cache.clone(),
             allowed_origins: self.allowed_origins.clone(),
@@ -80,7 +77,6 @@ impl Config {
     }
     pub(crate) fn with_runtime(startup: StartupConfig, runtime: RuntimeConfig) -> Self {
         Self {
-            remote: runtime.remote,
             workspace_remotes: runtime.workspace_remotes,
             startup,
             cache: runtime.cache,
@@ -140,7 +136,6 @@ pub fn initialize(directory: &Path, listen: SocketAddr) -> Result<PathBuf> {
     let exchange = directory.join("exchange");
     fs::create_dir_all(&exchange)?;
     let config = Config {
-        remote: None,
         workspace_remotes: BTreeMap::new(),
         startup: StartupConfig {
             data_dir: directory.join("state"),

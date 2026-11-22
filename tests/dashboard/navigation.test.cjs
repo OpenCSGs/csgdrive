@@ -31,7 +31,7 @@ async function setup(t, options = {}) {
     const request = route.request(), url = new URL(request.url());
     requests.push(url);
     assert.equal(request.headers().authorization, undefined);
-    if (url.pathname === '/api/settings') return route.fulfill({json:{revision:'config',config_path:'/config',runtime:{cache:{max_bytes:2147483648},allowed_origins:[],remote:null},startup:{listen:'127.0.0.1:7421',data_dir:'/state',mount_roots:[],directory_roots:[]}}});
+    if (url.pathname === '/api/settings') return route.fulfill({json:{revision:'config',config_path:'/config',runtime:{cache:{max_bytes:2147483648},allowed_origins:[],workspace_remotes:{}},startup:{listen:'127.0.0.1:7421',data_dir:'/state',mount_roots:[],directory_roots:[]}}});
     if (url.pathname === '/api/workspaces' && request.method() === 'GET') return data.listError ? route.fulfill({status:503,json:{error:{message:'Workspaces unavailable'}}}) : route.fulfill({json:data.workspaces});
     if (url.pathname === '/api/workspaces' && request.method() === 'POST') {
       const input = request.postDataJSON(); (data.creations ||= []).push(input);
@@ -121,6 +121,8 @@ test('global settings work with no workspaces and do not load workspace contents
   const {page,requests} = await setup(t,{workspaces:[]});
   await page.goto(endpoint+'/settings?workspace=missing&branch=old');
   await page.locator('#settings-form').waitFor();
+  await page.locator('#storage-empty').waitFor();
+  assert.equal(await page.locator('#storage-editor').isVisible(), false);
   await page.waitForFunction(()=>!document.querySelector('#refresh').disabled);
   assert.equal(new URL(page.url()).search,'');
   assert.equal(await page.locator('#workspace-menu').isVisible(),false);
@@ -128,6 +130,29 @@ test('global settings work with no workspaces and do not load workspace contents
   assert(!requests.some(url => url.pathname.startsWith('/api/workspaces/')));
   const box = await page.locator('#settings-nav').boundingBox();
   assert(box.y > 750 && box.x < 250);
+});
+
+test('storage stays editable for the selected workspace during a dashboard refresh', async t => {
+  const {page} = await setup(t);
+  await page.goto(endpoint + '/archive?workspace=second'); await settled(page);
+  await page.locator('#settings-nav').click();
+  const scope = page.locator('#storage-scope');
+  await page.waitForFunction(() => document.querySelector('#storage-scope')?.value === 'second');
+  const entered = Promise.withResolvers(), release = Promise.withResolvers();
+  await page.route('**/api/settings', async route => {
+    entered.resolve();
+    await release.promise;
+    await route.fallback();
+  }, {times:1});
+  try {
+    await page.locator('#refresh').click(); await entered.promise;
+    assert.equal(await scope.isEnabled(), true);
+    await scope.selectOption('first');
+    await page.locator('#storage-mode').selectOption('s3');
+  } finally { release.resolve(); }
+  await page.waitForFunction(() => !document.querySelector('#refresh').disabled);
+  assert.equal(await scope.inputValue(), 'first');
+  assert.equal(await page.locator('#storage-mode').inputValue(), 's3');
 });
 
 test('settings remain available when listing workspaces fails', async t => {
@@ -293,7 +318,7 @@ test('workspace creation is available without workspaces and selects the new pro
   assert.equal(new URL(page.url()).pathname,'/archive');
   assert.equal(new URL(page.url()).searchParams.get('workspace'),'created');
   assert.equal(await page.locator('#workspace-name').textContent(),'新项目');
-  assert.equal(data.creations.length,1);assert.equal(data.creations[0].name,'新项目'); assert(!('storage' in data.creations[0]));
+  assert.equal(data.creations.length,1);assert.equal(data.creations[0].name,'新项目'); assert.equal(data.creations[0].storage,null);
   assert.equal(await page.evaluate(()=>sessionStorage.getItem('agentdrive-workspace-create')),null);
 });
 

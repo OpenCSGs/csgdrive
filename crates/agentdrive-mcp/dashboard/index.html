@@ -24,7 +24,7 @@
       <input id="workspace-search" class="workspace-search" type="search" placeholder="查找工作区" aria-label="查找工作区">
       <nav id="workspace-list" class="workspace-list" aria-label="选择工作区"></nav>
       <p id="workspace-list-empty" class="workspace-list-empty" hidden>暂无工作区</p>
-      <div class="workspace-sidebar-footer"><a id="settings-nav" class="global-settings" href="/settings" aria-label="全局设置" title="全局设置"><span class="branch-icon" data-icon="settings" aria-hidden="true"></span><span class="settings-label-text">全局设置</span></a><div class="connection-status"><span class="connection-dot" aria-hidden="true"></span><span id="connection" role="status">正在连接本地服务</span></div></div>
+      <div class="workspace-sidebar-footer"><a id="settings-nav" class="global-settings" href="/settings" aria-label="设置" title="设置"><span class="branch-icon" data-icon="settings" aria-hidden="true"></span><span class="settings-label-text">设置</span></a><div class="connection-status"><span class="connection-dot" aria-hidden="true"></span><span id="connection" role="status">正在连接本地服务</span></div></div>
     </aside>
     <button id="workspace-backdrop" class="workspace-backdrop" type="button" aria-label="关闭工作区列表" hidden></button>
     <aside id="workspace-menu" class="workspace-menu" aria-label="工作区功能">
@@ -70,7 +70,7 @@
         <footer class="page-footer"><span>AgentDrive <span class="footer-separator">/</span> 持久化 Agent 工作区</span><span>每 2 秒自动刷新</span></footer>
       </div>
       <div id="settings-page" class="content settings-content" hidden>
-        <div class="page-heading"><div><div class="eyebrow">DAEMON SETTINGS</div><h1>设置<span class="heading-dot">.</span></h1><p>管理默认设置和各工作区的存储位置。</p></div><span class="pill">运行时更新</span></div>
+        <div class="page-heading"><div><h1>设置<span class="heading-dot">.</span></h1><p>管理各工作区的存储位置。</p></div><span class="pill">运行时更新</span></div>
         <div id="settings-error" class="error-banner" role="alert" hidden></div>
         <div id="settings-notice" class="settings-notice" role="status" hidden></div>
         <div id="reload-error" class="error-banner" role="alert" hidden></div>
@@ -84,9 +84,10 @@
             </section>
             <section class="panel settings-panel" aria-labelledby="storage-title">
               <div class="settings-heading"><div><h2 id="storage-title">存储设置</h2><p>远程存储保存工作区内容和版本记录。切换会传输已有历史，完成后继续使用当前挂载目录。</p></div><span class="pill">保存后切换</span></div>
-              <div class="storage-fields storage-selector"><label>配置范围<select id="storage-scope"><option value="">全部工作区的默认设置</option></select></label></div>
+              <div id="storage-selector" class="storage-fields storage-selector" hidden><label>工作区<select id="storage-scope"></select></label></div>
+              <p id="storage-empty" class="settings-help" hidden>创建工作区时可以选择存储，之后可在这里修改。</p>
               <div id="storage-editor">
-              <div class="storage-fields storage-selector"><label>存储模式<select id="storage-mode"><option value="inherit">使用默认设置</option><option value="local">仅本地存储</option><option value="s3">S3 兼容存储（含 OSS）</option><option value="opencsg">OpenCSG Codes</option></select></label></div>
+              <div class="storage-fields storage-selector"><label>存储模式<select id="storage-mode"><option value="local">仅本地存储</option><option value="s3">S3 兼容存储（含 OSS）</option><option value="opencsg">OpenCSG Codes</option></select></label></div>
               <fieldset id="s3-fields" hidden disabled>
               <div class="storage-fields">
                 <label>Endpoint<input id="s3-endpoint" type="url" placeholder="https://s3.example.com" spellcheck="false"></label>

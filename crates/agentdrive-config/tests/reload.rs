@@ -56,12 +56,16 @@ fn opencsg_token_is_private_and_only_reused_for_the_same_destination() {
     let (_directory, store) = setup();
     let settings = store.settings();
     let mut runtime = settings.runtime;
-    runtime.remote = Some(
-        serde_json::from_value(json!({
-            "backend":"opencsg", "endpoint":"https://opencsg.example.com",
-            "repository":"owner/storage", "token":"private-test-token"
-        }))
-        .unwrap(),
+    let workspace = agentdrive_model::WorkspaceId::new();
+    runtime.workspace_remotes.insert(
+        workspace,
+        Some(
+            serde_json::from_value(json!({
+                "backend":"opencsg", "endpoint":"https://opencsg.example.com",
+                "repository":"owner/storage", "token":"private-test-token"
+            }))
+            .unwrap(),
+        ),
     );
     let saved = store
         .update(SettingsUpdate {
@@ -76,7 +80,13 @@ fn opencsg_token_is_private_and_only_reused_for_the_same_destination() {
     );
     assert!(!format!("{:?}", store.live().load()).contains("private-test-token"));
     let mut runtime = saved.runtime.clone();
-    let RemoteConfig::OpenCsg(config) = runtime.remote.as_mut().unwrap() else {
+    let RemoteConfig::OpenCsg(config) = runtime
+        .workspace_remotes
+        .get_mut(&workspace)
+        .unwrap()
+        .as_mut()
+        .unwrap()
+    else {
         panic!("OpenCSG settings");
     };
     assert!(config.token.is_empty());
@@ -89,13 +99,16 @@ fn opencsg_token_is_private_and_only_reused_for_the_same_destination() {
         .unwrap();
     let reopened = ConfigStore::open(&saved.config_path).unwrap();
     let snapshot = reopened.live().load();
-    let RemoteConfig::OpenCsg(config) = snapshot.values.remote.as_ref().unwrap() else {
+    let RemoteConfig::OpenCsg(config) = snapshot.values.workspace_remotes[&workspace]
+        .as_ref()
+        .unwrap()
+    else {
         panic!("OpenCSG settings");
     };
     assert_eq!(config.token, "private-test-token");
     for field in ["endpoint", "repository"] {
         let mut update = serde_json::to_value(&saved.runtime).unwrap();
-        update["remote"][field] = if field == "endpoint" {
+        update["workspace_remotes"][workspace.to_string()][field] = if field == "endpoint" {
             json!("https://other.example.com")
         } else {
             json!("other/storage")
@@ -210,6 +223,8 @@ fn invalid_files_and_startup_changes_retain_all_active_values_until_repaired() {
     let config: Value = serde_json::from_slice(&original).unwrap();
     let mut unknown = config.clone();
     unknown["unknown_field"] = json!(true);
+    let mut unscoped = config.clone();
+    unscoped["remote"] = json!({"backend":"s3", "bucket":"shared"});
     let mut cache = config.clone();
     cache["cache"] = json!({"max_bytes":0});
     let mut nested = config.clone();
@@ -219,7 +234,7 @@ fn invalid_files_and_startup_changes_retain_all_active_values_until_repaired() {
     let mut startup = config.clone();
     startup["listen"] = json!("127.0.0.1:7422");
     startup["cache"] = json!({"max_bytes":3221225472u64});
-    for invalid in [unknown, cache, nested, origins, startup] {
+    for invalid in [unknown, unscoped, cache, nested, origins, startup] {
         fs::write(&settings.config_path, serde_json::to_vec(&invalid).unwrap()).unwrap();
         assert!(store.reload().is_err());
         let current = store.live().load();
@@ -402,10 +417,11 @@ fn s3_settings_persist_secrets_without_returning_them_and_preserve_blank_passwor
     let (_directory, store) = setup();
     let settings = store.settings();
     let mut runtime = settings.runtime;
-    runtime.remote = Some(serde_json::from_value(json!({
+    let workspace = agentdrive_model::WorkspaceId::new();
+    runtime.workspace_remotes.insert(workspace, Some(serde_json::from_value(json!({
         "bucket":"agentdrive-test", "endpoint":"https://s3.example.com",
         "credentials":{"access_key_id":"test-access", "secret_access_key":"test-secret", "session_token":"test-session"}
-    })).unwrap());
+    })).unwrap()));
     let saved = store
         .update(SettingsUpdate {
             revision: settings.revision,
@@ -417,7 +433,13 @@ fn s3_settings_persist_secrets_without_returning_them_and_preserve_blank_passwor
     assert!(!response.contains("test-session"));
     assert!(!format!("{:?}", store.live().load()).contains("test-secret"));
     let mut runtime = saved.runtime;
-    let RemoteConfig::S3(config) = runtime.remote.as_mut().unwrap() else {
+    let RemoteConfig::S3(config) = runtime
+        .workspace_remotes
+        .get_mut(&workspace)
+        .unwrap()
+        .as_mut()
+        .unwrap()
+    else {
         panic!("S3 settings");
     };
     config.region = "eu-west-1".into();
@@ -429,14 +451,23 @@ fn s3_settings_persist_secrets_without_returning_them_and_preserve_blank_passwor
         .unwrap();
     let restarted = ConfigStore::open(&saved.config_path).unwrap();
     let snapshot = restarted.live().load();
-    let RemoteConfig::S3(config) = snapshot.values.remote.as_ref().unwrap() else {
+    let RemoteConfig::S3(config) = snapshot.values.workspace_remotes[&workspace]
+        .as_ref()
+        .unwrap()
+    else {
         panic!("S3 settings");
     };
     let credentials = config.credentials.as_ref().unwrap();
     assert_eq!(credentials.secret_access_key, "test-secret");
     assert_eq!(credentials.session_token.as_deref(), Some("test-session"));
     let mut runtime = saved.runtime;
-    let RemoteConfig::S3(config) = runtime.remote.as_mut().unwrap() else {
+    let RemoteConfig::S3(config) = runtime
+        .workspace_remotes
+        .get_mut(&workspace)
+        .unwrap()
+        .as_mut()
+        .unwrap()
+    else {
         panic!("S3 settings");
     };
     config.credentials = None;

@@ -28,9 +28,6 @@ class Daemon:
             port = listener.getsockname()[1]
         subprocess.run([str(binaries / ('agentdrived' + exe)), 'init', '--directory', str(root), '--listen', f'127.0.0.1:{port}'], capture_output=True, text=True, encoding='utf-8', check=True)
         config_path = root / 'agentdrive.json'
-        config = json.loads(config_path.read_text(encoding='utf-8'))
-        config['remote'] = {'bucket': 'agentdrive-integration', 'prefix': prefix, 'region': 'us-east-1', 'endpoint': endpoint, 'allow_http': True}
-        config_path.write_text(json.dumps(config))
         self.endpoint = f'http://127.0.0.1:{port}'
 
         self.client = [str(binaries / ('agentdrive' + exe)), '--endpoint', f'http://127.0.0.1:{port}/mcp']
@@ -69,6 +66,14 @@ class Daemon:
                 if not failure.get('error', {}).get('retryable') or time.monotonic() >= deadline:
                     raise AssertionError((path, failure, (self.root / 'daemon.log').read_text(encoding='utf-8'))) from error
                 time.sleep(0.1)
+
+    def connect_workspace(self, workspace):
+        settings = self.api('/api/settings')
+        settings['runtime']['workspace_remotes'][workspace] = {
+            'backend': 's3', 'bucket': 'agentdrive-integration', 'prefix': prefix,
+            'region': 'us-east-1', 'endpoint': endpoint, 'allow_http': True,
+        }
+        self.api('/api/settings', {'revision': settings['revision'], 'runtime': settings['runtime']}, 'PUT')
 
     def event(self, binding, turn, phase):
         return self.api('/api/collaboration/events', {'mount': binding['id'], 'source': 'replica-smoke',
@@ -118,6 +123,8 @@ with tempfile.TemporaryDirectory(prefix='agentdrive-replica-') as temporary:
             daemons.append(Daemon(Path(temporary) / name))
         first, second = daemons
         workspace = first.call('workspace_create', {'name': 'replica-integration'}, 'create')['result']['workspace']['id']
+        for daemon in daemons:
+            daemon.connect_workspace(workspace)
         source = first.root / 'exchange' / 'source'
         source.mkdir()
         payload = bytes(range(251)) * 84000
@@ -143,6 +150,8 @@ with tempfile.TemporaryDirectory(prefix='agentdrive-replica-') as temporary:
         assert adopted['authority_epoch'] == current['authority_epoch'] + 1
         if status['capabilities']['platform_mount'] in ('linux-fuse', 'windows-winfsp', 'macos-nfs'):
             mounted_workspace = first.call('workspace_create', {'name': 'shared-mounts'}, 'mount-create')['result']['workspace']['id']
+            for daemon in daemons:
+                daemon.connect_workspace(mounted_workspace)
             mount_path = first.root / 'mounts' / 'shared'
             original = first.call('mount_prepare', {'workspace': mounted_workspace, 'path': str(mount_path)}, 'mount-root')['result']['binding']
             assert first.api('/api/settings')['runtime']['collaboration']['enabled']
@@ -155,6 +164,7 @@ with tempfile.TemporaryDirectory(prefix='agentdrive-replica-') as temporary:
             wait_for('root publication and authority release', lambda: released(first, original))
             third = Daemon(Path(temporary) / 'three')
             daemons.append(third)
+            third.connect_workspace(mounted_workspace)
             mounts = [(first, original, mount_path)]
             for remote_daemon in (second, third):
                 assert remote_daemon.api('/api/settings')['runtime']['collaboration']['enabled']
@@ -185,6 +195,8 @@ with tempfile.TemporaryDirectory(prefix='agentdrive-replica-') as temporary:
                 daemon.disable_collaboration()
                 wait_for(f'{daemon.root.name} disables collaboration', lambda: daemon.collaboration(binding)['phase'] == 'disabled')
             mounted_workspace = first.call('workspace_create', {'name': 'manual-location-mounts'}, 'manual-create')['result']['workspace']['id']
+            for daemon in daemons:
+                daemon.connect_workspace(mounted_workspace)
             mount_path = first.root / 'mounts' / 'manual'
             original = first.call('mount_prepare', {'workspace': mounted_workspace, 'path': str(mount_path)}, 'manual-root')['result']['binding']
             (mount_path / 'shared.txt').write_text('published root content', encoding='utf-8')
