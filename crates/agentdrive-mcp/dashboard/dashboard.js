@@ -242,7 +242,7 @@ function showPage() {
   $('history-breadcrumb').hidden = settings;
   $('settings-breadcrumb').hidden = !settings;
   navigation.page();
-  $('view-mode').textContent = sandboxes ? '当前工作区' : settings ? '配置管理' : mounts || branches ? '工作区管理' : '只读浏览';
+  $('view-mode').textContent = sandboxes ? '当前工作区' : mounts || branches ? '工作区管理' : '只读浏览';
   showHistoryTab();
   refreshPage();
 }

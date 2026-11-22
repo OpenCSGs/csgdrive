@@ -13,7 +13,7 @@ agentdrived init --directory "$AGENTDRIVE_DIRECTORY"
 agentdrived serve --config "$AGENTDRIVE_DIRECTORY/agentdrive.json"
 ```
 
-Run `init` once for a new directory. It prints the generated configuration path and rejects an existing configuration. `serve` runs in the foreground; Ctrl+C requests shutdown. S3 credentials can be saved through Dashboard Settings. When using environment credentials, set them in this terminal before `serve`; see [remote configuration](configuration.md).
+Run `init` once for a new directory. It prints the generated configuration path and rejects an existing configuration. `serve` runs in the foreground; Ctrl+C requests shutdown. The dashboard can save S3 credentials when creating a workspace. When using environment credentials, set them in this terminal before `serve`; see [remote configuration](configuration.md).
 
 | Command | Arguments |
 | --- | --- |

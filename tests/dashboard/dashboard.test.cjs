@@ -137,50 +137,51 @@ async function openRevision(page, id = 'child-autosave') {
 }
 function differenceReads(requests) { return requests.filter(url => /\/(changes|diff)$/.test(url.pathname)); }
 
-test('workspace storage is read-only and saving daemon settings preserves every destination', async t => {
+test('global settings only reads configuration and displays changes from the daemon', async t => {
   const page = await browser.newPage();
-  const errors = [], updates = [];
+  const errors = [], methods = [];
   page.on('pageerror', error => errors.push(error.message));
   t.after(async () => { await page.close(); assert.deepEqual(errors, []); });
-  const remotes = {
-    alpha:{backend:'opencsg',endpoint:'https://codes.example',repository:'team/archive',branch:'main',prefix:'drive',xnet:true,token:''},
-    beta:{backend:'s3',bucket:'files',endpoint:'https://oss.example',region:'us-east-1',prefix:'beta'},
-  };
-  let settings = {revision:'initial',config_path:'/private/config',reload_error:null,
-    runtime:{workspace_remotes:remotes,cache:{max_bytes:2147483648},allowed_origins:[]},
+  const settings = {revision:'initial',config_path:'/private/config',reload_error:null,
+    runtime:{workspace_remotes:{
+      alpha:{backend:'opencsg',endpoint:'https://codes.example',repository:'team/archive',branch:'main',prefix:'drive',xnet:true,token:''},
+      beta:{backend:'s3',bucket:'files',endpoint:'https://oss.example',region:'us-east-1',prefix:'beta'},
+    },cache:{max_bytes:2147483648},allowed_origins:[]},
     startup:{listen:'127.0.0.1:7421',data_dir:'/state',mount_roots:[],directory_roots:[]}};
   await page.route('**/api/**', async route => {
+    methods.push(route.request().method());
     const url = new URL(route.request().url());
     if (url.pathname === '/api/workspaces') return route.fulfill({json:[{id:'alpha',name:'Alpha'},{id:'beta',name:'Beta'},{id:'gamma',name:'Gamma'}]});
-    if (url.pathname !== '/api/settings') return route.fulfill({status:404,json:{}});
-    if (route.request().method() === 'PUT') {
-      const update = route.request().postDataJSON();
-      updates.push(update);
-      settings = {...settings,revision:'saved',runtime:update.runtime};
-    }
-    return route.fulfill({json:settings});
+    if (url.pathname === '/api/settings') return route.fulfill({json:settings});
+    return route.fulfill({status:404,json:{}});
   });
   await page.goto(endpoint+'/settings');
   const details = page.locator('#storage-details'), scope = page.locator('#storage-scope');
   await details.waitFor();
+  assert.deepEqual(await page.locator('#settings-page').locator('input, textarea, select, button, form, [contenteditable=true]').evaluateAll(nodes => nodes.map(n => n.id)), ['storage-scope']);
+  assert.equal(await page.locator('#collaboration-state').textContent(), '已启用');
+  assert.equal(await page.locator('#cache-capacity').textContent(), '2 GiB');
+  assert.equal(await page.locator('#allowed-origins').textContent(), '未配置');
   assert.match(await details.textContent(), /OpenCSG Codes.*team\/archive.*XNet已启用/);
-  assert.equal(await page.locator('#settings-form input[type=password], #settings-form #storage-mode').count(), 0);
   await scope.selectOption('beta');
   assert.match(await details.textContent(), /S3.*oss\.example.*Bucketfiles/);
   await scope.selectOption('gamma');
   assert.match(await details.textContent(), /仅本地存储/);
-  assert(await page.locator('#settings-save').isDisabled());
-  await page.locator('#settings-collaboration-enabled').uncheck();
-  await page.locator('#cache-max').fill('3');
-  await page.locator('#settings-save').click();
-  await page.waitForFunction(() => document.querySelector('#settings-version').textContent.includes('saved'));
-  assert.equal(updates.length, 1);
-  assert.deepEqual(updates[0].runtime.workspace_remotes, remotes);
-  assert.deepEqual(updates[0].runtime.collaboration, {enabled:false});
-  assert.equal(updates[0].runtime.cache.max_bytes, 3 * 1024 ** 3);
-  settings.runtime.collaboration.enabled = true; settings.revision = 'external';
-  await page.locator('#settings-reload').click();
-  await page.waitForFunction(() => document.querySelector('#settings-collaboration-enabled').checked);
+  settings.runtime.collaboration = {enabled:false};
+  settings.runtime.cache.max_bytes = 3 * 1024 ** 3;
+  settings.runtime.allowed_origins = ['https://app.example','https://files.example'];
+  settings.revision = 'external';
+  await page.locator('#refresh').click();
+  await page.locator('#settings-version').filter({hasText:'external'}).waitFor();
+  assert.equal(await page.locator('#collaboration-state').textContent(), '已关闭');
+  assert.equal(await page.locator('#cache-capacity').textContent(), '3 GiB');
+  assert.equal(await page.locator('#allowed-origins').textContent(), settings.runtime.allowed_origins.join('\n'));
+  assert.equal(await scope.inputValue(), 'gamma');
+  settings.reload_error = 'invalid configuration file';
+  await page.locator('#reload-error').filter({hasText:'invalid configuration file'}).waitFor();
+  settings.reload_error = null;
+  await page.locator('#reload-error').waitFor({state:'hidden'});
+  assert.deepEqual([...new Set(methods)], ['GET']);
 });
 
 test('history contains only revisions authored on the selected branch, including an empty child', async t => {
@@ -1027,7 +1028,7 @@ test('automatic mount creation requires configured remote storage', async t => {
   const {page} = await open(t,fixture(),'/mounts');
   assert.equal(await page.locator('#collaboration-global-state').textContent(),'全局已开启');
   assert.match(await page.getByRole('region',{name:'自动协作'}).textContent(),/配置远程存储后/);
-  assert.equal(await page.getByRole('link',{name:'前往设置管理全局开关'}).getAttribute('href'),'/settings');
+  assert.equal(await page.getByRole('link',{name:'查看全局设置'}).getAttribute('href'),'/settings');
 });
 
 test('collaboration shows active turns, remote confirmation and the published writer', async t => {
@@ -1081,7 +1082,7 @@ test('disabled collaboration links to settings and offers local branches', async
   const {page} = await open(t,data,'/mounts');
   await page.getByText('自动协作未启用',{exact:true}).waitFor();
   assert.equal(await page.locator('#collaboration-global-state').textContent(),'全局已关闭');
-  assert.equal(await page.getByRole('link',{name:'前往设置管理全局开关'}).getAttribute('href'),'/settings');
+  assert.equal(await page.getByRole('link',{name:'查看全局设置'}).getAttribute('href'),'/settings');
   assert.equal(await page.locator('#mounts-branch option[value="remote-shared"]').count(),0);
 });
 

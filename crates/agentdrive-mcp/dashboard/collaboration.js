@@ -10,7 +10,7 @@ export function createCollaborationPanel({api, element, container}) {
   const globalState = element('span', 'pill'); globalState.id = 'collaboration-global-state';
   heading.append(element('h2', '', '自动协作'), globalState);
   const description = element('p', 'collaboration-description');
-  const settingsLink = element('a', 'management-link collaboration-settings-link', '前往设置管理全局开关'); settingsLink.href = '/settings';
+  const settingsLink = element('a', 'management-link collaboration-settings-link', '查看全局设置'); settingsLink.href = '/settings';
   const mountLabel = element('label', 'management-field collaboration-mount', '本机工作目录');
   const mountInput = element('select'); mountInput.id = 'collaboration-mount'; mountLabel.append(mountInput);
   const error = element('p', 'command-error'); error.setAttribute('role', 'alert'); error.hidden = true;
@@ -82,7 +82,7 @@ export function createCollaborationPanel({api, element, container}) {
     const capabilities = data.status.capabilities;
     globalState.textContent = capabilities.collaboration_enabled ? '全局已开启' : '全局已关闭';
     description.textContent = !capabilities.automatic_collaboration ? '当前驱动不支持自动协作。'
-      : !capabilities.collaboration_enabled ? '自动协作已在设置中关闭。'
+      : !capabilities.collaboration_enabled ? '本机已关闭自动协作。'
       : !capabilities.remote_configured ? '配置远程存储后，工作目录可以自动同步和交还写权限。'
       : '每次 turn 结束并发送回调后，AgentDrive 提交本次修改。当前分支的全部 turn 结束且远端确认保存后，交还写权限。';
     renderStatus(); load(data.status.workspace.id);

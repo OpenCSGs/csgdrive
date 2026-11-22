@@ -124,7 +124,7 @@ Call `workspace_status` for an existing workspace and inspect `capabilities`:
 | --- | --- |
 | `format_version` | Persisted format version, currently `1`. |
 | `automatic_collaboration` | Whether the compiled native driver supports automatic collaboration. Linux FUSE, macOS NFS and WinFsp support it; remote storage is also required. |
-| `collaboration_enabled` | Current daemon-wide `collaboration.enabled` setting, which defaults to true. Change it through Settings or the configuration file. |
+| `collaboration_enabled` | Current daemon-wide `collaboration.enabled` setting, which defaults to true. View it in Settings and edit it in the configuration file. |
 | `platform_mount` | Native mount adapter: `linux-fuse`, `macos-nfs` or `windows-winfsp`. |
 | `file_operations` | `lookup`, `getattr`, `readdir`, `create`, `mkdir`, `read`, `write`, `truncate`, `chmod`, `rename`, `unlink`, `rmdir`, `fsync`. These describe mounted filesystem operations. |
 | `remote_configured` | Whether S3 or OpenCSG is currently enabled; a saved profile with `enabled: false` returns `false`. This flag does not test connectivity or credentials. |

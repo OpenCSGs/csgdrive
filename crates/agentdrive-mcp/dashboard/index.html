@@ -70,43 +70,30 @@
         <footer class="page-footer"><span>AgentDrive <span class="footer-separator">/</span> 持久化 Agent 工作区</span><span>每 2 秒自动刷新</span></footer>
       </div>
       <div id="settings-page" class="content settings-content" hidden>
-        <div class="page-heading"><div><h1>设置<span class="heading-dot">.</span></h1><p>查看工作区存储，管理本机服务设置。</p></div><span class="pill">运行时更新</span></div>
+        <div class="page-heading"><div><h1>设置<span class="heading-dot">.</span></h1><p>查看工作区的存储位置和本机服务当前使用的配置。</p></div></div>
         <div id="settings-error" class="error-banner" role="alert" hidden></div>
-        <div id="settings-notice" class="settings-notice" role="status" hidden></div>
         <div id="reload-error" class="error-banner" role="alert" hidden></div>
-        <form id="settings-form" hidden>
-          <fieldset id="settings-fields">
-            <section class="panel settings-panel" aria-labelledby="collaboration-title">
-              <div class="settings-heading"><div><h2 id="collaboration-title">自动协作</h2><p>统一管理当前 AgentDrive 的全部工作区和读写挂载，默认开启。</p></div><span class="pill">保存后生效</span></div>
-              <label class="storage-check"><input id="settings-collaboration-enabled" type="checkbox" checked>启用自动协作</label>
-              <p class="settings-help">配置远程存储后，首次修改文件会自动申请写权限。每次 turn 结束时，AgentDrive 收到回调便提交本次修改。当前分支的全部 turn 结束且远端确认保存后，其他 location 可以接手写入。</p>
-              <p class="settings-help">关闭后，稳定状态下保留当前权限并使用手动管理。已经开始的同步交还和恢复分支切换会继续完成。可以在挂载点管理页面查看每个工作分支的交接进度。</p>
-            </section>
-            <section class="panel settings-panel" aria-labelledby="storage-title">
-              <div class="settings-heading"><div><h2 id="storage-title">存储设置</h2><p>工作区的存储位置在创建时确定。选择工作区可以查看其存储信息。</p></div><span class="read-only">只读</span></div>
-              <div id="storage-selector" class="storage-fields storage-selector" hidden><label>工作区<select id="storage-scope"></select></label></div>
-              <p id="storage-empty" class="settings-help" hidden>暂无工作区。创建工作区时可以选择存储位置。</p>
-              <dl id="storage-details" class="detail-grid" hidden></dl>
-            </section>
-            <section id="cache-panel" class="panel settings-panel" aria-labelledby="cache-title" hidden>
-              <div class="settings-heading"><div><h2 id="cache-title">本地缓存</h2><p>后台每 30 秒检查一次。超过容量时，自动清理到设置容量的 75%；磁盘空间不足时也会尝试清理。</p></div><span class="pill">保存后生效</span></div>
-              <label class="cache-capacity">本地缓存容量 <span class="input-unit"><input id="cache-max" type="number" min="0" step="any" aria-describedby="cache-help"><span>GiB</span></span><small>默认 2 GiB，可填写小数。</small></label>
-              <p id="cache-help" class="settings-help">此设置管理可重新下载的版本内容缓存。正在使用、尚未上传或固定保留的内容受到保护，实际占用可能超过设置容量。</p>
-            </section>
-            <section class="panel settings-panel" aria-labelledby="origins-title">
-              <div class="settings-heading"><div><h2 id="origins-title">HTTP 访问来源</h2><p>允许发送请求的额外页面来源，下一次请求使用新设置。</p></div><span class="pill">保存后生效</span></div>
-              <label class="settings-label" for="allowed-origins">Origin 白名单，每行一个地址</label>
-              <textarea id="allowed-origins" rows="3" placeholder="https://app.example.com" spellcheck="false"></textarea>
-              <p class="settings-help">使用 scheme://host[:port] 格式。同源 Dashboard 和没有 Origin 的 CLI 请求可以访问。</p>
-            </section>
-          </fieldset>
-          <div class="settings-actions"><div><strong id="settings-state">配置已加载</strong><small id="settings-version"></small></div><button id="settings-reload" class="secondary" type="button">重新载入</button><button id="settings-save" class="primary" type="submit" disabled>保存并应用</button></div>
-        </form>
-        <section id="startup-panel" class="panel settings-panel" hidden aria-labelledby="startup-title">
-          <div class="settings-heading"><div><h2 id="startup-title">启动配置</h2><p>修改配置文件后重启 daemon 生效。这些设置决定存储位置、挂载目录与监听地址。</p></div><span class="read-only">需要重启</span></div>
-          <dl id="startup-values" class="detail-grid"></dl>
-        </section>
-        <footer class="page-footer"><span>AgentDrive <span class="footer-separator">/</span> 配置管理</span><span>配置文件每秒检查一次</span></footer>
+        <div id="settings-values" hidden>
+          <section class="panel settings-panel" aria-labelledby="storage-title">
+            <div class="settings-heading"><div><h2 id="storage-title">工作区存储</h2><p>存储位置在创建工作区时确定。</p></div></div>
+            <div id="storage-selector" class="storage-fields storage-selector" hidden><label>工作区<select id="storage-scope"></select></label></div>
+            <p id="storage-empty" class="settings-help" hidden>暂无工作区。创建工作区时可以选择存储位置。</p>
+            <dl id="storage-details" class="detail-grid" hidden></dl>
+          </section>
+          <section class="panel settings-panel" aria-labelledby="service-title">
+            <div class="settings-heading"><h2 id="service-title">本机服务</h2></div>
+            <dl class="detail-grid">
+              <dt>自动协作</dt><dd id="collaboration-state"></dd>
+              <dt>远程内容缓存上限</dt><dd id="cache-capacity"></dd>
+              <dt>额外允许的 HTTP 来源</dt><dd id="allowed-origins"></dd>
+            </dl>
+          </section>
+          <section class="panel settings-panel" aria-labelledby="startup-title">
+            <div class="settings-heading"><h2 id="startup-title">启动配置</h2></div>
+            <dl id="startup-values" class="detail-grid"></dl>
+          </section>
+        </div>
+        <footer class="page-footer"><span>AgentDrive <span class="footer-separator">/</span> 全局设置</span><span id="settings-version"></span></footer>
       </div>
     </main>
   </div>
