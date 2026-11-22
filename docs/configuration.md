@@ -26,11 +26,11 @@ Existing configurations retain the first configured principal when `principal` i
 
 ## Runtime updates and dashboard settings
 
-Open **Settings** at the bottom left of the dashboard, or visit `/settings`. Global settings remain accessible without a workspace. In **Storage**, select the name of a workspace to edit its destination. The form edits automatic collaboration, remote connections, local cache capacity in GiB and allowed HTTP origins. Saving persists the complete runtime configuration to the same `agentdrive.json` used to start the daemon.
+Open **Settings** at the bottom left of the dashboard, or visit `/settings`. Global settings remain accessible without a workspace. In **Storage**, select the name of a workspace to view its destination. The form edits automatic collaboration, local cache capacity in GiB and allowed HTTP origins. Saving persists the complete runtime configuration to the same `agentdrive.json` used to start the daemon.
 
 | Configuration | Effective time |
 | --- | --- |
-| `workspace_remotes` | After preparing history and the destination connection, without restarting |
+| `workspace_remotes` | Destination fixed at creation. Credentials may be refreshed for the same destination. |
 | `cache` | Next cache collection, every 30 seconds |
 | `allowed_origins` | Next HTTP request, including existing MCP sessions |
 | `collaboration.enabled` | Next filesystem operation or coordination tick; pending release and recovery continue |
@@ -57,13 +57,11 @@ The single `cache.max_bytes` setting applies to cached immutable objects across 
 
 Collection removes only remotely confirmed objects without active readers or protected references. Active branch contents, pending publications, merge candidates and explicit cache pins remain protected. Usage can exceed the setting when protected content requires more space. SQLite metadata, working files and staging files consume additional disk space. Local-only workspaces retain their history. The Dashboard shows cache capacity when any configured destination uses remote storage.
 
-## Switching storage while running
+## Selecting workspace storage
 
-Before moving a shared workspace to another destination, pause writes and branch creation on all participating machines, then pull the current remote history. AgentDrive checks the source branches before and after copying. If a writer publishes a new head during the copy, pull again and retry. Update the storage destination on every participating machine before resuming writes.
+In **Create workspace**, select local storage, S3-compatible storage (including OSS), or OpenCSG Codes. Codes offers an optional XNet checkbox. The destination and XNet choice are fixed at creation. **Settings → Storage** shows the selection for each workspace.
 
-Disable automatic collaboration in Settings and finish pending handoffs before switching the remote backend or storage namespace, or disabling remote storage. The daemon rejects the change while an active coordinator still depends on that backend's write authority. Updating credentials or tokens for the same backend and namespace refreshes the connection directly and can proceed while collaboration remains enabled.
-
-Choose local storage, S3-compatible storage (including OSS), or OpenCSG Codes at creation. To change an existing workspace, select its name under **Settings → Storage**. Switching workspaces keeps unsaved drafts on the page. Saving applies the selected workspace and any global settings edited in the form.
+Update credentials for the same destination in the configuration file. The settings API, file reload and daemon startup check the destination against the workspace metadata. A second machine can attach the same destination using its own credentials.
 
 This example selects an S3 destination for one workspace.
 
@@ -81,15 +79,13 @@ This example selects an S3 destination for one workspace.
 
 The Dashboard sends `POST /api/workspaces` with `request_id` and `name`. Omitting `storage` or supplying `"storage": null` selects local storage, and a remote profile supplies a dedicated destination. Retrying an unconfirmed creation uses the same request ID. Reopening the form prompts for any required secret again.
 
-Enabling a remote backend verifies its connection and conditional-write behavior, copies locally known history and branch references, then persists configuration and replaces the connection. Switching between S3 and OpenCSG uses this same process and preserves AgentDrive revision IDs and history. Returning to local storage downloads evicted history and disables historical cache eviction. Mounts and working directories remain available; pending publications are retained until remote storage is enabled again.
-
-Some operations wait while history is transferred. Missing content, insufficient local space, an advanced destination branch, credential errors or a configuration write failure retain the active connection. The destination may already contain immutable objects and references; retrying continues safely. Complete pending ownership transfers before changing storage. Failed external file edits retain the active runtime settings, display an error, and are retried by the file watcher. S3 connection checks create and delete temporary objects beneath `.connection-check/` in the configured namespace. OpenCSG checks use temporary files beneath `<prefix>/checks/` and attempt cleanup afterward; these operations remain in the repository's Git history.
+Creation verifies a new remote connection. S3 checks create and delete temporary objects beneath `.connection-check/`. Codes checks create and clean up temporary files beneath `<prefix>/checks/`, which records those operations in Git history.
 
 `<data_dir>/meta.db` is a local SQLite database, with its WAL files. Remote synchronization uploads immutable file contents, directory/inode indexes, revision history, published operation receipts, workspace control records and branch references. It never uploads the database file. A destination daemon imports published records into its own database through `sync` with `direction: "pull"`. Local identity, branch selections, mounts, cache pins, pending work and configuration remain specific to each machine. See [architecture](architecture.md) for the storage layout.
 
 ## OpenCSG Codes fields
 
-Create a dedicated Codes repository and initialize its storage branch, for example by adding a README. In Dashboard Settings, select **OpenCSG Codes**, enter the domain, `namespace/repository`, branch and access token, then save. The token needs permission to read and write repository files. The equivalent configuration is:
+Create a dedicated Codes repository and initialize its storage branch, for example by adding a README. In **Create workspace**, select **OpenCSG Codes**, enter the domain, `namespace/repository`, branch and access token, then create the workspace. The token needs permission to read and write repository files. The equivalent configuration is:
 
 ```json
 {
@@ -111,7 +107,7 @@ Create a dedicated Codes repository and initialize its storage branch, for examp
 | Workspace storage field | Required / default | Behavior |
 | --- | --- | --- |
 | `backend` | Required: `opencsg` | Select the Codes HTTP adapter. |
-| `enabled` | `true` | Use `false` for local mode while retaining this profile. |
+| `enabled` | `true` | Use `true` when creating a remote workspace. |
 | `endpoint` | Required | HTTP(S) origin, including an optional port. No API path, credentials, query or fragment. HTTP requires `allow_http: true`. |
 | `repository` | Required | Existing Codes repository in `namespace/name` form. |
 | `branch` | `main` | Existing, initialized storage branch. Use a simple name without `/`. |
@@ -122,7 +118,7 @@ Create a dedicated Codes repository and initialize its storage branch, for examp
 
 Repository components, the branch name, and prefix components accept ASCII letters, digits, `-`, `_`, and `.`. Leading/trailing dots, consecutive dots and `.lock` suffixes are rejected.
 
-The dashboard stores the token in the configuration file with Unix permissions `0600`. GET settings returns an empty token. Saving an empty token retains the saved value only when the domain and repository are unchanged; enter the token again when changing either destination field. HTTP redirects are rejected, and server response bodies are excluded from error messages.
+The dashboard stores the token in the configuration file with Unix permissions `0600`. GET settings returns an empty token. Saving global settings with an empty token retains the stored value. HTTP redirects are rejected, and server response bodies are excluded from error messages.
 
 The adapter uses the existing Codes file HTTP API. Reading uses a pinned Git commit; writes supply `start_sha` as the expected branch head. Connection checks verify normal updates, rejection of stale updates, and preservation of existing files during repeated creation. An incompatible or inconclusive service response prevents activation. Startup remains available offline; the first write performs the same check.
 
@@ -132,7 +128,7 @@ Keep the storage branch and its internal files under AgentDrive's control. Remot
 
 ### OpenCSG Codes with XNet
 
-The OpenCSG deployment must expose XNet token refresh for Codes repositories. AgentDrive checks this when saving a Codes configuration with XNet selected. If the token endpoint is unavailable, the save fails and the previous settings stay active. To use ordinary Codes storage on that deployment, clear the XNet checkbox and save.
+When creating a workspace with XNet selected, AgentDrive checks that the Codes repository can issue XNet tokens. A failed check is reported in the creation form.
 
 Enable XNet on the Codes repository and grant repository access to the daemon identity. On each machine that writes XNet content, install `hf-xet==1.1.10` in the Python environment used by the daemon. For a dedicated environment, set `AGENTDRIVE_XNET_PYTHON` to its Python executable before starting the service. The default executable is `python3`. For example:
 
@@ -144,7 +140,7 @@ export AGENTDRIVE_XNET_PYTHON="$HOME/.agentdrive-xnet/bin/python"
 
 Start the daemon with this environment.
 
-Select **OpenCSG Codes** and enable the XNet checkbox, or set `"xnet": true` in that Codes profile. The repository's `preupload` response decides which nonempty file objects use XNet. The decision uses AgentDrive's internal repository path and file size. Codes stores the file pointer, workspace records and branch references. Objects classified as regular use the existing Codes format. Allow temporary disk space for files being transferred.
+During workspace creation, select **OpenCSG Codes** and enable the XNet checkbox, or set `"xnet": true` in that Codes profile. The repository's `preupload` response decides which nonempty file objects use XNet. The decision uses AgentDrive's internal repository path and file size. Codes stores the file pointer, workspace records and branch references. Objects classified as regular use the existing Codes format. Allow temporary disk space for files being transferred.
 
 AgentDrive reads XNet files through the Codes resolve endpoint at a fixed Git commit and verifies their length and content hash. Reading existing files does not require Python.
 
@@ -171,7 +167,7 @@ This is a configuration fragment for a local RustFS S3 API endpoint. Keep the ot
 | Workspace storage field | Required / default | Behavior |
 | --- | --- | --- |
 | `backend` | `s3` | Optional for compatibility with existing S3 configurations. |
-| `enabled` | `true` | Use `false` for local mode while retaining S3 settings. |
+| `enabled` | `true` | Use `true` when creating a remote workspace. |
 | `credentials` | Omitted or `null` | Use the service environment or IAM role, or supply `access_key_id`, `secret_access_key`, and optional `session_token`. |
 | `bucket` | Required, nonempty string | Existing bucket name. The daemon does not create buckets. |
 | `prefix` | `agentdrive/v1` | Shared namespace within the bucket; leading/trailing `/` are removed and the result must be a valid, nonempty object path. |
@@ -219,7 +215,7 @@ The locked `object_store` dependency supports the following credential sources, 
 
 The current adapter does not load `~/.aws/credentials`, `AWS_PROFILE`, or AWS CLI SSO sessions. Export resolved credentials or use one of the supported role providers. Static environment credentials are loaded at startup; restart the daemon after replacing them.
 
-AgentDrive calls `AmazonS3Builder::from_env()` and then applies its configuration. The configured `bucket`, `region`, and `allow_http` values, including their defaults, override the corresponding AWS environment settings. A configured `endpoint` overrides both `AWS_ENDPOINT` and `AWS_ENDPOINT_URL_S3`. When `endpoint` is omitted, environment settings remain effective; remove both environment variables to use the default AWS regional endpoint. Path-style requests and ETag conditional writes are selected by the adapter.
+AgentDrive calls `AmazonS3Builder::from_env()` and then applies its configuration. The configured `bucket`, `region`, and `allow_http` values, including their defaults, override the corresponding AWS environment settings. When `endpoint` is omitted, AgentDrive checks `AWS_ENDPOINT_URL_S3`, `AWS_ENDPOINT_URL` and `AWS_ENDPOINT` in that order, then uses the AWS regional endpoint. The resolved endpoint is part of the workspace destination. Path-style requests and ETag conditional writes are selected by the adapter.
 
 ## S3 requirements and synchronization verification
 

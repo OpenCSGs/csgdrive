@@ -36,6 +36,7 @@ async function setup(t, options = {}) {
     if (url.pathname === '/api/workspaces' && request.method() === 'POST') {
       const input = request.postDataJSON(); (data.creations ||= []).push(input);
       if (data.createPending) await data.createPending();
+      if (data.createFailure) return route.fulfill({json:{phase:'failed',local_saved:false,error:{message:data.createFailure,retryable:true}}});
       if (data.createError) return route.fulfill({status:data.createStatus || 503,json:{error:{message:data.createError}}});
       const workspace = {id:'created',name:input.name};
       if (!data.workspaces.some(item=>item.id===workspace.id)) data.workspaces.push(workspace);
@@ -122,7 +123,7 @@ test('global settings work with no workspaces and do not load workspace contents
   await page.goto(endpoint+'/settings?workspace=missing&branch=old');
   await page.locator('#settings-form').waitFor();
   await page.locator('#storage-empty').waitFor();
-  assert.equal(await page.locator('#storage-editor').isVisible(), false);
+  assert.equal(await page.locator('#storage-details').isVisible(), false);
   await page.waitForFunction(()=>!document.querySelector('#refresh').disabled);
   assert.equal(new URL(page.url()).search,'');
   assert.equal(await page.locator('#workspace-menu').isVisible(),false);
@@ -132,7 +133,7 @@ test('global settings work with no workspaces and do not load workspace contents
   assert(box.y > 750 && box.x < 250);
 });
 
-test('storage stays editable for the selected workspace during a dashboard refresh', async t => {
+test('storage details follow the selected workspace during a dashboard refresh', async t => {
   const {page} = await setup(t);
   await page.goto(endpoint + '/archive?workspace=second'); await settled(page);
   await page.locator('#settings-nav').click();
@@ -148,11 +149,11 @@ test('storage stays editable for the selected workspace during a dashboard refre
     await page.locator('#refresh').click(); await entered.promise;
     assert.equal(await scope.isEnabled(), true);
     await scope.selectOption('first');
-    await page.locator('#storage-mode').selectOption('s3');
+    assert.match(await page.locator('#storage-details').textContent(), /仅本地存储/);
   } finally { release.resolve(); }
   await page.waitForFunction(() => !document.querySelector('#refresh').disabled);
   assert.equal(await scope.inputValue(), 'first');
-  assert.equal(await page.locator('#storage-mode').inputValue(), 's3');
+  assert(await page.locator('#settings-save').isDisabled());
 });
 
 test('settings remain available when listing workspaces fails', async t => {
@@ -347,6 +348,48 @@ test('workspace creation keeps scoped Codes settings across retries without stor
   await dialog.getByRole('button',{name:'重试创建'}).click();
   await dialog.waitFor({state:'hidden'});
   assert.deepEqual(data.creations[1],original);
+});
+
+test('workspace creation collects the S3 bucket and selected credentials before submitting', async t => {
+  const {page,data} = await setup(t);
+  await page.goto(endpoint+'/archive'); await settled(page);
+  await page.locator('#workspace-create').click();
+  const dialog = page.getByRole('dialog',{name:'创建工作区',exact:true});
+  await dialog.getByLabel('工作区名称').fill('OSS 项目');
+  await dialog.getByLabel('存储模式').selectOption('s3');
+  await dialog.getByLabel('凭据来源').selectOption('saved');
+  assert(await dialog.getByLabel('Bucket').evaluate(input => input.validity.valueMissing));
+  assert(await dialog.getByLabel('Secret Access Key').evaluate(input => input.validity.valueMissing));
+  await dialog.getByLabel('Bucket').fill('team-project');
+  await dialog.getByLabel('Endpoint',{exact:true}).fill('https://oss.example');
+  await dialog.getByLabel('Access Key ID').fill('test-key');
+  await dialog.getByLabel('Secret Access Key').fill('test-secret');
+  await dialog.getByRole('button',{name:'创建工作区',exact:true}).click();
+  await dialog.waitFor({state:'hidden'});
+  const remote = data.creations[0].storage;
+  assert.equal(remote.backend,'s3');
+  assert.equal(remote.bucket,'team-project');
+  assert.equal(remote.endpoint,'https://oss.example');
+  assert.equal(remote.credentials.access_key_id,'test-key');
+  assert.equal(remote.credentials.secret_access_key,'test-secret');
+});
+
+test('a failed storage check lets the user correct the creation form', async t => {
+  const {page,data} = await setup(t,{createFailure:'Storage unavailable'});
+  await page.goto(endpoint+'/archive'); await settled(page);
+  await page.locator('#workspace-create').click();
+  const dialog = page.getByRole('dialog',{name:'创建工作区',exact:true});
+  await dialog.getByLabel('工作区名称').fill('OSS');
+  const mode = dialog.getByLabel('存储模式');
+  await mode.selectOption('s3');
+  await dialog.getByLabel('Bucket').fill('team');
+  const submit = dialog.getByRole('button',{name:'创建工作区',exact:true});
+  await submit.click();
+  await dialog.getByRole('alert').filter({hasText:'Storage unavailable'}).waitFor();
+  await mode.selectOption('local');
+  data.createFailure = null;
+  await submit.click(); await dialog.waitFor({state:'hidden'});
+  assert.notEqual(data.creations[0].request_id, data.creations[1].request_id);
 });
 
 test('workspace creation can explicitly select local storage', async t => {

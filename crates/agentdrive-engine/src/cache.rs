@@ -548,6 +548,7 @@ mod retention_tests {
         local
             .commit(LocalCommit {
                 new_workspaces: vec![Workspace {
+                    storage_target: None,
                     deleted: false,
                     id: workspace,
                     name: "retention".into(),

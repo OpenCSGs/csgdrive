@@ -26,11 +26,11 @@
 
 ## 运行时更新与 Dashboard 设置
 
-通过左下角的“设置”或 `/settings` 编辑整个 daemon 的配置。没有工作区时也可以使用设置页面。表单提供自动协作、远程连接、本地缓存容量和 HTTP 访问来源配置。保存时更新启动使用的同一个 `agentdrive.json`。
+通过左下角的“设置”或 `/settings` 编辑整个 daemon 的配置。没有工作区时也可以使用设置页面。表单提供自动协作、本地缓存容量和 HTTP 访问来源配置。保存时更新启动使用的同一个 `agentdrive.json`。
 
 | 配置 | 生效时间 |
 | --- | --- |
-| `workspace_remotes` | 历史内容与目标连接准备完成后生效，无需重启 |
+| `workspace_remotes` | 创建工作区时确定存储目标；同一目标的凭据可以更新 |
 | `cache` | 下次缓存检查，每 30 秒执行一次 |
 | `allowed_origins` | 下一次 HTTP 请求，包括已有 MCP 会话 |
 | `collaboration.enabled` | 下一次文件操作或协作检查；正在释放和恢复的操作继续执行 |
@@ -57,13 +57,11 @@ Origin 使用 `scheme://host[:port]` 格式，不能包含路径、结尾斜线�
 
 清理只处理已获得远端确认、没有活动读取者且没有受保护引用的对象。当前分支内容、待发布数据、合并候选内容和固定缓存受到保护。受保护内容较多时，实际占用可能超过设置容量。SQLite 元数据、工作文件和临时文件另外占用磁盘空间。仅本地存储的工作区完整保留历史。启用任一远程存储配置后，Dashboard 会显示缓存容量输入框。
 
-## 运行期间切换存储
+## 选择工作区存储
 
-将共享工作区改到其他存储目标前，请在所有参与机器上暂停写入和创建分支，并拉取该工作区的最新历史。AgentDrive 会在复制前后核对源端分支。如果复制期间出现新版本，请再次拉取后重试。所有参与机器都改用新目标后，再恢复写入。
+在 Dashboard 点击“创建工作区”，选择“仅本地存储”、“S3 兼容存储（含 OSS）”或“OpenCSG Codes”。选择 Codes 时还可以勾选 XNet。每个工作区的存储位置和 XNet 选择在创建时确定，之后可在“设置 → 存储设置”中选择工作区查看。
 
-更换远端后端或存储命名空间、禁用远端存储之前，需要在设置中关闭自动协作并完成待处理的交接。协作流程仍依赖当前后端的写权限时，后台会拒绝该配置修改。同一后端和命名空间的凭据或 token 更新会直接刷新连接，可以在自动协作开启期间完成。
-
-创建工作区时，选择“仅本地存储”、“S3 兼容存储（含 OSS）”或“OpenCSG Codes”。已有工作区可在“设置 → 存储设置”中选择工作区名称并修改。切换工作区会保留页面内的草稿，“保存并应用”只保存当前选中的工作区及本次修改的全局设置。
+可以在配置文件中更新同一目标的访问凭据。已有工作区的存储目标记录在工作区元数据中。设置接口、配置文件重新加载和服务启动都会核对该记录。另一台机器连接此工作区时，使用相同的目标和自己的访问凭据。
 
 以下配置将一个工作区保存到 S3。其他工作区使用各自的配置。
 
@@ -81,15 +79,13 @@ Origin 使用 `scheme://host[:port]` 格式，不能包含路径、结尾斜线�
 
 Dashboard 调用 `POST /api/workspaces` 创建工作区，提交 `request_id` 和 `name`。省略 `storage` 或提交 `"storage": null` 表示仅保存在本机，也可以通过 `storage` 提交完整的远程配置。创建结果尚未确认时，重试使用相同的请求 ID。重新打开表单后，需要再次填写本次请求所需的密钥。
 
-启用远程后端时检查目标连接和条件写入行为，复制本地已知的历史内容和分支引用，随后保存配置并更换连接。S3 与 OpenCSG 之间的切换复用此流程，并保留 AgentDrive revision ID 和历史关系。切换回本地时补齐已被缓存清理的历史内容，并停止清理本地历史文件。工作目录和挂载继续使用；待同步操作保留到下一次启用远程存储。
-
-切换期间部分操作会等待历史内容传输完成。内容缺失、存储空间不足、目标分支已更新、凭据错误或配置保存失败时，当前连接继续有效。目标可能已经收到部分不可变对象和分支引用，重复提交会继续处理。拥有尚未完成的分支所有权转移时，需要完成该操作后才能切换。配置文件的外部修改失败时保留原有运行配置，页面显示错误，后续检查继续尝试。S3 连接检查会创建并删除命名空间内的 `.connection-check/` 临时对象。OpenCSG 检查使用 `<prefix>/checks/` 下的临时文件，结束后尝试删除；这些操作仍会保存在仓库的 Git 历史中。
+创建工作区时会验证远程连接。S3 检查在 `.connection-check/` 下创建并删除临时对象。Codes 检查在 `<prefix>/checks/` 下创建并清理临时文件，Git 会记录这些操作。
 
 `<data_dir>/meta.db` 是本地 SQLite 数据库，并使用 WAL 文件。远程同步上传不可变文件内容、目录和 inode 索引、版本历史、已发布的操作结果、工作区控制记录和分支引用；数据库文件本身不会上传。目标 daemon 通过 `sync` 的 `direction: "pull"` 将已发布记录导入自己的数据库。本机身份、分支选择、挂载、缓存保留设置、尚未完成的工作和配置分别由各台机器管理。存储结构见[架构说明](architecture.zh-CN.md)。
 
 ## OpenCSG Codes 字段
 
-创建专用 Codes 仓库，并通过添加 README 等方式初始化存储分支。在 Dashboard 设置中选择 **OpenCSG Codes**，填写域名、`namespace/repository`、分支和访问 token，保存即可。token 需要仓库文件的读写权限。对应的配置如下：
+创建专用 Codes 仓库，并通过添加 README 等方式初始化存储分支。在“创建工作区”中选择 **OpenCSG Codes**，填写域名、`namespace/repository`、分支和访问 token，然后创建工作区。token 需要仓库文件的读写权限。对应的配置如下：
 
 ```json
 {
@@ -111,7 +107,7 @@ Dashboard 调用 `POST /api/workspaces` 创建工作区，提交 `request_id` �
 | 工作区存储字段 | 必填要求 / 默认值 | 行为 |
 | --- | --- | --- |
 | `backend` | 必填，`opencsg` | 选择 Codes HTTP 适配器。 |
-| `enabled` | `true` | 设置为 `false` 使用本地模式，并保留此配置。 |
+| `enabled` | `true` | 创建远程工作区时使用 `true`。 |
 | `endpoint` | 必填 | HTTP(S) 域名，可包含端口。不包含 API 路径、凭据、查询参数或 fragment。HTTP 需要 `allow_http: true`。 |
 | `repository` | 必填 | 已有 Codes 仓库，使用 `namespace/name` 格式。 |
 | `branch` | `main` | 已存在且初始化完成的存储分支，名称不包含 `/`。 |
@@ -122,7 +118,7 @@ Dashboard 调用 `POST /api/workspaces` 创建工作区，提交 `request_id` �
 
 仓库名称的各个部分、分支名和目录的各级名称支持 ASCII 字母、数字、`-`、`_` 和 `.`，拒绝首尾句点、连续句点及 `.lock` 后缀。
 
-Dashboard 将 token 保存在配置文件中，Unix 文件权限为 `0600`。GET 设置接口返回空 token。保存时只有域名和仓库均未改变，空 token 才会保留已有值；修改其中任意字段后，需要重新填写 token。HTTP 请求拒绝跳转，错误信息不会包含服务端响应正文。
+Dashboard 将 token 保存在配置文件中，Unix 文件权限为 `0600`。GET 设置接口返回空 token。通过设置接口保存全局配置时，空 token 会保留已有凭据。HTTP 请求拒绝跳转，错误信息不会包含服务端响应正文。
 
 适配器使用已有的 Codes 文件 HTTP API。读取指定 Git commit 的内容，写入通过 `start_sha` 检查分支当前版本。连接检查验证正常更新、拒绝过期版本更新和重复创建时保留已有文件的行为。服务行为不兼容或检查结果无法确认时，配置不会启用。启动支持离线工作，首次写入执行相同检查。
 
@@ -132,7 +128,7 @@ AgentDrive 继续管理 workspace、branch、autosave、commit、merge、操作�
 
 ### 在 OpenCSG Codes 中启用 XNet
 
-OpenCSG 服务需要能够为 Codes 仓库签发 XNet 令牌。勾选 XNet 并保存时，AgentDrive 会检查接口是否可用。接口不可用时，保存会失败，原有配置继续生效。若要在该服务上使用普通 Codes 存储，可取消勾选 XNet 并保存。
+创建工作区时勾选 XNet，AgentDrive 会检查 Codes 仓库的 XNet 令牌接口。检查失败时，创建表单会显示原因。
 
 在 Codes 仓库启用 XNet，并向 daemon 使用的身份授予仓库读写权限。在每台需要写入 XNet 文件的机器上，为 daemon 使用的 Python 环境安装 `hf-xet==1.1.10`。如使用独立环境，启动 daemon 前将 `AGENTDRIVE_XNET_PYTHON` 设置为该环境的 Python 可执行文件路径。默认使用 `python3`。下面的命令创建独立环境。
 
@@ -144,7 +140,7 @@ export AGENTDRIVE_XNET_PYTHON="$HOME/.agentdrive-xnet/bin/python"
 
 从这个环境启动 daemon。
 
-在设置中选择“OpenCSG Codes”，勾选“通过 XNet 传输仓库的大文件”，也可以在该 Codes 配置中设置 `"xnet": true`。AgentDrive 将非空文件对象的内部仓库路径和大小提交给 Codes 的 `preupload` 接口。仓库判定为 LFS 的文件通过 XNet 传输，其指针、工作区记录和分支引用保存在同一 Codes 仓库。判定为普通文件的对象继续使用 Codes 原有格式。读取这些文件时，AgentDrive 从 Codes 的固定 Git commit 下载，并校验文件长度和内容摘要。读取已有文件无需安装 Python。请为传输中的文件预留临时目录空间。
+在创建工作区时选择“OpenCSG Codes”，勾选“通过 XNet 传输仓库的大文件”，也可以在该 Codes 配置中设置 `"xnet": true`。AgentDrive 将非空文件对象的内部仓库路径和大小提交给 Codes 的 `preupload` 接口。仓库判定为 LFS 的文件通过 XNet 传输，其指针、工作区记录和分支引用保存在同一 Codes 仓库。判定为普通文件的对象继续使用 Codes 原有格式。读取这些文件时，AgentDrive 从 Codes 的固定 Git commit 下载，并校验文件长度和内容摘要。读取已有文件无需安装 Python。请为传输中的文件预留临时目录空间。
 
 ## S3 字段
 
@@ -169,7 +165,7 @@ export AGENTDRIVE_XNET_PYTHON="$HOME/.agentdrive-xnet/bin/python"
 | 工作区存储字段 | 必填要求 / 默认值 | 行为 |
 | --- | --- | --- |
 | `backend` | `s3` | 已有 S3 配置可以继续省略此字段。 |
-| `enabled` | `true` | 设置为 `false` 使用本地模式，并保留 S3 配置。 |
+| `enabled` | `true` | 创建远程工作区时使用 `true`。 |
 | `credentials` | 省略或 `null` | 使用服务环境或 IAM 角色；也可以填写 `access_key_id`、`secret_access_key` 和可选的 `session_token`。 |
 | `bucket` | 必填，非空字符串 | 已存在的 bucket 名称。守护进程不会创建 bucket。 |
 | `prefix` | `agentdrive/v1` | bucket 内共享的命名空间；首尾 `/` 会被移除，结果必须是有效且非空的对象路径。 |
@@ -194,7 +190,7 @@ export AGENTDRIVE_XNET_PYTHON="$HOME/.agentdrive-xnet/bin/python"
 
 ## S3 凭据与环境变量优先级
 
-Dashboard 可以编辑并保存 S3 凭据到配置文件，Unix 保存权限为 `0600`。GET 设置接口会清空 `secret_access_key` 和 `session_token`；PUT 中同一个 Access Key ID 的空密钥表示保留已有凭据。修改 Session Token 时同时填写 Secret Access Key；将 `credentials` 设为 `null` 使用环境凭据。配置中的凭据优先于环境凭据。
+创建工作区时可以将 S3 凭据保存到配置文件，Unix 保存权限为 `0600`。GET 设置接口会清空 `secret_access_key` 和 `session_token`；PUT 中同一个 Access Key ID 的空密钥表示保留已有凭据。修改 Session Token 时同时填写 Secret Access Key；将 `credentials` 设为 `null` 使用环境凭据。配置中的凭据优先于环境凭据。
 
 S3 凭据由**守护进程**读取。请在启动 `agentdrived serve` 的终端或服务环境中设置变量。
 
@@ -217,7 +213,7 @@ PowerShell 使用 `$env:AWS_ACCESS_KEY_ID = 'your-access-key-id'` 和 `$env:AWS_
 
 当前适配器不会读取 `~/.aws/credentials`、`AWS_PROFILE` 或 AWS CLI SSO 会话。请导出有效凭据，或者使用支持的角色凭据来源。静态环境变量凭据在启动时读取，替换后需要重新启动守护进程。
 
-AgentDrive 调用 `AmazonS3Builder::from_env()` 后应用自身配置。配置中的 `bucket`、`region` 和 `allow_http`，包括默认值，都会覆盖对应的 AWS 环境变量。配置中的 `endpoint` 会覆盖 `AWS_ENDPOINT` 和 `AWS_ENDPOINT_URL_S3`。省略 `endpoint` 时沿用环境设置；使用默认 AWS regional endpoint 时，需要移除这两个环境变量。适配器会选择 path-style 请求和基于 ETag 的条件写入。
+AgentDrive 调用 `AmazonS3Builder::from_env()` 后应用自身配置。配置中的 `bucket`、`region` 和 `allow_http`，包括默认值，都会覆盖对应的 AWS 环境变量。省略 `endpoint` 时，依次读取 `AWS_ENDPOINT_URL_S3`、`AWS_ENDPOINT_URL`、`AWS_ENDPOINT`。均未设置时使用 AWS 区域地址。服务会验证工作区使用的实际地址。适配器会选择 path-style 请求和基于 ETag 的条件写入。
 
 ## S3 存储要求与同步验证
 

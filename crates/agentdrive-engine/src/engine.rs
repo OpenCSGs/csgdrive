@@ -52,12 +52,7 @@ impl Engine {
             .take()
             .zip(adapters.remote_refs.take())
             .map(|(objects, refs)| Arc::new(RemoteStorage { objects, refs }));
-        Self::open_with_routes(
-            adapters,
-            config,
-            StorageRoutes::new(default, Default::default()),
-        )
-        .await
+        Self::open_with_routes(adapters, config, StorageRoutes::with_default(default)).await
     }
 
     pub fn storage_routes(&self) -> Arc<StorageRoutes> {
@@ -70,6 +65,7 @@ impl Engine {
         config: EngineConfig,
         routes: StorageRoutes,
     ) -> Result<Arc<Self>> {
+        routes.check_existing(adapters.state.as_ref()).await?;
         let runtime = Runtime::new(adapters.state, adapters.clock).await?;
         let operations = OperationService::new(runtime.clone());
         let content = ContentService::with_routes(adapters.objects.clone(), routes);

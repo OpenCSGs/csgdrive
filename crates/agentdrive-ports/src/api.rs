@@ -311,11 +311,11 @@ pub struct ReleaseMount {
     pub expected_binding_generation: u64,
 }
 
-/// Local storage setup for a newly allocated workspace. Only the redacted selection
-/// participates in request deduplication. Credentials stay with the configuration adapter.
+/// Local storage setup for a newly allocated workspace. The destination identifier participates
+/// in request deduplication. Credentials stay with the configuration adapter.
 #[async_trait]
 pub trait WorkspaceInitializer: Send + Sync {
-    fn selection(&self) -> &str;
+    fn storage_target(&self) -> Option<&str>;
     async fn prepare(&self, workspace: WorkspaceId) -> Result<()>;
     async fn discard(&self, workspace: WorkspaceId) -> Result<()>;
 }

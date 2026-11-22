@@ -29,7 +29,7 @@ impl WorkspaceService {
         let mut ids: std::collections::BTreeSet<_> = locals.iter().map(|w| w.id).collect();
         let mut failure = None;
         if actor.is_some() {
-            ids.extend(routes.workspaces.keys().copied());
+            ids.extend(routes.workspace_ids());
             if let Some(default) = &routes.default {
                 match default.refs.list_workspaces().await {
                     Ok(discovered) => ids.extend(discovered),
@@ -89,6 +89,10 @@ impl WorkspaceService {
         self.check_catalog_storage(control.workspace.id, storage)?;
         let _objects = self.runtime.objects.read().await;
         let id = control.workspace.id;
+        self.revisions.trees.content.storage.load().check_target(
+            control.workspace.id,
+            control.workspace.storage_target.as_deref(),
+        )?;
         self.revisions
             .trees
             .content

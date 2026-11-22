@@ -38,6 +38,31 @@ impl RemoteConfig {
         }
     }
 
+    /// Stable identity shared by machines using the same workspace storage.
+    pub fn storage_target(&self) -> Result<String> {
+        use sha2::{Digest, Sha256};
+        let fields = match self {
+            Self::S3(s3) => serde_json::to_vec(&(
+                "s3",
+                s3.effective_endpoint()
+                    .as_deref()
+                    .map(|url| url.trim_end_matches('/')),
+                &s3.bucket,
+                &s3.region,
+                s3.prefix.trim_matches('/'),
+            ))?,
+            Self::OpenCsg(codes) => serde_json::to_vec(&(
+                "opencsg",
+                codes.endpoint.trim_end_matches('/'),
+                &codes.repository,
+                &codes.branch,
+                &codes.prefix,
+                codes.xnet,
+            ))?,
+        };
+        Ok(format!("{:x}", Sha256::digest(fields)))
+    }
+
     pub fn validate(&self) -> Result<()> {
         match self {
             Self::S3(config) => config.validate(),

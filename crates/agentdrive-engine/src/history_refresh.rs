@@ -155,7 +155,7 @@ mod tests {
         for workspace in workspaces {
             assert!(coordinator.request(Some(&storage), workspace, 0).refreshing);
         }
-        let routes = StorageRoutes::new(Some(storage.clone()), Default::default());
+        let routes = StorageRoutes::with_default(Some(storage.clone()));
         let mut active = coordinator.begin(&routes, 0, 1);
         assert_eq!(active.len(), 2);
         assert!(coordinator.begin(&routes, 0, 1).is_empty());
@@ -169,7 +169,7 @@ mod tests {
         });
         let status = coordinator.request(Some(&replacement), workspaces[0], 0);
         assert!(status.last_attempt_ns.is_none() && status.last_success_ns.is_none());
-        let routes = StorageRoutes::new(Some(replacement.clone()), Default::default());
+        let routes = StorageRoutes::with_default(Some(replacement.clone()));
         let replacement_attempt = coordinator.begin(&routes, 0, 3).pop().unwrap();
         drop(active);
         drop(next);

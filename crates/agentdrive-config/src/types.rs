@@ -69,6 +69,14 @@ impl std::fmt::Debug for S3Credentials {
 }
 
 impl S3Config {
+    pub fn effective_endpoint(&self) -> Option<String> {
+        self.endpoint.clone().or_else(|| {
+            ["AWS_ENDPOINT_URL_S3", "AWS_ENDPOINT_URL", "AWS_ENDPOINT"]
+                .iter()
+                .find_map(|name| std::env::var(name).ok())
+        })
+    }
+
     pub fn validate(&self) -> Result<()> {
         if self.bucket.trim().is_empty()
             || self.bucket.contains(['/', '\\'])

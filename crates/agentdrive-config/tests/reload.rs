@@ -138,6 +138,33 @@ fn opencsg_token_is_private_and_only_reused_for_the_same_destination() {
 }
 
 #[test]
+fn codes_destination_is_fixed_across_token_rotation_and_includes_xnet() {
+    let profile = json!({"backend":"opencsg", "endpoint":"https://codes.example", "repository":"team/files",
+        "branch":"main", "prefix":"drive", "token":"first", "xnet":false});
+    let target = |profile| {
+        serde_json::from_value::<RemoteConfig>(profile)
+            .unwrap()
+            .storage_target()
+            .unwrap()
+    };
+    let original = target(profile.clone());
+    let mut rotated = profile.clone();
+    rotated["token"] = json!("second");
+    assert_eq!(target(rotated), original);
+    for (field, value) in [
+        ("endpoint", json!("https://another.example")),
+        ("repository", json!("team/other")),
+        ("branch", json!("other")),
+        ("prefix", json!("other")),
+        ("xnet", json!(true)),
+    ] {
+        let mut changed = profile.clone();
+        changed[field] = value;
+        assert_ne!(target(changed), original, "{field}");
+    }
+}
+
+#[test]
 fn remote_configuration_accepts_legacy_s3_and_rejects_unsafe_opencsg_destinations() {
     let legacy: RemoteConfig =
         serde_json::from_value(json!({"bucket":"existing", "endpoint":null})).unwrap();

@@ -1,4 +1,4 @@
-"""验证运行期间切换存储、凭据保存、历史读取和配置失败恢复。"""
+"""Verify workspace storage selection, immutable destinations and history after restart."""
 import argparse
 import copy
 import json
@@ -80,23 +80,21 @@ with tempfile.TemporaryDirectory(prefix='agentdrive-storage-') as temporary:
 
     try:
         daemon = start()
-        pid = daemon.pid
-        workspace = call('workspace_create', {'name': 'storage-switch'})['result']['workspace']['id']
+        profile = {'backend': 's3', 'bucket': 'agentdrive-integration', 'prefix': f'storage-tests/{uuid.uuid4()}', 'region': 'us-east-1', 'endpoint': endpoint, 'allow_http': True,
+                   'credentials': {'access_key_id': os.environ['AWS_ACCESS_KEY_ID'], 'secret_access_key': os.environ['AWS_SECRET_ACCESS_KEY']}}
+        request = {'name': 'workspace history', 'request_id': str(uuid.uuid4()), 'storage': profile}
+        workspace = create_workspace(request)['result']['workspace']['id']
+        assert create_workspace(request)['result']['workspace']['id'] == workspace
         source = root / 'exchange' / 'source'
         source.mkdir()
         payload = bytes(range(256)) * 4096
         (source / 'image.bin').write_bytes(payload)
         branch = call('workspace_import', {'workspace': workspace, 'source': str(source)})['result']['branch']
         revision = branch['formal_head']
-        current = settings()[1]
-        runtime = copy.deepcopy(current['runtime'])
-        runtime['workspace_remotes'][workspace] = {'enabled': True, 'bucket': 'agentdrive-integration', 'prefix': f'storage-tests/{uuid.uuid4()}', 'region': 'us-east-1', 'endpoint': endpoint, 'allow_http': True,
-            'credentials': {'access_key_id': os.environ['AWS_ACCESS_KEY_ID'], 'secret_access_key': os.environ['AWS_SECRET_ACCESS_KEY']}}
-        current = save(current, runtime)
         local_request = {'request_id': str(uuid.uuid4()), 'name': 'private notes', 'storage': None}
         local = create_workspace(local_request)['result']['workspace']['id']
         assert create_workspace(local_request)['result']['workspace']['id'] == local
-        own_store = copy.deepcopy(runtime['workspace_remotes'][workspace])
+        own_store = copy.deepcopy(profile)
         own_store['prefix'] = f'workspace-tests/{uuid.uuid4()}'
         shared = create_workspace({'request_id': str(uuid.uuid4()), 'name': 'shared files',
                                    'storage': own_store})['result']['workspace']['id']
@@ -109,45 +107,49 @@ with tempfile.TemporaryDirectory(prefix='agentdrive-storage-') as temporary:
         assert os.environ['AWS_SECRET_ACCESS_KEY'] not in json.dumps(current)
         assert call('workspace_status', {'workspace': workspace})['capabilities']['remote_configured']
         call('sync', {'workspace': workspace, 'direction': 'push'})
-        # 失败的切换保留配置文件、配置版本和当前连接。
-        before = config_path.read_bytes()
-        invalid = copy.deepcopy(current['runtime'])
-        invalid['workspace_remotes'][workspace]['bucket'] = f'missing-{uuid.uuid4()}'
-        status, _ = settings({'revision': current['revision'], 'runtime': invalid})
-        assert status != 200
-        assert config_path.read_bytes() == before
-        assert settings()[1]['revision'] == current['revision']
+        # Rotate to environment credentials for the same destination.
         runtime = copy.deepcopy(current['runtime'])
-        runtime['workspace_remotes'][workspace]['enabled'] = False
+        runtime['workspace_remotes'][workspace].pop('credentials')
         current = save(current, runtime)
-        assert not call('workspace_status', {'workspace': workspace})['capabilities']['remote_configured']
-        destination = root / 'exchange' / 'export'
-        call('workspace_export', {'workspace': workspace, 'revision': revision, 'destination': str(destination)})
-        assert (destination / 'image.bin').read_bytes() == payload
-        # 直接编辑配置文件也使用同一条存储切换路径。
-        config = json.loads(config_path.read_text(encoding='utf-8'))
-        config['workspace_remotes'][workspace]['enabled'] = True
+        before = config_path.read_bytes()
+        for target, replacement in [
+            (workspace, None),
+            (workspace, {**profile, 'prefix': 'another/directory'}),
+            (workspace, {**profile, 'bucket': 'another-bucket'}),
+            (workspace, {'backend': 'opencsg', 'repository': 'team/files', 'endpoint': 'https://example.invalid', 'token': 'test-token'}),
+            (local, profile),
+        ]:
+            runtime = copy.deepcopy(current['runtime'])
+            runtime['workspace_remotes'][target] = replacement
+            status, failure = settings({'revision': current['revision'], 'runtime': runtime})
+            assert status == 409 and 'fixed at creation' in str(failure), (status, failure)
+            assert config_path.read_bytes() == before
+        config = json.loads(before)
+        del config['workspace_remotes'][workspace]
         pending = root / 'pending.json'
         pending.write_text(json.dumps(config))
         os.replace(pending, config_path)
         for _ in range(200):
             current = settings()[1]
-            if current['runtime']['workspace_remotes'][workspace]['enabled']:
+            if current['reload_error']:
                 break
             time.sleep(0.05)
-        assert current['runtime']['workspace_remotes'][workspace]['enabled'], current
-        assert daemon.pid == pid and daemon.poll() is None
+        assert 'fixed at creation' in current['reload_error'], current
         assert call('workspace_status', {'workspace': workspace})['capabilities']['remote_configured']
         daemon.terminate()
         daemon.wait(timeout=30)
+        invalid = subprocess.run([str(binaries / ('agentdrived' + exe)), 'serve', '--config', str(config_path)],
+                                 capture_output=True, text=True, timeout=20)
+        assert invalid.returncode != 0 and 'fixed at creation' in invalid.stderr, invalid.stderr
+        config_path.write_bytes(before)
         daemon = start()
-        assert settings()[1]['runtime']['workspace_remotes'][workspace]['credentials']['secret_access_key'] == ''
+        assert settings()[1]['runtime']['workspace_remotes'][shared]['credentials']['secret_access_key'] == ''
         destination = root / 'exchange' / 'after-restart'
         call('workspace_export', {'workspace': workspace, 'revision': revision, 'destination': str(destination)})
         assert (destination / 'image.bin').read_bytes() == payload
         assert not call('workspace_status', {'workspace': local})['capabilities']['remote_configured']
         assert call('workspace_status', {'workspace': shared})['capabilities']['remote_configured']
-        print('Live storage switching, saved credentials, failed-switch recovery, file reload and restart passed')
+        print('Workspace creation, immutable storage, credential refresh and history after restart passed')
     finally:
         if daemon and daemon.poll() is None:
             daemon.terminate()

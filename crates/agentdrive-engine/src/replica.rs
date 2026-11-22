@@ -542,6 +542,10 @@ impl ReplicaPublisher for ReplicaService {
                 })?;
             let control = decode_workspace_control(workspace, &value.bytes)?;
             control.workspace.authorize(actor, None, Permission::Read)?;
+            self.content.storage.load().check_target(
+                control.workspace.id,
+                control.workspace.storage_target.as_deref(),
+            )?;
             self.content
                 .metadata(workspace, &control.initial_revision.root)
                 .await?;
