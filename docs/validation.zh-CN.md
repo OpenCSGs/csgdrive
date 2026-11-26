@@ -38,19 +38,14 @@ python3 tests/cli_smoke.py
 
 CLI 与 MCP 集成测试明确使用 UTF-8 读取进程输出和 daemon 文件，支持系统代码页不同的 Windows 环境。上传并发测试通过屏障等待四个请求同时到达，并验证失败传输释放全部许可。
 
-## 原生文件系统
+## 本机文件系统
 
-安装并启用平台驱动后执行：
+Linux 和 macOS 需要安装 GeeseFS 及[平台依赖](installation.zh-CN.md)。构建守护进程和 CLI 后，运行 `python3 tests/branch_switch_smoke.py`，验证实际挂载目录的文件访问和分支切换。
 
-```sh
-make -j "$(getconf _NPROCESSORS_ONLN)" test CARGO_FLAGS='-p agentdrive-platform --test native_mount -- --ignored --nocapture'
-```
-
-Windows 在 PowerShell 中使用 `make -j $env:NUMBER_OF_PROCESSORS`。集成测试管理自己的临时状态和挂载目录，覆盖大于 3 MiB 的文件、截断、随机位置写入、原子追加、重命名、fsync、超过 128 个目录项、历史版本只读访问，以及卸载。
-
-WinFsp wrapper 的空指针卷 flush 回归测试在 Windows 上单独执行：
+Windows 安装 WinFsp 后，在 PowerShell 中运行挂载测试：
 
 ```powershell
+make -j $env:NUMBER_OF_PROCESSORS test CARGO_FLAGS='-p agentdrive-platform --test native_mount -- --ignored --nocapture'
 make -j $env:NUMBER_OF_PROCESSORS test CARGO_FLAGS='--manifest-path vendor/winfsp_wrs/Cargo.toml --lib'
 ```
 
@@ -71,7 +66,7 @@ python3 tests/storage_smoke.py
 
 `storage_smoke.py` 验证每个工作区的内容后端、凭据更新、禁止更换已有工作区后端和重启后导出历史版本。
 
-## 执行记录
+## 历史执行记录
 
 | 检查 | 已验证环境 |
 | --- | --- |
@@ -81,18 +76,14 @@ python3 tests/storage_smoke.py
 | S3 条件写入和分段内容 | 隔离的 RustFS 实例 |
 | 两个 S3 挂载别名、分支写入模式和 Dashboard 文件读取 | Linux |
 
-macOS 的原生挂载测试覆盖打开文件时的 turn 交接、交接后的目录与文件读取、旧句柄写入保护、等待 12 秒取得写权限，以及正常重启后恢复挂载。各平台的测试均可在 [GitHub Actions](https://github.com/OpenCSGs/csgdrive/actions) 查看。
-
 [CLI 使用](cli.zh-CN.md)中的创建、导入、读取、导出和挂载示例已通过临时守护进程执行验证。[MCP 参数表](mcp.zh-CN.md)已与运行中的守护进程返回的 30 个工具 schema 核对。S3 配置已根据守护进程配置加载器、适配器，以及锁定版本 `object_store` 的凭据和 endpoint 选择逻辑检查。上述文档检查不代表已经在 AWS S3 部署环境完成验证。
 
 生命周期、分支及 Dashboard 的补充检查：
 
 ```sh
-python3 tests/lifecycle_smoke.py
+python3 tests/branch_switch_smoke.py
 python3 tests/config_smoke.py
 ```
-
-`lifecycle_smoke.py` 需要原生挂载支持，覆盖 ACP 和 Codex app-server 协议中的完成、取消、失败、进程中断、重复请求、自动保存、daemon 重启、重连、两个 Agent 连接共用挂载，以及已有挂载上的 CLI 分支切换。常规 Rust 测试还覆盖响应正文丢失后的重试、多个连接共用同一个挂载、切换时的文件句柄检查、分支选择持久化和 HTTP 权限。浏览器检查覆盖分支树、版本信息、工作区导航和小屏幕布局。本机 Codex app-server 的 initialize 与 thread/start 已验证工作目录指向 AgentDrive 挂载；完整任务流程通过协议测试程序验证。
 
 `config_smoke.py` 在临时目录启动 daemon，验证设置接口、更新版本冲突，以及重启后从 SQLite 读取已保存设置。该脚本无需挂载驱动。
 
@@ -102,7 +93,7 @@ python3 tests/config_smoke.py
 
 macOS 26.5、FUSE-T 1.2.9 与独立 RustFS 容器环境中，Codex 创建普通目录并在转换后的原路径继续写入。验证内容包含 12 MiB 文件、空文件、中文名称、创建、修改、重命名和删除。Codex 通过 stdio MCP 创建、切换分支并请求远端保存。main 与 feature 的版本在独立 daemon 中从 RustFS 恢复，全部文件清单和 SHA-256 一致。往返切换保持两个分支的独立内容。正常重启 daemon 后调用 `mount_prepare`，分支选择及文件内容保留。指定已有 workspace 的导入在原路径创建新的 branch。
 
-停止 RustFS 后，本地保存成功、远端保存返回失败；恢复服务并同步后，原保存操作得到远端确认，独立恢复的全部文件校验一致。FUSE-T 构建通过 44 个 workspace 测试与 Clippy、两项原生挂载测试、56 个 fuser 测试，以及 CLI/stdio smoke 测试。原生测试耗时 134.14 秒。本次未验证多进程文件锁及生产环境吞吐量。生命周期与元数据行为见 [FUSE-T 使用说明](integrations.zh-CN.md#macos-fuse-t)。
+停止 RustFS 后，本地保存成功、远端保存返回失败；恢复服务并同步后，原保存操作得到远端确认，独立恢复的全部文件校验一致。FUSE-T 构建通过 44 个 workspace 测试与 Clippy、两项原生挂载测试、56 个 fuser 测试，以及 CLI/stdio smoke 测试。原生测试耗时 134.14 秒。本次未验证多进程文件锁及生产环境吞吐量。
 
 ## 一次调用完成分支切换
 
@@ -112,7 +103,7 @@ macOS 26.5、FUSE-T 1.2.9 与独立 RustFS 容器环境中，Codex 创建普通�
 python3 tests/branch_switch_smoke.py
 ```
 
-stdio MCP 测试验证每次尝试只调用一次 `branch_switch`、进程工作目录占用、明确的 `MOUNT_BUSY` 恢复提示、重启 MCP 客户端后重试、已完成请求的重复调用，以及分支内容隔离。整个测试不调用 `mount_release`。引擎测试注入卸载权限失败和目标挂载失败，验证错误原因保留、相同请求可以继续执行。原生测试分别覆盖打开文件与工作目录占用。这些检查已在本机 macOS 26.5、FUSE-T 1.2.9 环境通过。
+stdio MCP 测试在另一个进程使用挂载目录期间切换分支，随后检查原路径中的文件内容并重试原请求。Windows 用例检查 WinFsp 返回的目录占用提示及其重试结果。
 
 ## 元数据与发布性能验证
 
@@ -198,7 +189,7 @@ RustFS 完整流程再次通过：保持原目录路径及 branch 数据隔离�
 
 回归测试复现两项问题：最旧对象存在读取租约时，清理未继续处理后续对象；16,385 个索引项可能生成仅含一项的页面。缓存现在按实际回收字节数继续选择对象，保留每批最多 32 个对象及引用检查。索引创建与修改共用均衡分配规则，测试检查多级页面的容量和全部目录项内容。
 
-首个 release 发布前，模型保留当前 revision 与 operation 记录。新建数据库原子创建完整的当前结构，重复打开保留已有统计。已删除旧 session/turn 兼容类型和数据库结构迁移路径。
+首个 release 发布前，模型保留当前 revision 与 operation 记录。新建数据库原子创建完整的当前结构，重复打开保留已有统计。
 
 验证通过：73 项工作区测试、格式检查、Clippy 警告检查、架构检查、三项真实 FUSE-T 测试、真实 RustFS 后端测试及六组 Python 命令测试。完整原生流程保持导入路径与分支隔离，确认断网期间积累的全部 21 项保存，并在重启后恢复 1138 个文件。独立下载 main 的 1093 个文件及 feature 的 1138 个文件，路径、大小与 SHA-256 全部一致，最终同步队列为空。创建 543 个文件耗时 34.739 秒，50 次重命名耗时 339.562 毫秒；创建期间后台发布持续运行，最终远端保存确认耗时 177.651 毫秒。此次没有重复执行独立的 554 项保存积压基准。
 

@@ -31,7 +31,6 @@ struct Inner {
     tree_reader: Mutex<Option<std::sync::Weak<dyn agentdrive_ports::RevisionReader>>>,
     node_hydration: tokio::sync::Mutex<()>,
     root: PathBuf,
-    database_metadata: bool,
     connection: Mutex<Connection>,
     leases: Mutex<BTreeMap<(WorkspaceId, ObjectId), usize>>,
     verified: Mutex<BTreeMap<(WorkspaceId, ObjectId), (u64, SystemTime)>>,
@@ -52,15 +51,7 @@ impl std::fmt::Debug for LocalBackend {
 
 impl LocalBackend {
     pub fn open(path: impl AsRef<Path>) -> Result<Self> {
-        Self::open_mode(path.as_ref(), false)
-    }
-
-    /// Open a server database whose immutable tree pages and published refs live in SQLite.
-    pub fn open_server(path: impl AsRef<Path>) -> Result<Self> {
-        Self::open_mode(path.as_ref(), true)
-    }
-
-    fn open_mode(path: &Path, database_metadata: bool) -> Result<Self> {
+        let path = path.as_ref();
         create_private_dir(path)?;
         let root = path.canonicalize()?;
         let lock = OpenOptions::new()
@@ -101,14 +92,13 @@ impl LocalBackend {
             .pragma_update(None, "foreign_keys", "ON")
             .map_err(sqlite::sql_error)?;
         let location = sqlite::initialize(&mut connection)?;
-        server::configure_layout(&mut connection, database_metadata)?;
+        server::configure_layout(&mut connection, &root)?;
         sync_directory(&root)?;
         Ok(Self {
             inner: Arc::new(Inner {
                 tree_reader: Mutex::default(),
                 node_hydration: Default::default(),
                 root,
-                database_metadata,
                 connection: Mutex::new(connection),
                 leases: Mutex::new(BTreeMap::new()),
                 verified: Mutex::new(BTreeMap::new()),

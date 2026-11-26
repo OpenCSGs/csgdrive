@@ -5,7 +5,7 @@ async fn branch(h: &Harness, id: BranchId) -> Branch {
 }
 
 async fn handoff(h: &Harness, mount: MountId) {
-    finish_turn(h, mount).await;
+    seed_available_branch(h, mount).await;
     h.engine.collaborate_due().await.unwrap();
     let binding = h.local.mount(mount).await.unwrap().unwrap();
     assert_eq!(
@@ -76,7 +76,7 @@ async fn commit_and_checkpoint_acquire_authority_and_completed_replays_do_not() 
 }
 
 #[tokio::test]
-async fn unmounted_branch_commands_hold_authority_until_an_execution_ends() {
+async fn unmounted_branch_commands_retain_authority() {
     let (h, _, mount, _) = released_work(Arc::new(MemoryRemote::default())).await;
     success(
         h.engine
@@ -164,7 +164,7 @@ async fn command_contending_with_a_file_writer_retries_without_changing_its_requ
 }
 
 #[tokio::test]
-async fn concurrent_commit_retries_reuse_the_formal_turn_revision() {
+async fn concurrent_commit_retries_reuse_the_formal_revision() {
     let remote = Arc::new(MemoryRemote::default());
     let (h, workspace, mount, _) = released_work(remote.clone()).await;
     let before = h.local.revisions(workspace.id).await.unwrap().len();

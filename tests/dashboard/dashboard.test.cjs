@@ -1019,7 +1019,7 @@ function collaborativeFixture() {
     access:'read_write',state:'ready',generation:7,principal:'owner'}];
   data.collaboration = [{workspace:'workspace',branch:'feature',mounts:['shared-mount'],
     settings:{enabled:true},phase:'writing',writer:'local',authority_epoch:5,
-    active_executions:1,local_saved:true,remote_confirmed:false,recovery_branch:null,error:null}];
+    local_saved:true,remote_confirmed:false,recovery_branch:null,error:null}];
   return data;
 }
 
@@ -1049,16 +1049,14 @@ test('automatic mount creation requires configured remote storage', async t => {
   assert.equal(await page.getByRole('link',{name:'查看全局设置'}).getAttribute('href'),'/settings');
 });
 
-test('collaboration shows active turns, remote confirmation and the published writer', async t => {
+test('collaboration shows remote confirmation and the published writer', async t => {
   const data = collaborativeFixture();
   const {page} = await open(t,data,'/mounts');
   const panel = page.getByRole('region',{name:'自动协作'});
   await panel.getByText('持有写权限',{exact:true}).waitFor();
-  assert.match(await panel.textContent(),/已登记的活动任务1/);
-  Object.assign(data.collaboration[0],{phase:'saving',active_executions:0});
+  Object.assign(data.collaboration[0],{phase:'saving'});
   await refresh(page);
   await panel.getByText('正在确认同步与权限',{exact:true}).waitFor();
-  assert.match(await panel.textContent(),/已登记的活动任务0/);
   assert.match(await panel.textContent(),/等待远端确认/);
   assert.match(await panel.textContent(),/本机持有/);
 });

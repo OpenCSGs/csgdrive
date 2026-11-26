@@ -1,12 +1,43 @@
+use agentdrive_config::{LiveConfig, RuntimeConfig};
+use agentdrive_engine::{Adapters, Engine, EngineConfig};
 use agentdrive_local::LocalBackend;
 use agentdrive_model::{BranchId, ObjectKind, Principal, WorkspaceId, WorkspacePath, object_ref};
+use agentdrive_platform::{HostDirectories, NativeMountDriver, SystemClock, local_identity};
 use agentdrive_ports::{
     CreateWorkspace, ForkBranch, ListBranchFiles, LocalObjectStore, ReadBranchFile, RequestContext,
 };
 use bytes::Bytes;
 use drive_s3_store::{ErrorKind, Store, WriteMode};
+use std::sync::Arc;
 use tempfile::tempdir;
 use tokio::time::{Duration, timeout};
+
+async fn open_store(data_dir: &std::path::Path) -> drive_s3_store::Result<Store> {
+    let local = Arc::new(LocalBackend::open(data_dir)?);
+    let engine = Engine::open(
+        Adapters {
+            state: local.clone(),
+            objects: local.clone(),
+            working: local,
+            remote_objects: None,
+            remote_refs: None,
+            clock: Arc::new(SystemClock::default()),
+            mounts: NativeMountDriver::new(vec![])?,
+            directories: HostDirectories::new(vec![])?,
+        },
+        EngineConfig {
+            live: LiveConfig::new(RuntimeConfig::default())?,
+            identity: local_identity(),
+        },
+    )
+    .await?;
+    Store::from_engine(
+        engine,
+        &data_dir.join("s3-sessions.sqlite3"),
+        "owner".to_owned().try_into()?,
+    )
+    .await
+}
 
 fn request(id: &str) -> RequestContext {
     RequestContext {
@@ -59,7 +90,7 @@ async fn fork(store: &Store, workspace: WorkspaceId, source: BranchId, name: &st
 #[tokio::test]
 async fn binding_requires_an_existing_branch_in_the_requested_workspace() {
     let root = tempdir().unwrap();
-    let store = Store::open(root.path()).await.unwrap();
+    let store = open_store(root.path()).await.unwrap();
     let (workspace, branch) = create_workspace(&store, "one").await;
     let (other, _) = create_workspace(&store, "two").await;
     for (id, branch_id, expected) in [
@@ -114,9 +145,9 @@ async fn binding_requires_an_existing_branch_in_the_requested_workspace() {
 }
 
 #[tokio::test]
-async fn both_server_entry_points_reject_unsupported_session_files_without_changes() {
+async fn local_daemon_rejects_unsupported_session_files_without_changes() {
     let current_dir = tempdir().unwrap();
-    let current = Store::open(current_dir.path()).await.unwrap();
+    let current = open_store(current_dir.path()).await.unwrap();
     let owner: Principal = "owner".to_owned().try_into().unwrap();
     let file = "s3-sessions.sqlite3";
 
@@ -133,7 +164,7 @@ async fn both_server_entry_points_reject_unsupported_session_files_without_chang
         drop(db);
         let before = std::fs::read(&path).unwrap();
         for error in [
-            Store::open(directory.path()).await.unwrap_err(),
+            open_store(directory.path()).await.unwrap_err(),
             Store::from_engine(current.engine(), &path, owner.clone())
                 .await
                 .unwrap_err(),
@@ -169,14 +200,14 @@ async fn both_server_entry_points_reject_unsupported_session_files_without_chang
         let version: i32 = db
             .pragma_query_value(None, "user_version", |row| row.get(0))
             .unwrap();
-        assert_eq!(version, 1);
+        assert_eq!(version, 2);
     }
 }
 
 #[tokio::test]
 async fn mount_names_follow_core_records_and_retired_aliases_remain_fenced() {
     let root = tempdir().unwrap();
-    let store = Store::open(root.path()).await.unwrap();
+    let store = open_store(root.path()).await.unwrap();
     let (workspace_id, branch_id) = create_workspace(&store, "original workspace").await;
     for bucket in ["vm-one", "vm-two"] {
         store
@@ -200,7 +231,14 @@ async fn mount_names_follow_core_records_and_retired_aliases_remain_fenced() {
     };
     assert_eq!(
         columns("drive_sessions"),
-        ["bucket", "branch_id", "retired", "successor"]
+        [
+            "bucket",
+            "branch_id",
+            "retired",
+            "successor",
+            "revision",
+            "read_only"
+        ]
     );
     assert_eq!(
         columns("drive_branches"),
@@ -237,7 +275,7 @@ async fn mount_names_follow_core_records_and_retired_aliases_remain_fenced() {
     }
     drop(engine);
     drop(store);
-    let store = Store::open(root.path()).await.unwrap();
+    let store = open_store(root.path()).await.unwrap();
     let retired = store
         .bind_ids("vm-one", workspace_id, branch_id, WriteMode::Exclusive)
         .await
@@ -262,7 +300,7 @@ async fn mount_names_follow_core_records_and_retired_aliases_remain_fenced() {
 #[tokio::test]
 async fn two_sessions_share_agentdrive_tree_across_handoff_and_restart() {
     let root = tempdir().unwrap();
-    let s = Store::open(root.path()).await.unwrap();
+    let s = open_store(root.path()).await.unwrap();
     let (ws, main) = create_workspace(&s, "workspace").await;
     let a = s
         .bind_ids("demo-a", ws, main, WriteMode::Exclusive)
@@ -368,7 +406,7 @@ async fn two_sessions_share_agentdrive_tree_across_handoff_and_restart() {
         .unwrap();
     drop(api);
     drop(s);
-    let s = Store::open(root.path()).await.unwrap();
+    let s = open_store(root.path()).await.unwrap();
     assert_eq!(s.get("demo-a", "d/sub/file").await.unwrap(), "second");
     assert!(s.status("demo-b").await.unwrap().writable);
     assert!(
@@ -400,7 +438,7 @@ async fn two_sessions_share_agentdrive_tree_across_handoff_and_restart() {
 #[tokio::test]
 async fn different_branches_can_have_independent_writers() {
     let root = tempdir().unwrap();
-    let s = Store::open(root.path()).await.unwrap();
+    let s = open_store(root.path()).await.unwrap();
     let (ws, main) = create_workspace(&s, "workspace").await;
     let another = fork(&s, ws, main, "another").await;
     s.bind_ids("main-session", ws, main, WriteMode::Exclusive)
@@ -444,7 +482,7 @@ async fn different_branches_can_have_independent_writers() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn disconnect_does_not_release_fence_while_publication_is_in_flight() {
     let root = tempdir().unwrap();
-    let s = Store::open(root.path()).await.unwrap();
+    let s = open_store(root.path()).await.unwrap();
     let (ws, main) = create_workspace(&s, "workspace").await;
     let (other, independent) = create_workspace(&s, "independent").await;
     let a = s
@@ -508,7 +546,7 @@ async fn disconnect_does_not_release_fence_while_publication_is_in_flight() {
 #[tokio::test]
 async fn bound_workspace_capacity_is_checked_before_storing_s3_objects() {
     let root = tempdir().unwrap();
-    let store = Store::open(root.path()).await.unwrap();
+    let store = open_store(root.path()).await.unwrap();
     let created = store
         .engine()
         .services
@@ -594,7 +632,7 @@ async fn bound_workspace_capacity_is_checked_before_storing_s3_objects() {
     assert_eq!(store.get("bucket", "second").await.unwrap(), "abc");
 
     drop(store);
-    let local = LocalBackend::open_server(root.path()).unwrap();
+    let local = LocalBackend::open(root.path()).unwrap();
     for refused in [b"large".as_slice(), b"sum", b""] {
         assert!(
             !local
@@ -608,7 +646,7 @@ async fn bound_workspace_capacity_is_checked_before_storing_s3_objects() {
 #[tokio::test]
 async fn serialized_sessions_publish_each_request_and_keep_policy_after_restart() {
     let root = tempdir().unwrap();
-    let store = Store::open(root.path()).await.unwrap();
+    let store = open_store(root.path()).await.unwrap();
     let (ws, main) = create_workspace(&store, "documents").await;
     let work = fork(&store, ws, main, "work").await;
     for bucket in ["vm-a", "vm-b"] {
@@ -668,7 +706,7 @@ async fn serialized_sessions_publish_each_request_and_keep_policy_after_restart(
         .await
         .unwrap();
     drop(store);
-    let store = Store::open(root.path()).await.unwrap();
+    let store = open_store(root.path()).await.unwrap();
     let session = store.status("vm-b").await.unwrap();
     assert_eq!(session.write_mode, WriteMode::Serialized);
     let mounts = store
@@ -690,7 +728,7 @@ async fn serialized_sessions_publish_each_request_and_keep_policy_after_restart(
 #[tokio::test]
 async fn range_reader_keeps_its_content_across_sibling_and_same_key_writes() {
     let root = tempdir().unwrap();
-    let store = Store::open(root.path()).await.unwrap();
+    let store = open_store(root.path()).await.unwrap();
     let (ws, main) = create_workspace(&store, "team").await;
     for bucket in ["east", "west"] {
         store
@@ -732,7 +770,7 @@ async fn range_reader_keeps_its_content_across_sibling_and_same_key_writes() {
 async fn updating_one_key_does_not_read_an_unrelated_directory_index_page() {
     use agentdrive_model::{DirectoryEntry, INDEX_PAGE_ENTRIES, IndexPage, TreeRoot, decode};
     let root = tempdir().unwrap();
-    let store = Store::open(root.path()).await.unwrap();
+    let store = open_store(root.path()).await.unwrap();
     let (ws, main) = create_workspace(&store, "tree").await;
     let binding = store
         .bind_ids("east", ws, main, WriteMode::Exclusive)
@@ -787,4 +825,57 @@ async fn updating_one_key_does_not_read_an_unrelated_directory_index_page() {
         store.list("east", "a").await.unwrap().len(),
         INDEX_PAGE_ENTRIES + 1
     );
+}
+
+#[tokio::test]
+async fn revision_alias_keeps_its_saved_root_and_rejects_writes_after_restart() {
+    let directory = tempdir().unwrap();
+    let store = open_store(directory.path()).await.unwrap();
+    let (workspace, branch) = create_workspace(&store, "snapshots").await;
+    let revision = store
+        .engine()
+        .runtime
+        .branch(branch)
+        .await
+        .unwrap()
+        .formal_head;
+    store
+        .bind_ids("current", workspace, branch, WriteMode::Serialized)
+        .await
+        .unwrap();
+    store
+        .bind_view(
+            "initial",
+            workspace,
+            branch,
+            WriteMode::Serialized,
+            Some(revision),
+            true,
+        )
+        .await
+        .unwrap();
+    store
+        .put("current", "new.txt", Bytes::from_static(b"new"))
+        .await
+        .unwrap();
+    drop(store);
+    let store = open_store(directory.path()).await.unwrap();
+    assert_eq!(
+        store.status("initial").await.unwrap().revision,
+        Some(revision)
+    );
+    assert!(store.list("initial", "").await.unwrap().is_empty());
+    assert_eq!(
+        store.head("initial", "new.txt").await.unwrap_err().kind,
+        ErrorKind::NoSuchKey
+    );
+    assert_eq!(
+        store
+            .put("initial", "new.txt", Bytes::new())
+            .await
+            .unwrap_err()
+            .kind,
+        ErrorKind::AccessDenied
+    );
+    assert_eq!(store.get("current", "new.txt").await.unwrap(), &b"new"[..]);
 }

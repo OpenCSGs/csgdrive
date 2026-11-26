@@ -2,7 +2,7 @@
 
 [English](architecture.md) | [简体中文](architecture.zh-CN.md)
 
-`agentdrived` 负责组装应用：创建具体适配器，将其注入 engine，并通过生成的 `Services` 提供服务。engine 依赖 model、ports 和 config crate；持久化、原生驱动、S3、OpenCSG 和协议依赖由适配器管理。
+`agentdrived` 负责组装应用：创建具体适配器，将其注入 engine，并通过生成的 `Services` 提供服务。engine 依赖 model、ports 和 config crate；持久化、原生驱动、S3、Scion、OpenCSG 和协议依赖由适配器管理。
 
 | Crate | 职责 |
 | --- | --- |
@@ -14,7 +14,7 @@
 | `drive-s3`、`drive-s3-store` | S3 请求、分段上传、挂载别名、写入模式和分支写锁 |
 | `agentdrive-s3` | 文件内容上传、下载和校验 |
 | `agentdrive-opencsg` | Codes 文件内容传输、分块校验和可选 XNet |
-| `agentdrive-platform` | NFS/FUSE/WinFsp 回调、受目录范围限制的主机目录访问和时钟 |
+| `agentdrive-platform` | Linux 和 macOS 的 GeeseFS 挂载管理、Windows 的 WinFsp 驱动、受目录范围限制的主机文件访问和时钟 |
 | `agentdrive-mcp` | 具有明确类型的工具、本地 HTTP 路由、Dashboard 与设置接口、客户端和 stdio 转发 |
 | `agentdrive-test-support` | 可控时钟、挂载和存储测试替代对象、服务中断和确认丢失的故障注入 |
 | `agentdrived` / `agentdrive` | 守护进程生命周期和命令行客户端 |
@@ -23,9 +23,11 @@
 
 ```mermaid
 flowchart LR
-  A(["VM A · /workspace"]) --> VA["virtiofs · PVC A"]
-  B(["VM B · /workspace"]) --> VB["virtiofs · PVC B"]
-  VA & VB -->|CSI client · S3| G["drive-s3"]
+  VM(["Local VM · /workspace"]) --> V["virtio-fs"]
+  V --> F["Host GeeseFS mount"]
+  Desktop(["Linux / macOS desktop"]) --> F
+  F -->|S3| G["drive-s3 in agentdrived"]
+  External(["External S3 client / CSI"]) -->|S3| G
   G --> M["drive-s3-store"]
   M -->|bucket → workspace ID + branch ID| E["agentdrive-engine"]
   UI(["Drive UI / MCP"]) --> E
@@ -33,6 +35,7 @@ flowchart LR
   E --> D[("SQLite · paths / branches / revisions / backend")]
   E -->|file bytes| P{"workspace storage"}
   P --> S[("S3 bucket")]
+  P --> SC["Scion Git LFS"]
   P --> C["OpenCSG Codes"]
   P --> H[("Local files")]
   C -->|optional| X(["XNet"])
@@ -56,17 +59,16 @@ flowchart LR
 | `engine/workspaces/catalog` | 发现远端工作区、持久化删除状态，以及通过现有挂载流程清理目录 |
 | `engine/mounts` | 选择工作区在本机使用的分支、复用挂载关联、保存挂载文件、协调挂载切换 |
 | `engine/replica`、`engine/ownership` | 同步任务、远程条件写入与写入所有权交接 |
-| `engine/collaboration` | 按分支跟随更新、自动申请与交还写权限、登记执行事件及协调恢复 |
+| `engine/collaboration` | 按分支跟随更新、自动申请写权限及恢复分支 |
 | `engine/storage` | 管理各工作区的存储连接 |
 | `engine/cache` | 预取、固定缓存，以及按照当前配置回收允许清理的内容 |
 | `engine/merge` | 准备合并候选内容、编辑文件、解决冲突与应用结果 |
 | `engine/operations` | 请求去重、操作进度与持久化结果记录 |
-| `config/types`、`config/remote` | 缓存、S3 与 OpenCSG 的配置类型、凭据隐藏及策略校验 |
+| `config/types`、`config/remote` | 缓存、S3、Scion 与 OpenCSG 的配置类型、凭据隐藏及策略校验 |
 | `config/file` | 配置文件结构、默认值、本地身份迁移与初始化目录 |
 | `config/store` | 校验候选配置、控制写入顺序、保存文件与发布 `ArcSwap` 快照 |
 | `mcp/gateway`、`mcp/server` | 验证 HTTP 请求身份并调用应用接口 |
 | `mcp/web`、`mcp/dashboard` | 工作区、版本差异、生命周期、设置的 HTTP 接口与浏览器页面 |
-| `apps/agentdrive/integration` | ACP、Codex app-server 事件转发与持久化生命周期 |
 | `apps/agentdrived/main` | 创建适配器、运行 HTTP 服务和后台任务、正常关闭服务 |
 
 `agentdrive-ports` 定义 engine 使用的接口，存储和平台适配器负责实现接口。配置模块依赖 model 中的数据类型，数据库、挂载和网络服务由 daemon 创建。daemon 将同一个 `LiveConfig` 传给 engine 和 HTTP 入口；`ConfigStore` 统一发布配置，使用配置的模块为每次操作取得完整快照。启动和运行期间修改均通过 `apps/agentdrived/settings::remote_storage` 选择远程适配器。
@@ -89,7 +91,9 @@ HTTP 工作区展示模块 `mcp/workspace_view` 通过 `WorkspaceApi::status` �
 
 ```mermaid
 flowchart TD
-    Platform[platform: NFS / FUSE / WinFsp] --> Files[engine/files: 文件语义与权限]
+    GeeseFS --> Gateway[drive-s3] --> Branch[engine/branch_objects]
+    Branch --> State
+    WinFsp --> Files[engine/files: 文件语义与权限]
     Files --> State[LocalStateStore: 查询与原子提交]
     Files --> Working[WorkingTreeStore: 工作文件读写]
     Files --> Content[ContentResolver: 内容获取与验证]
@@ -128,11 +132,7 @@ SQLite 在修改节点的同一个事务中更新 `branch_node_views` 的 inode 
 
 ## 自动协作
 
-MCP 和 HTTP webhook 都通过应用接口调用 engine。工作目录的 NFS、FUSE 和 WinFsp 请求共用 `FileSystem`，由 engine 检查挂载版本与写权限。`agentdrive-local` 管理 SQLite、工作文件与不可变对象。发布程序使用同一套对象上传和条件更新接口连接 OpenCSG Git 或 S3。
-
-登记 turn 后，同一分支由一个 location 写入。匹配的终止回调保存该轮已经写入的内容。最后一个有效 turn 结束时，协调程序暂停该分支的新修改。确认远端分支引用包含相同的正式 revision、内容根和保存序号后，通过条件更新交还写权限。上传失败会保留交接记录，后台重试；重复回调复用已登记的结果。
-
-交接在原挂载上更新视图。普通文件句柄绑定打开时的挂载版本，旧句柄不能写入新视图。Agent 可以在原路径重新打开文件。异常失去写权限时，通过恢复分支保留尚未发布的内容。
+Linux 和 macOS 的挂载驱动通过本机网关绑定 bucket 别名，然后在指定目录启动 GeeseFS。外部 S3 客户端和 GeeseFS 共用工作区引擎。Windows 的 WinFsp 通过 `FileSystem` 接口调用引擎。本机 SQLite 保存分支信息，WinFsp 的远端写权限申请与恢复使用条件更新。
 
 ## 配置生命周期
 
@@ -180,7 +180,9 @@ object ID 使用 SHA-256 对域分隔标记、格式版本、对象类型和内�
 
 `s3-sessions.sqlite3` 保存 bucket 与分支的绑定和写入模式。使用 `serialized` 时，多个挂载可以写入，网关在每次发布期间持有该分支的文件锁，写入权交接也使用同一个锁，同时修改一个文件时，最后一次成功提交的内容可见。`exclusive` 保留指定写入方，交接会更新 epoch 并禁止旧挂载继续写入。两种模式均在文件发布时检查写入权限。
 
-## OpenCSG 和 S3 的内容布局
+## 后端存储的文件格式
+
+Scion 通过 Git LFS 保存文件块，每个文件块最多 4 MiB。工作区使用 SQLite 按文件顺序记录各块的 SHA-256。
 
 S3 在同一工作区内为相同内容保存一个对象。SQLite 记录已验证的对象版本标识及各数据块的摘要。重复写入时，后端标识一致即可复用已有内容。缓存中尚无文件时，范围读取可以只下载和校验覆盖请求的数据块。
 

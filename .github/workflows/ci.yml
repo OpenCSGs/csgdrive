@@ -42,26 +42,26 @@ jobs:
             target
           key: rust-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml') }}
           restore-keys: rust-${{ runner.os }}-${{ runner.arch }}-
-      - name: Install FUSE
-        run: sudo apt-get update && sudo apt-get install -y fuse3
+      - name: Install FUSE and GeeseFS
+        run: |
+          sudo apt-get update && sudo apt-get install -y fuse3
+          make install-geesefs BINDIR="$RUNNER_TEMP/bin"
+          echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
       - name: Verify workspace
         run: make -j "$(nproc)" verify
-      - name: Verify native mount
-        run: make -j "$(nproc)" test CARGO_FLAGS='--locked -p agentdrive-platform --test native_mount -- --ignored --nocapture --test-threads=1'
       - name: Verify CLI and stdio MCP
         run: |
           make -j "$(nproc)" build
           python3 tests/cli_smoke.py
           python3 tests/config_smoke.py
-      - name: Verify ACP and Codex lifecycle persistence
+      - name: Verify branch switching
         run: |
-          python3 tests/lifecycle_smoke.py
           python3 tests/branch_switch_smoke.py
       - name: Verify shared S3 mounts and the dashboard
         run: |
           python3 -m venv "$RUNNER_TEMP/drive-sdk"
           "$RUNNER_TEMP/drive-sdk/bin/pip" install boto3==1.44.12
-          make -j "$(nproc)" drive-s3-verify PYTHON="$RUNNER_TEMP/drive-sdk/bin/python"
+          make -j "$(nproc)" drive-s3-verify GEESEFS_TEST=--geesefs PYTHON="$RUNNER_TEMP/drive-sdk/bin/python"
       - name: Start isolated RustFS
         run: |
           docker run -d --name agentdrive-test-s3 -p 127.0.0.1:9000:9000 -e RUSTFS_ACCESS_KEY=AGENTDRIVETESTLOCAL -e RUSTFS_SECRET_KEY=agentdrive-local-integration-secret-2026 rustfs/rustfs@sha256:60f4f2f41ce95216f8cac676e69f9d90c0bfec458a3bc7fd7fb9b7c2452ac57a /data
@@ -84,7 +84,7 @@ jobs:
         if: always()
         run: docker rm -f agentdrive-test-s3 || true
   macos:
-    runs-on: macos-14
+    runs-on: macos-15
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v7
@@ -101,8 +101,10 @@ jobs:
           restore-keys: rust-${{ runner.os }}-${{ runner.arch }}-
       - name: Verify workspace
         run: make -j "$(sysctl -n hw.ncpu)" verify
-      - name: Verify native NFS mounts
-        run: make -j "$(sysctl -n hw.ncpu)" test CARGO_FLAGS='--locked -p agentdrive-platform --test native_mount -- --ignored --test-threads=1'
+      - name: Verify GeeseFS client
+        run: |
+          make install-geesefs BINDIR="$RUNNER_TEMP/bin"
+          "$RUNNER_TEMP/bin/geesefs" --version
       - name: Verify CLI and stdio MCP
         run: |
           make -j "$(sysctl -n hw.ncpu)" build
@@ -149,8 +151,6 @@ jobs:
           make -j $env:NUMBER_OF_PROCESSORS build
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           python tests/cli_smoke.py
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          python tests/lifecycle_smoke.py
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           python tests/config_smoke.py
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }

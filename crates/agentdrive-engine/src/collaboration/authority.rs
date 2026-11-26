@@ -299,7 +299,6 @@ impl CollaborationService {
                     "write authority changed; local changes are being preserved",
                 ));
             }
-            self.bind_executions(record, local.authority_epoch).await?;
             record.phase = CollaborationPhase::Writing;
             record.error = None;
             return self.save_record(record).await;
@@ -347,7 +346,6 @@ impl CollaborationService {
             }
             next.authority_epoch = remote.authority_epoch;
             next.source_generation = remote.source_generation;
-            self.bind_executions(record, next.authority_epoch).await?;
             record.phase = CollaborationPhase::Writing;
             record.error = None;
             let _gate = self.runtime.lock_branch(record.branch).await;
@@ -438,14 +436,10 @@ impl CollaborationService {
             previous: previous.clone(),
         });
         record.phase = CollaborationPhase::Saving;
-        if next.state == BranchState::Available {
-            self.runtime.publishing_turns.lock().insert(record.branch);
-        } else {
-            self.runtime
-                .collaboration_blocked
-                .lock()
-                .insert(record.branch);
-        }
+        self.runtime
+            .collaboration_blocked
+            .lock()
+            .insert(record.branch);
         self.runtime
             .state
             .commit(LocalCommit {
@@ -490,9 +484,6 @@ impl CollaborationService {
                     )
                     .await?;
                 record.transition = None;
-                if record.release.is_some() {
-                    return self.begin_recovery(record).await;
-                }
                 self.runtime
                     .collaboration_blocked
                     .lock()
@@ -539,11 +530,8 @@ impl CollaborationService {
                 .collaboration_blocked
                 .lock()
                 .insert(record.branch);
-            self.runtime.publishing_turns.lock().remove(&record.branch);
             record.phase = CollaborationPhase::Switching;
-            record.release = None;
         } else {
-            self.bind_executions(record, next.authority_epoch).await?;
             record.phase = CollaborationPhase::Writing;
         }
         record.transition = None;
@@ -566,143 +554,6 @@ impl CollaborationService {
             .lock()
             .remove(&record.branch);
         Ok(())
-    }
-
-    async fn bind_executions(
-        &self,
-        record: &mut CollaborationRecord,
-        authority_epoch: u64,
-    ) -> Result<()> {
-        for execution in &mut record.executions {
-            if execution.pending_grant
-                && let Some(binding) = self.runtime.state.mount(execution.mount).await?
-                && binding.branch == record.branch
-                && binding.state != MountState::Released
-            {
-                execution.authority_epoch = authority_epoch;
-                execution.binding_generation = binding.generation;
-                execution.pending_grant = false;
-            }
-        }
-        Ok(())
-    }
-
-    /// The caller holds the branch lock. Persist the terminal event and the formal revision together
-    /// so a replay or daemon restart cannot publish a second version or forget to release the branch.
-    pub(super) async fn commit_turn_locked(
-        &self,
-        branch: &Branch,
-        record: &CollaborationRecord,
-        actor: &Principal,
-        turn: OperationId,
-        message: Option<String>,
-    ) -> Result<()> {
-        let context = match self
-            .operations
-            .start(
-                RequestContext {
-                    principal: actor.clone(),
-                    request_id: format!("turn-commit-{turn}"),
-                },
-                "turn_commit",
-                &(branch.id, turn),
-                Some(branch.workspace),
-                Some(branch.id),
-            )
-            .await?
-        {
-            OperationStart::Existing(operation) if operation.local_saved => return Ok(()),
-            OperationStart::Existing(operation) => OperationContext { operation },
-            OperationStart::New(context) => context,
-        };
-        let _objects = self.runtime.objects.read().await;
-        self.revisions
-            .save_and_record_locked(
-                context,
-                SaveRevision {
-                    guard: BranchGuard::from(branch),
-                    message,
-                    kind: RevisionKind::Commit,
-                    parents: None,
-                    replace_root: None,
-                    durability: Durability::Local,
-                },
-                |changes| changes.collaborations.push(record.clone()),
-            )
-            .await?;
-        Ok(())
-    }
-
-    pub(super) async fn release_authority(&self, record: &mut CollaborationRecord) -> Result<()> {
-        let Some(release) = record.release.clone() else {
-            return Ok(());
-        };
-        let saved = {
-            let _gate = self.runtime.lock_branch(record.branch).await;
-            let branch = self.runtime.branch(record.branch).await?;
-            if branch.authority_epoch != release.authority_epoch
-                || branch.state != BranchState::Writable
-                || branch.owner != self.runtime.location
-            {
-                drop(_gate);
-                return self.begin_recovery(record).await;
-            }
-            self.commit_turn_locked(
-                &branch,
-                record,
-                &record.actor,
-                release.operation,
-                release.message.clone(),
-            )
-            .await?;
-            self.runtime.branch(branch.id).await?
-        };
-        if let Err(error) = self.publisher.drain(saved.workspace, Some(saved.id)).await {
-            if error.code == ErrorCode::StaleAuthority {
-                return self.begin_recovery(record).await;
-            }
-            return Err(error);
-        }
-        let Some((remote, _)) = self.remote_branch(saved.workspace, saved.id).await? else {
-            return Err(Error::new(
-                ErrorCode::RemoteUnknown,
-                "remote branch is missing during authority release",
-            )
-            .retryable());
-        };
-        if remote.owner != self.runtime.location
-            || remote.authority_epoch != saved.authority_epoch
-            || remote.write_available
-        {
-            return self.begin_recovery(record).await;
-        }
-        if remote.write_stopped
-            || !BranchSynchronization::new(&saved, Some(&remote), true).remote_confirmed
-        {
-            return Err(Error::new(
-                ErrorCode::RemoteUnknown,
-                "remote has not confirmed the turn revision and contents",
-            )
-            .retryable());
-        }
-        let previous = self.runtime.branch(saved.id).await?;
-        let mut next = previous.clone();
-        next.authority_epoch = increment(remote.authority_epoch)?;
-        next.source_generation = increment(remote.source_generation)?;
-        next.state = BranchState::Available;
-        self.queue_transition(
-            record,
-            previous,
-            next,
-            AuthorityGuard {
-                owner: remote.owner,
-                authority_epoch: remote.authority_epoch,
-                available: false,
-            },
-            release.operation,
-        )
-        .await?;
-        self.finish_transition(record).await
     }
 
     pub(super) async fn resume_view_switch(&self, record: &mut CollaborationRecord) -> Result<()> {

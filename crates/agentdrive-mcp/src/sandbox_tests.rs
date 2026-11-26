@@ -184,7 +184,11 @@ async fn interrupted_mount(f: &Fixture, state: MountState) -> MountBinding {
                 workspace: f.workspace,
                 branch: Some(f.branch),
                 revision: None,
-                path: f._directory.path().join("custom-branch"),
+                path: f
+                    ._directory
+                    .path()
+                    .join("mounts")
+                    .join(f.branch.to_string()),
                 access: AccessMode::ReadWrite,
                 durability: Durability::Local,
             },
@@ -860,4 +864,76 @@ async fn sandbox_reconciliation_does_not_release_a_restarting_branch() {
         .stop(&f.owner, f.workspace, f.branch)
         .await
         .unwrap();
+}
+
+#[tokio::test]
+async fn desktop_switch_preserves_running_guest_branch_and_mount() {
+    let f = fixture().await;
+    let server = crate::McpServer::new(f.engine.services.clone(), f.owner.clone());
+    let desktop = f._directory.path().join("desktop");
+    let prepared = server
+        .dispatch(
+            "mount_prepare",
+            json!({
+                "request_id":"mount-desktop",
+                "request":{"workspace":f.workspace, "branch":f.branch, "path":desktop}
+            }),
+        )
+        .await
+        .unwrap();
+    assert!(
+        prepared.get("error").is_none_or(|error| error.is_null()),
+        "{prepared}"
+    );
+    let pinned = f._directory.path().join("another");
+    let additional = server
+        .dispatch(
+            "mount_prepare",
+            json!({
+                "request_id":"mount-additional",
+                "request":{"workspace":f.workspace, "branch":f.branch, "path":pinned}
+            }),
+        )
+        .await
+        .unwrap();
+    assert_eq!(additional["mount_ready"], true, "{additional}");
+    f.sandbox
+        .create(&f.owner, f.workspace, f.branch)
+        .await
+        .unwrap();
+    let fork = server
+        .dispatch(
+            "branch_create",
+            json!({
+                "request_id":"fork","request":{"workspace":f.workspace, "name":"work"}
+            }),
+        )
+        .await
+        .unwrap();
+    let branch: BranchId = serde_json::from_value(fork["branch"].clone()).unwrap();
+    let switched = server
+        .dispatch(
+            "branch_switch",
+            json!({
+                "request_id":"switch","request":{"workspace":f.workspace, "branch":branch}
+            }),
+        )
+        .await
+        .unwrap();
+    assert_eq!(switched["mount_ready"], true, "{switched}");
+    let mounts = f.local.mounts().await.unwrap();
+    assert!(
+        mounts
+            .iter()
+            .any(|m| m.path == pinned && m.branch == f.branch && m.state == MountState::Ready)
+    );
+
+    assert!(
+        mounts
+            .iter()
+            .any(|m| m.path == desktop && m.branch == branch && m.state == MountState::Ready)
+    );
+    assert!(mounts.iter().any(|m| m.path.ends_with(f.branch.to_string())
+        && m.branch == f.branch
+        && m.state == MountState::Ready));
 }

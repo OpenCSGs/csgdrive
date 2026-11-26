@@ -450,101 +450,25 @@ async fn local_mcp_clients_share_operations_without_credentials() {
         .structured_content
         .unwrap();
     assert_eq!(mcp_text, directory);
-    let lifecycle = format!("{base}/api/lifecycle");
-    let attachment = json!({"request_id":"attach", "event":"attach", "workspace":workspace, "mount_path":temporary.path().join("mount")});
-    let first: Value = http
-        .post(&lifecycle)
-        .json(&attachment)
-        .send()
+    let mount_path = temporary.path().join("mount");
+    let prepared = owner
+        .call(
+            "mount_prepare".into(),
+            json!({"request_id":"first-mount",
+        "request":{"workspace":workspace, "path":mount_path}}),
+        )
         .await
         .unwrap()
-        .error_for_status()
-        .unwrap()
-        .json()
-        .await
+        .structured_content
         .unwrap();
-    let repeated: Value = http
-        .post(&lifecycle)
-        .json(&attachment)
-        .send()
-        .await
-        .unwrap()
-        .error_for_status()
-        .unwrap()
-        .json()
-        .await
-        .unwrap();
-    assert_eq!(first, repeated);
-    let mut changed = attachment.clone();
-    changed["mount_path"] = json!(temporary.path().join("different"));
-    assert_eq!(
-        http.post(&lifecycle)
-            .json(&changed)
-            .send()
-            .await
-            .unwrap()
-            .status(),
-        409
-    );
-    let check = json!({"request_id":"check", "event":"check", "workspace":workspace,
-        "mount_path": first["mount_path"]});
-    assert!(
-        http.post(&lifecycle)
-            .json(&check)
-            .send()
-            .await
-            .unwrap()
-            .status()
-            .is_success()
-    );
-    let save = json!({"request_id":"save", "event":"save", "mount": first["binding"]["id"],
-        "expected_binding_generation":first["binding"]["generation"]});
-    let saved: Value = http
-        .post(&lifecycle)
-        .json(&save)
-        .send()
-        .await
-        .unwrap()
-        .error_for_status()
-        .unwrap()
-        .json()
-        .await
-        .unwrap();
-    let repeated: Value = http
-        .post(&lifecycle)
-        .json(&save)
-        .send()
-        .await
-        .unwrap()
-        .error_for_status()
-        .unwrap()
-        .json()
-        .await
-        .unwrap();
-    assert_eq!(saved, repeated);
-    assert_eq!(saved["local_saved"], true);
-    let mut reconnect = attachment;
-    reconnect["request_id"] = json!("another-agent");
-    let connected: Value = http
-        .post(&lifecycle)
-        .json(&reconnect)
-        .send()
-        .await
-        .unwrap()
-        .error_for_status()
-        .unwrap()
-        .json()
-        .await
-        .unwrap();
-    assert_eq!(connected["binding"]["id"], first["binding"]["id"]);
-    assert_eq!(connected["binding"]["branch"], first["binding"]["branch"]);
+    let binding = &prepared["result"]["binding"];
     let dashboard_url = format!("{base}/api/workspaces/{}", workspace.as_str().unwrap());
     let readonly = owner
         .call(
             "mount_prepare".into(),
             json!({
                 "request_id":"dashboard-readonly",
-                "request":{"workspace":workspace,"branch":first["binding"]["branch"],
+                "request":{"workspace":workspace,"branch":binding["branch"],
                     "revision":revision,"path":temporary.path().join("readonly"),
                     "access":"read_only","durability":"local"}
             }),
@@ -595,10 +519,7 @@ async fn local_mcp_clients_share_operations_without_credentials() {
     assert_eq!(inventory["summary"]["mount_count"], 1);
     assert_eq!(inventory["summary"]["mounted_branch_count"], 1);
     assert_eq!(inventory["status"]["mounts"].as_array().unwrap().len(), 1);
-    assert_eq!(
-        inventory["status"]["mounts"][0]["path"],
-        first["mount_path"]
-    );
+    assert_eq!(inventory["status"]["mounts"][0]["path"], json!(mount_path));
     let page = http.get(&base).send().await.unwrap();
     assert_eq!(page.status(), 200);
     assert!(

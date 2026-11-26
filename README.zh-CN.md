@@ -18,7 +18,7 @@ AgentDrive 给人和 Agent 一个可以持续使用的项目空间。Agent 在�
 
 | 使用场景 | AgentDrive 帮你完成的事情 |
 | --- | --- |
-| 本地工作，远程保存 | Agent 像使用普通目录一样工作，成果保存在本机，并通过配置的 S3 / RustFS 或 OpenCSG Codes 同步到远端。 |
+| 本地工作，远程保存 | Agent 像使用普通目录一样工作，成果保存在本机，并通过配置的 S3 / RustFS、Scion 或 OpenCSG Codes 同步到远端。 |
 | 异地 Agent 接手 | 把任务说明、输入资料、阶段成果与下一步一起保存；目标机器拉取后继续处理。 |
 | 多个 Agent 并行尝试 | 从同一份资料创建分支，各自完成分析或实现，检查差异后合并成果。 |
 | 人随时检查进展 | 在档案室选择项目和分支，阅读文档和预览图片；进入分支与版本查看来源、历史和修改内容。 |
@@ -42,7 +42,7 @@ Agent 通过 MCP 创建、挂载或转换工作区，随后继续使用普通文
 
 ### 2. 将本地成果同步到远端
 
-创建工作区时，选择仅本地、兼容 S3 的对象存储（包括 OSS 和 RustFS）或 OpenCSG Codes。选择已启用 XNet 的 Codes 仓库时，可以勾选 XNet，按仓库规则传输大文件。创建后可在 **设置 → 存储设置** 查看该工作区固定的存储位置。不同机器上的 sandbox 连接同一个 AgentDrive 服务。SQLite 管理工作区和分支，存储后端保存文件内容。[连接说明](docs/configuration.zh-CN.md)
+创建工作区时，选择仅本地、兼容 S3 的对象存储（包括 OSS 和 RustFS）、Scion 或 OpenCSG Codes。选择已启用 XNet 的 Codes 仓库时，可以勾选 XNet，按仓库规则传输大文件。创建后可在 **设置 → 存储设置** 查看该工作区固定的存储位置。不同机器上的 sandbox 连接同一个 AgentDrive 服务。SQLite 管理工作区和分支，存储后端保存文件内容。[连接说明](docs/configuration.zh-CN.md)
 
 > 将当前分支的成果保存到远端。确认远端保存成功后，告诉我 workspace ID、分支、版本以及交接说明的位置。
 
@@ -50,7 +50,7 @@ Agent 可以通过 `mount_save` 请求远端保存，并通过操作结果检查
 
 ### 3. 让另一台机器上的 Agent 接着工作
 
-给两个 sandbox 分配各自的 S3 挂载别名，并绑定同一个 workspace 和 branch。通过 CSI 将卷提供给 sandbox 后，任意一台保存的文件都能从另一台重新打开。档案室选择该分支，点击 **刷新文件** 即可查看。分支可以允许多个挂载依次写入，也可以指定独占写入方。部署步骤见 [drive-s3](apps/drive-s3/README.md)，组件与数据关系见[架构图](docs/architecture.zh-CN.md#分支数据流)。
+外部服务可以直接访问本地进程提供的 S3 接口。给两个外部 sandbox 分配各自的 S3 挂载别名，并绑定同一个 workspace 和 branch。通过 CSI 将卷提供给 sandbox 后，任意一台保存的文件都能从另一台重新打开。档案室选择该分支，点击 **刷新文件** 即可查看。分支可以允许多个挂载依次写入，也可以指定独占写入方。部署步骤见 [drive-s3](apps/drive-s3/README.md)，组件与数据关系见[架构图](docs/architecture.zh-CN.md#分支数据流)。
 
 ### 4. 在档案室查看成果，在版本历史中检查变化
 
@@ -118,15 +118,15 @@ Agent 可以通过 `mount_save` 请求远端保存，并通过操作结果检查
 }
 ```
 
-保持 AgentDrive 服务运行。Agent 可以查询工具说明，再完成创建工作区、分支、保存、同步与交接。支持 Streamable HTTP 的客户端也可以连接 `http://127.0.0.1:7421/mcp`，无需配置本机访问令牌；CLI 适合终端操作和脚本，ACP / Codex app-server 可连接工作目录与任务结束保存。[Agent 集成](docs/integrations.zh-CN.md) · [MCP 工具](docs/mcp.zh-CN.md) · [CLI](docs/cli.zh-CN.md)
+保持 AgentDrive 服务运行。Agent 可以查询工具说明，再完成创建工作区、分支、保存、同步与交接。支持 Streamable HTTP 的客户端也可以连接 `http://127.0.0.1:7421/mcp`，无需配置本机访问令牌；CLI 适合终端操作和脚本。[Agent 集成](docs/integrations.zh-CN.md) · [MCP 工具](docs/mcp.zh-CN.md) · [CLI](docs/cli.zh-CN.md)
 
-切换分支可以通过一次 `branch_switch` 调用完成。目录被进程占用时，按照返回提示关闭相关进程或重启 Agent，再重试同一个操作。
+调用 `branch_switch` 可以在当前目录切换分支。
 
 ## 开始使用
 
-目前从源码构建，支持 Linux、macOS 和 Windows。原生目录挂载分别需要 Linux FUSE、macOS 内置 NFS 或 Windows WinFsp。[安装、平台依赖与启动命令](docs/installation.zh-CN.md)
+目前从源码构建，支持 Linux、macOS 和 Windows。Linux 和 macOS 使用 GeeseFS，分别需要 FUSE 和 macFUSE。Windows 使用 WinFsp。[安装、平台依赖与启动命令](docs/installation.zh-CN.md)
 
-- [配置远程存储](docs/configuration.zh-CN.md)：本地模式、S3、RustFS、OpenCSG Codes 与多台机器配置。
+- [配置远程存储](docs/configuration.zh-CN.md)：本地模式、S3、RustFS、Scion、OpenCSG Codes 与多台机器配置。
 - [操作与恢复](docs/operations.zh-CN.md)：远端确认、交接、分支合并及异常恢复。
 - [文档目录](docs/README.zh-CN.md)：完整使用参考与开发文档。
 

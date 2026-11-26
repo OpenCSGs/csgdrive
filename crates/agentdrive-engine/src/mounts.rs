@@ -45,6 +45,10 @@ impl MountService {
         })
     }
 
+    pub(crate) fn supports_shared_writable_mounts(&self) -> bool {
+        self.driver.supports_shared_writable_mounts()
+    }
+
     pub(crate) fn set_write_access(&self, access: Weak<dyn WriteAccess>) {
         let _ = self.write_access.set(access);
     }
@@ -117,9 +121,12 @@ impl MountService {
                 .authorize(actor, old.workspace, Some(old.branch), Permission::Manage)
                 .await?;
         }
-        if request.access == AccessMode::ReadWrite
+        if !self.supports_shared_writable_mounts()
+            && request.access == AccessMode::ReadWrite
+            && !self.runtime.is_sandbox_mount(&path, branch)
             && mounts.iter().any(|mount| {
                 mount.branch == branch
+                    && !self.runtime.is_sandbox_mount(&mount.path, branch)
                     && mount.access == AccessMode::ReadWrite
                     && mount.state != MountState::Released
                     && old.as_ref().is_none_or(|old| old.id != mount.id)
@@ -130,7 +137,23 @@ impl MountService {
                 "branch already has a writable mount",
             ));
         }
+        // Keep one desktop directory attached to the local branch selection. Other
+        // writable directories and Sandbox guests retain their explicit branch.
+        let follows_selection = request.access == AccessMode::ReadWrite
+            && !self.runtime.is_sandbox_mount(&path, branch)
+            && self
+                .runtime
+                .state
+                .selected_branch(request.workspace)
+                .await?
+                .is_none_or(|id| id == branch)
+            && !mounts.iter().any(|m| {
+                m.workspace == request.workspace
+                    && m.follows_selection
+                    && m.state != MountState::Released
+            });
         let new = MountBinding {
+            follows_selection,
             branch_generation: Some(generation),
             id: MountId::new(),
             workspace: request.workspace,
@@ -274,7 +297,9 @@ impl MountService {
     async fn pause_old(&self, old: &MountBinding) -> Result<()> {
         let _gate = self.runtime.lock_branch(old.branch).await;
         self.runtime.check_mutation(old.branch)?;
-        self.runtime.check_sandbox(old.branch)?;
+        if self.runtime.is_sandbox_mount(&old.path, old.branch) {
+            self.runtime.check_sandbox(old.branch)?;
+        }
         let mut current = self
             .runtime
             .state
@@ -504,9 +529,14 @@ impl MountService {
                                 && mount.id != new.id
                                 && old.as_ref().is_none_or(|old| old.id != mount.id)
                                 && (mount.path == new.path
-                                    || (new.access == AccessMode::ReadWrite
+                                    || (!self.supports_shared_writable_mounts()
+                                        && new.access == AccessMode::ReadWrite
                                         && mount.access == AccessMode::ReadWrite
-                                        && mount.branch == new.branch))
+                                        && mount.branch == new.branch
+                                        && !self
+                                            .runtime
+                                            .is_sandbox_mount(&mount.path, mount.branch)
+                                        && !self.runtime.is_sandbox_mount(&new.path, new.branch)))
                         }) {
                             return Err(Error::new(
                                 ErrorCode::MountBusy,
@@ -791,13 +821,15 @@ impl MountApi for MountService {
                 .mounts()
                 .await?
                 .into_iter()
-                .find(|mount| {
+                .filter(|mount| {
                     mount.branch == previous
+                        && !self.runtime.is_sandbox_mount(&mount.path, mount.branch)
                         && mount.access == AccessMode::ReadWrite
                         && mount.state != MountState::Released
-                });
+                })
+                .min_by_key(|mount| (!mount.follows_selection, mount.path.clone()));
             let (old, new) = if let Some(old) = old {
-                let (old, new) = self
+                let (old, mut new) = self
                     .plan(
                         &operation.operation.principal,
                         &PrepareMount {
@@ -812,10 +844,14 @@ impl MountApi for MountService {
                         branch.generation,
                     )
                     .await?;
+                new.follows_selection = true;
                 (old, Some(new))
             } else {
                 (None, None)
             };
+            if let Some(old) = &old {
+                self.driver.flush(old).await?;
+            }
             {
                 let _gate = self.runtime.lock_branch(previous).await;
                 self.runtime.check_mutation(previous)?;
@@ -1157,6 +1193,7 @@ impl MountApi for MountService {
                 }
                 operation.operation = current;
                 operation.operation.error = None;
+                self.driver.flush(&mount).await?;
                 let _gate = self.runtime.lock_branch(mount.branch).await;
                 self.runtime.check_mutation(mount.branch)?;
                 let _protection = self.runtime.objects.read().await;

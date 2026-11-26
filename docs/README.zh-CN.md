@@ -5,7 +5,7 @@
 | 指南 | 内容 |
 | --- | --- |
 | [安装与启动](installation.zh-CN.md) | 平台依赖、源码构建与服务启动 |
-| [配置与远程存储](configuration.zh-CN.md) | Dashboard 设置、缓存容量、创建工作区时选择存储、S3 凭据、OpenCSG 域名与 token、多台机器配置 |
+| [配置与远程存储](configuration.zh-CN.md) | Dashboard 设置、缓存容量、创建工作区时选择存储、S3 凭据、Scion 和 OpenCSG 仓库访问配置、多台机器配置 |
 | [命令行使用](cli.zh-CN.md) | 命令、连接参数、可执行示例、JSON 输入和退出码 |
 | [MCP 参考](mcp.zh-CN.md) | stdio/HTTP 连接、全部 32 个工具、参数、结果记录和能力 |
 | [架构](architecture.zh-CN.md) | Crate 职责、持久化、同步、所有权、合并和访问边界 |
@@ -14,4 +14,4 @@
 
 构建要求和快速开始见仓库 [README](../README.zh-CN.md)。
 
-[Agent 集成与 Dashboard](integrations.zh-CN.md)介绍 ACP、Codex app-server、自动保存及浏览器使用方式。
+[Agent 集成与 Dashboard](integrations.zh-CN.md)介绍 MCP、文件保存及浏览器使用方式。

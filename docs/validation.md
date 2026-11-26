@@ -42,13 +42,13 @@ The isolated FUSE-T/RustFS run preserved the adoption path, switched branches th
 
 ## Native filesystems
 
-Install and enable the platform driver, then run:
+For Linux or macOS, install GeeseFS and the platform prerequisites listed in [installation](installation.md). Build the daemon and CLI, then run `python3 tests/branch_switch_smoke.py` to exercise the real mounted directory.
 
-```sh
-make -j "$(getconf _NPROCESSORS_ONLN)" test CARGO_FLAGS='-p agentdrive-platform --test native_mount -- --ignored --nocapture'
+On Windows, run the native filesystem tests with WinFsp installed:
+
+```powershell
+make -j $env:NUMBER_OF_PROCESSORS test CARGO_FLAGS='-p agentdrive-platform --test native_mount -- --ignored --nocapture'
 ```
-
-On Windows use `make -j $env:NUMBER_OF_PROCESSORS` in PowerShell. The integration test owns its temporary state and mount directories. It tests a file over 3 MiB, truncation, random write, atomic append, rename, fsync, over 128 directory entries, historical read-only access, and unmount.
 
 The WinFsp wrapper's null volume-flush regression is tested separately on Windows:
 
@@ -73,7 +73,7 @@ Backend tests exercise competing conditional reference creation, stale condition
 
 `storage_smoke.py` verifies workspace-specific content destinations, credential rotation, rejected changes to an existing destination, and historical export after restart.
 
-## Execution evidence
+## Historical execution evidence
 
 | Check | Verified environment |
 | --- | --- |
@@ -83,18 +83,14 @@ Backend tests exercise competing conditional reference creation, stale condition
 | Conditional S3 writes and multipart content | Isolated RustFS instance |
 | Two S3 mount aliases, write policies and dashboard reads | Linux |
 
-The native macOS tests cover handing off a turn with an open file, reading the updated directory and file, rejecting stale writes, waiting 12 seconds for write ownership, and restoring the mount after graceful shutdown. [GitHub Actions](https://github.com/OpenCSGs/csgdrive/actions) runs the platform matrix.
-
 The create/import/read/export/mount examples in [CLI usage](cli.md) were executed against a temporary daemon. The [MCP parameter tables](mcp.md) were checked against the running daemon's tool schemas. S3 configuration was checked against the daemon config loader, adapter, and credential/endpoint selection in the locked `object_store` dependency. These documentation checks do not add an AWS S3 deployment to the verified environments above.
 
 Additional lifecycle, branch, and dashboard checks:
 
 ```sh
-python3 tests/lifecycle_smoke.py
+python3 tests/branch_switch_smoke.py
 python3 tests/config_smoke.py
 ```
-
-`lifecycle_smoke.py` requires native mounting and covers ACP and Codex app-server completion, cancellation, failures, process interruption, duplicate requests, autosave, daemon restart, reconnect, two Agent connections sharing one mount, and CLI branch switching with an existing mount. Rust tests cover lost response bodies, concurrent connections sharing a mount, handle checks, persistent selection, and HTTP authorization. Browser checks cover ancestry, revision details, token login, and narrow layouts. The installed Codex app-server initialize and thread/start handshake verified the AgentDrive working directory; complete turn scenarios use protocol fixtures.
 
 `config_smoke.py` starts a daemon in a temporary directory and exercises the settings API, stale revisions and persistent database settings after restart. It runs without a mount driver.
 
@@ -102,7 +98,7 @@ python3 tests/config_smoke.py
 
 On macOS 26.5 with FUSE-T 1.2.9 and an isolated RustFS container, Codex created the initial directory and continued writing after conversion at the same path. A 12 MiB file, an empty file, UTF-8 names, creation, updates, rename, and deletion were checked. Codex used stdio MCP to create and switch branches and save with remote durability. Main and feature revisions were restored into an independent daemon and compared by full file manifests and SHA-256. Switching back and forth preserved both branches. Normal daemon restart followed by `mount_prepare` preserved the selected branch and files. Import into an existing workspace created a new branch at the original path.
 
-During a RustFS outage, local saving succeeded and remote saving reported failure. After recovery, sync confirmed the original save, and an independent remote restore matched every file. The feature build passed 44 workspace tests and Clippy, two native mount tests, 56 fuser tests, and the CLI/stdio smoke test. Native tests took 134.14 seconds. This run did not establish multi-process file-lock support or production throughput. See [FUSE-T usage](integrations.md#macos-fuse-t) for lifecycle and metadata behavior.
+During a RustFS outage, local saving succeeded and remote saving reported failure. After recovery, sync confirmed the original save, and an independent remote restore matched every file. The feature build passed 44 workspace tests and Clippy, two native mount tests, 56 fuser tests, and the CLI/stdio smoke test. Native tests took 134.14 seconds. This run did not establish multi-process file-lock support or production throughput.
 
 ## Single-call branch switching
 
@@ -112,7 +108,7 @@ With the native driver installed and a native-mount build available, run:
 python3 tests/branch_switch_smoke.py
 ```
 
-The stdio MCP test verifies one `branch_switch` call per attempt, a process holding the mount as its working directory, an explicit `MOUNT_BUSY` recovery message, retry after restarting the MCP client, replay of completed requests, and branch isolation. It never calls `mount_release`. Engine tests inject unmount permission failures and target-mount failures and verify that the same request resumes without changing the original error cause. Native tests cover both open files and occupied working directories. These checks passed locally on macOS 26.5 with FUSE-T 1.2.9.
+The stdio MCP test switches between branches while another process uses the mounted directory, then checks the contents at the same path and replays the request. The Windows case checks WinFsp’s busy response before retrying.
 
 ## Metadata and publication performance
 
@@ -198,7 +194,7 @@ These measurements preserve SQLite WAL/FULL and complete-file objects. Native cr
 
 Regression tests reproduce two defects in the batch changes: a leased oldest object could stop collection before later objects were considered, and 16,385 index entries could leave a one-entry page. Collection now continues using actual reclaimed bytes while preserving the 32-object batch limit and retention checks. Index creation and editing share the same balanced page distribution; tests verify every entry and non-root page occupancy across multiple levels.
 
-Before the first release, the model contains current revision and operation records. Database creation installs the complete current schema atomically; reopening preserves its counters. Historical session/turn variants and schema migration paths have been removed.
+Before the first release, the model contains current revision and operation records. Database creation installs the complete current schema atomically; reopening preserves its counters.
 
 Validation passed: 73 workspace tests, formatting, Clippy with warnings denied, architecture checks, three native FUSE-T tests, the real RustFS backend test, and all six Python smoke suites. The native end-to-end run preserved the adopted path and branch isolation, confirmed all 21 saves queued during an outage, and restored 1138 files after restart. Independent RustFS downloads matched every path, size and SHA-256 for main (1093 files) and feature (1138 files); the final synchronization queue was empty. Creating 543 files took 34.739 seconds, 50 renames took 339.562 milliseconds, and the final remote save was confirmed in 177.651 milliseconds after background publication during file creation. This run did not repeat the separate 554-save backlog benchmark.
 

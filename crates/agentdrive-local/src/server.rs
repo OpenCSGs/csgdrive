@@ -6,37 +6,48 @@ use bytes::Bytes;
 use rusqlite::{Connection, OptionalExtension, params};
 use std::{collections::BTreeMap, sync::Arc};
 
-pub(crate) fn configure_layout(db: &mut Connection, server: bool) -> Result<()> {
+pub(crate) fn configure_layout(db: &mut Connection, root: &std::path::Path) -> Result<()> {
     let tx = db.transaction().map_err(sql_error)?;
+    tx.execute_batch(include_str!("server.sql"))
+        .map_err(sql_error)?;
     let stored: Option<bool> = tx
         .query_row(
             "SELECT value FROM metadata WHERE key='database_metadata'",
             [],
-            |row| row.get(0),
+            |r| r.get(0),
         )
         .optional()
         .map_err(sql_error)?;
-    let populated: bool = tx
-        .query_row(
-            "SELECT EXISTS(SELECT 1 FROM objects) OR EXISTS(SELECT 1 FROM workspaces)",
+    if stored != Some(true) {
+        let mut statement = tx
+            .prepare(
+                "SELECT workspace_id,hash,kind,size,remote_confirmed FROM objects WHERE kind != ?1",
+            )
+            .map_err(sql_error)?;
+        let mut rows = statement
+            .query([serde_json::to_string(&ObjectKind::File)?])
+            .map_err(sql_error)?;
+        while let Some(row) = rows.next().map_err(sql_error)? {
+            let workspace: WorkspaceId = row.get::<_, String>(0).map_err(sql_error)?.parse()?;
+            let object = ObjectRef {
+                id: row.get::<_, String>(1).map_err(sql_error)?.parse()?,
+                kind: serde_json::from_str(&row.get::<_, String>(2).map_err(sql_error)?)?,
+                size: crate::sqlite::unsigned_integer(row.get(3).map_err(sql_error)?)?,
+            };
+            let path = root
+                .join("objects")
+                .join(workspace.to_string())
+                .join(object.id.as_str());
+            let bytes = std::fs::read(path)?;
+            verify_object(&object, &bytes)?;
+            let published: bool = row.get(4).map_err(sql_error)?;
+            tx.execute("INSERT INTO metadata_objects(workspace_id,hash,data,published) VALUES(?1,?2,?3,?4)", params![workspace.to_string(),object.id.as_str(),bytes,published]).map_err(sql_error)?;
+        }
+        tx.execute(
+            "INSERT OR REPLACE INTO metadata(key,value) VALUES('database_metadata',1)",
             [],
-            |row| row.get(0),
         )
         .map_err(sql_error)?;
-    if stored.unwrap_or(false) != server && (stored.is_some() || populated) {
-        return Err(Error::new(
-            ErrorCode::Conflict,
-            "data directory uses another metadata layout",
-        ));
-    }
-    tx.execute(
-        "INSERT OR IGNORE INTO metadata(key,value) VALUES('database_metadata',?1)",
-        [server],
-    )
-    .map_err(sql_error)?;
-    if server {
-        tx.execute_batch(include_str!("server.sql"))
-            .map_err(sql_error)?;
     }
     tx.commit().map_err(sql_error)
 }
@@ -49,6 +60,28 @@ pub struct ServerSettings {
 }
 
 impl LocalBackend {
+    /// The local mount helper can reconnect to the same listener after a daemon restart.
+    pub fn local_s3_listener(&self) -> Result<(String, u16)> {
+        let db = self.inner.connection.lock();
+        db.execute("INSERT OR IGNORE INTO local_s3_listener(id) VALUES(1)", [])
+            .map_err(sql_error)?;
+        db.query_row(
+            "SELECT secret,port FROM local_s3_listener WHERE id=1",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .map_err(sql_error)
+    }
+
+    pub fn remember_local_s3_port(&self, port: u16) -> Result<()> {
+        self.inner
+            .connection
+            .lock()
+            .execute("UPDATE local_s3_listener SET port=?1 WHERE id=1", [port])
+            .map_err(sql_error)?;
+        Ok(())
+    }
+
     pub fn server_settings(&self) -> Result<Option<ServerSettings>> {
         let db = self.inner.connection.lock();
         let runtime = db
@@ -174,9 +207,6 @@ impl DatabaseStorage {
         target: String,
         files: Arc<dyn RemoteObjectStore>,
     ) -> Result<Arc<Self>> {
-        if !db.inner.database_metadata {
-            return Err(Error::invalid("server metadata requires a server database"));
-        }
         Ok(Arc::new(Self { db, target, files }))
     }
 }

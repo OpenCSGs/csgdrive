@@ -99,7 +99,7 @@
   </div>
 <template id="create-storage-template">
               <div id="create-storage-editor">
-              <div class="storage-fields storage-selector"><label>存储模式<select id="create-storage-mode"><option value="local">仅本地存储</option><option value="s3">S3 兼容存储（含 OSS）</option><option value="opencsg">OpenCSG Codes</option></select></label></div>
+              <div class="storage-fields storage-selector"><label>存储模式<select id="create-storage-mode"><option value="local">仅本地存储</option><option value="s3">S3 兼容存储（含 OSS）</option><option value="scion">Scion</option><option value="opencsg">OpenCSG Codes</option></select></label></div>
               <fieldset id="create-s3-fields" hidden disabled>
               <div class="storage-fields">
                 <label>Endpoint<input id="create-s3-endpoint" type="url" placeholder="https://s3.example.com" spellcheck="false"></label>
@@ -112,7 +112,15 @@
                 <label>Session Token（可选）<input id="create-s3-session-token" type="password" autocomplete="new-password"></label>
               </div>
               <label class="storage-check"><input id="create-s3-http" type="checkbox">允许使用 HTTP Endpoint</label>
-              <p class="settings-help">密钥保存在当前配置文件中，请限制该文件的访问权限。页面不会返回已保存的 Secret Access Key 或 Session Token。</p>
+              <p class="settings-help">密钥保存在本地 SQLite 数据库中。页面不会返回已保存的 Secret Access Key 或 Session Token。</p>
+              </fieldset>
+              <fieldset id="create-scion-fields" hidden disabled>
+                <div class="storage-fields">
+                  <label>Scion 域名<input id="create-scion-endpoint" type="url" placeholder="https://scion.example.org" spellcheck="false"></label>
+                  <label>Scion 仓库<input id="create-scion-repository" placeholder="org/repository" spellcheck="false"></label>
+                  <label>Scion Token<input id="create-scion-token" placeholder="允许匿名读写时可留空" type="password" autocomplete="new-password" spellcheck="false"></label>
+                </div>
+                <label class="storage-check"><input id="create-scion-http" type="checkbox">允许使用 HTTP 域名</label>
               </fieldset>
               <fieldset id="create-opencsg-fields" hidden disabled>
                 <div class="storage-fields">
@@ -125,7 +133,7 @@
                 <label class="storage-check"><input id="create-opencsg-xnet" type="checkbox">通过 XNet 传输仓库的大文件</label>
                 <label class="storage-check"><input id="create-opencsg-http" type="checkbox">允许使用 HTTP 域名</label>
                 <p class="settings-help">选择已初始化存储分支的 Codes 仓库。Token 需要仓库读写权限。使用 XNet 需要仓库已启用 XNet，且服务能够为 Codes 签发 XNet 令牌。创建时会检查。</p>
-                <p class="settings-help">token 保存在当前配置文件中，页面不会返回已保存的值。</p>
+                <p class="settings-help">Token 保存在本地 SQLite 数据库中，页面不会返回已保存的值。</p>
               </fieldset>
               </div>
 </template>

@@ -6,6 +6,7 @@ use serde::{Deserialize, Deserializer, Serialize, de};
 #[serde(tag = "backend", rename_all = "snake_case")]
 pub enum RemoteConfig {
     S3(S3Config),
+    Scion(ScionConfig),
     #[serde(rename = "opencsg")]
     OpenCsg(OpenCsgConfig),
 }
@@ -22,10 +23,15 @@ impl<'de> Deserialize<'de> for RemoteConfig {
             Some("s3") => serde_json::from_value(value)
                 .map(Self::S3)
                 .map_err(de::Error::custom),
+            Some("scion") => serde_json::from_value(value)
+                .map(Self::Scion)
+                .map_err(de::Error::custom),
             Some("opencsg") => serde_json::from_value(value)
                 .map(Self::OpenCsg)
                 .map_err(de::Error::custom),
-            _ => Err(de::Error::custom("remote backend must be s3 or opencsg")),
+            _ => Err(de::Error::custom(
+                "remote backend must be s3, scion or opencsg",
+            )),
         }
     }
 }
@@ -33,6 +39,7 @@ impl<'de> Deserialize<'de> for RemoteConfig {
 impl RemoteConfig {
     pub fn enabled(&self) -> bool {
         match self {
+            Self::Scion(config) => config.enabled,
             Self::S3(config) => config.enabled,
             Self::OpenCsg(config) => config.enabled,
         }
@@ -51,6 +58,11 @@ impl RemoteConfig {
                 &s3.region,
                 s3.prefix.trim_matches('/'),
             ))?,
+            Self::Scion(config) => serde_json::to_vec(&(
+                "scion",
+                config.endpoint.trim_end_matches('/'),
+                &config.repository,
+            ))?,
             Self::OpenCsg(codes) => serde_json::to_vec(&(
                 "opencsg",
                 codes.endpoint.trim_end_matches('/'),
@@ -64,6 +76,7 @@ impl RemoteConfig {
 
     pub fn validate(&self) -> Result<()> {
         match self {
+            Self::Scion(config) => config.validate(),
             Self::S3(config) => config.validate(),
             Self::OpenCsg(config) => config.validate(),
         }
@@ -71,6 +84,7 @@ impl RemoteConfig {
 
     pub fn redact(&mut self) {
         match self {
+            Self::Scion(config) => config.token.clear(),
             Self::S3(config) => config.redact(),
             Self::OpenCsg(config) => config.token.clear(),
         }
@@ -108,7 +122,15 @@ impl RemoteConfig {
                 })?;
                 config.token = saved.token.clone();
             }
-            Self::OpenCsg(_) => {}
+            Self::Scion(config) if config.token.is_empty() => {
+                if let Some(Self::Scion(saved)) = previous
+                    && config.endpoint == saved.endpoint
+                    && config.repository == saved.repository
+                {
+                    config.token = saved.token.clone();
+                }
+            }
+            Self::OpenCsg(_) | Self::Scion(_) => {}
         }
         Ok(())
     }
@@ -148,21 +170,7 @@ impl std::fmt::Debug for OpenCsgConfig {
 
 impl OpenCsgConfig {
     pub fn validate(&self) -> Result<()> {
-        let url = url::Url::parse(&self.endpoint)
-            .map_err(|_| Error::invalid("invalid OpenCSG domain"))?;
-        if !matches!(url.scheme(), "https" | "http")
-            || url.host_str().is_none()
-            || !url.username().is_empty()
-            || url.password().is_some()
-            || url.path() != "/"
-            || url.query().is_some()
-            || url.fragment().is_some()
-            || (url.scheme() == "http" && !self.allow_http)
-        {
-            return Err(Error::invalid(
-                "OpenCSG domain requires an HTTP(S) origin without credentials, a path, query or fragment; HTTP requires allow_http",
-            ));
-        }
+        validate_origin(&self.endpoint, self.allow_http)?;
         let parts: Vec<_> = self.repository.split('/').collect();
         if parts.len() != 2 || parts.iter().any(|part| !valid_component(part)) {
             return Err(Error::invalid("OpenCSG repository must use namespace/name"));
@@ -175,18 +183,75 @@ impl OpenCsgConfig {
         if self.prefix.is_empty() || self.prefix.split('/').any(|part| !valid_component(part)) {
             return Err(Error::invalid("invalid OpenCSG storage prefix"));
         }
-        if self.token.is_empty()
-            || self
-                .token
-                .bytes()
-                .any(|byte| !(0x21..=0x7e).contains(&byte))
+        validate_token(&self.token)
+    }
+}
+
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ScionConfig {
+    #[serde(default = "enabled")]
+    pub enabled: bool,
+    pub endpoint: String,
+    pub repository: String,
+    #[serde(default)]
+    pub token: String,
+    #[serde(default)]
+    pub allow_http: bool,
+}
+
+impl std::fmt::Debug for ScionConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ScionConfig")
+            .field("endpoint", &self.endpoint)
+            .field("repository", &self.repository)
+            .finish_non_exhaustive()
+    }
+}
+
+impl ScionConfig {
+    pub fn validate(&self) -> Result<()> {
+        validate_origin(&self.endpoint, self.allow_http)?;
+        if self
+            .repository
+            .split('/')
+            .any(|part| !valid_component(part))
         {
-            return Err(Error::invalid(
-                "OpenCSG token must contain printable ASCII without whitespace",
-            ));
+            return Err(Error::invalid("invalid Scion repository path"));
+        }
+        if !self.token.is_empty() {
+            validate_token(&self.token)?;
         }
         Ok(())
     }
+}
+
+fn validate_origin(endpoint: &str, allow_http: bool) -> Result<()> {
+    let url =
+        url::Url::parse(endpoint).map_err(|_| Error::invalid("invalid repository endpoint"))?;
+    if !matches!(url.scheme(), "https" | "http")
+        || url.host_str().is_none()
+        || !url.username().is_empty()
+        || url.password().is_some()
+        || url.path() != "/"
+        || url.query().is_some()
+        || url.fragment().is_some()
+        || (url.scheme() == "http" && !allow_http)
+    {
+        return Err(Error::invalid(
+            "repository endpoint requires an HTTP(S) origin without credentials, a path, query or fragment; HTTP requires allow_http",
+        ));
+    }
+    Ok(())
+}
+
+fn validate_token(token: &str) -> Result<()> {
+    if token.is_empty() || token.bytes().any(|byte| !(0x21..=0x7e).contains(&byte)) {
+        return Err(Error::invalid(
+            "repository token must contain printable ASCII without whitespace",
+        ));
+    }
+    Ok(())
 }
 
 fn valid_component(value: &str) -> bool {

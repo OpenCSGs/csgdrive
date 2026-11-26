@@ -94,7 +94,7 @@ impl LocalBackend {
         mut reader: ByteStream,
         expected: Option<ObjectRef>,
     ) -> Result<StagedObject> {
-        if self.inner.database_metadata && kind != ObjectKind::File {
+        if kind != ObjectKind::File {
             let mut bytes = Vec::new();
             reader
                 .take(MAX_METADATA_BYTES as u64 + 1)
@@ -303,7 +303,7 @@ impl LocalBackend {
                 if !eligible {
                     continue;
                 }
-                if backend.inner.database_metadata && entry.reference.kind != ObjectKind::File {
+                if entry.reference.kind != ObjectKind::File {
                     // SQL tree pages are durable history. Unpublished, unreachable pages can be reclaimed.
                     if entry.remote_confirmed {
                         continue;

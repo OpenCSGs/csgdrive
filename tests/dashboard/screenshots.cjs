@@ -20,7 +20,7 @@ status.synchronization = {state:'confirmed',branches:branches.map(branch=>({bran
 const view = {status,branches,revisions,summary:{branch_count:3,mount_count:3,ready_mount_count:3,mounted_branch_count:3},origins:branches.map((branch,i)=>({branch:branch.id,source_branch:branch.source_branch,revision:revisionIds[0],revision_available:true,workspace_root:i===0}))};
 const collaboration = status.mounts.map(mount=>({workspace,branch:mount.branch,mounts:[mount.id],
  settings:{enabled:true},phase:'writing',writer:'local',authority_epoch:1,
- active_executions:0,local_saved:true,remote_confirmed:true,recovery_branch:null,error:null}));
+ local_saved:true,remote_confirmed:true,recovery_branch:null,error:null}));
 const relationships = {workspace,observing_location:status.location,selected_branch:status.selected_branch,remote_mounts_known:false,remote_selections_known:false,total:branches.length,next:null,
  entries:branches.map((branch,i)=>({branch:{id:branch.id,name:branch.name,state:branch.state,
   ownership:{location:branch.owner,source:'local_authority',authority_epoch:branch.authority_epoch,generation:branch.generation,storage_version:null,observed_ns:null},

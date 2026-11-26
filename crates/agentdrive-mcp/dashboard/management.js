@@ -72,7 +72,7 @@ export function createManagementPage({api, element, container, kind, changed, on
     const branch = snapshot.branches.find(branch => branch.id === branchInput.value);
     if (mounts) {
       hint.textContent = automatic()
-        ? '跟随所选分支，首次修改时申请写权限。Agent 工作结束时发送回调，文件提交并经远端确认后交还写权限。'
+        ? '跟随所选分支，首次修改时申请写权限。'
         : inputs.access.value === 'read_only' && branch && !branch.local
         ? `只读挂载固定到保存版本 ${(branch.autosave_head || branch.formal_head).slice(0,8)}。`
         : '目录位于当前 AgentDrive 所在机器。一个分支在本机只能有一个读写挂载点。';

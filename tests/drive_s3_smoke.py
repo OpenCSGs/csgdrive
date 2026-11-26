@@ -97,7 +97,7 @@ def ranged_read(s3, bucket, server_pid):
     s3.delete_object(Bucket=bucket, Key=key)
 
 
-def run(binary, daemon):
+def run(binary, *, geesefs=False):
     s3_port, admin_port = port(), port()
     while admin_port == s3_port:
         admin_port = port()
@@ -117,18 +117,13 @@ def run(binary, daemon):
         with urllib.request.urlopen(req, timeout=10) as response:
             return json.load(response)
 
-    def start(directory, *, dashboard):
-        if dashboard:
-            server_binary = binary if daemon else binary.with_name("agentdrived" + binary.suffix)
-            config = Path(directory) / "agentdrive.json"
-            if not config.exists():
-                subprocess.run([server_binary, "init", "--directory", directory, "--listen", f"127.0.0.1:{ui_port}"], check=True)
-            process = subprocess.Popen([server_binary, "serve", "--config", config, "--drive-s3-listen", f"127.0.0.1:{s3_port}",
-                                        "--drive-s3-admin-port", str(admin_port)],
-                                       env={**os.environ, "DRIVE_S3_ACCESS_KEY": "drive-demo", "DRIVE_S3_SECRET_KEY": "drive-demo-secret"})
-        else:
-            process = subprocess.Popen([binary, "--data-dir", Path(directory) / "state", "--listen", f"127.0.0.1:{s3_port}",
-                                        "--admin-port", str(admin_port)])
+    def start(directory):
+        config = Path(directory) / "agentdrive.json"
+        if not config.exists():
+            subprocess.run([binary, "init", "--directory", directory, "--listen", f"127.0.0.1:{ui_port}"], check=True)
+        process = subprocess.Popen([binary, "serve", "--config", config, "--drive-s3-listen", f"127.0.0.1:{s3_port}",
+                                    "--drive-s3-admin-port", str(admin_port)],
+                                   env={**os.environ, "DRIVE_S3_ACCESS_KEY": "drive-demo", "DRIVE_S3_SECRET_KEY": "drive-demo-secret"})
         try:
             deadline = time.monotonic() + 15
             while time.monotonic() < deadline:
@@ -149,17 +144,17 @@ def run(binary, daemon):
         process.terminate()
         process.wait(timeout=10)
 
-    def provision_workspace():
-        def post(path, **fields):
-            req = urllib.request.Request(ui + path, json.dumps(fields).encode(), {"Content-Type": "application/json"})
-            with urllib.request.urlopen(req, timeout=15) as response:
-                record = json.load(response)
-                assert record["local_saved"] and not record.get("error"), record
-                return record
+    def post(path, **fields):
+        req = urllib.request.Request(ui + path, json.dumps(fields).encode(), {"Content-Type": "application/json"})
+        with urllib.request.urlopen(req, timeout=15) as response:
+            record = json.load(response)
+            assert record["local_saved"] and not record.get("error"), record
+            return record
 
+    def provision_workspace():
         workspace = post("/api/workspaces", request_id="create-shared", name="shared")
         branches = {"main": workspace["branch"]}
-        for name in ("work", "editable"):
+        for name in ("work", "editable", "exclusive"):
             branch = post("/api/commands/branch_create", request_id="fork-" + name,
                           request={"workspace": workspace["workspace"], "source_branch": branches["main"], "name": name})
             branches[name] = branch["branch"]
@@ -167,13 +162,9 @@ def run(binary, daemon):
 
     a, b = "sandbox-alpha", "sandbox-beta"
     with tempfile.TemporaryDirectory() as directory:
-        process = start(directory, dashboard=True)
+        process = start(directory)
         try:
             workspace, branches = provision_workspace()
-            if not daemon:
-                stop(process)
-                process = start(directory, dashboard=False)
-
             def bind(bucket, branch, **kwargs):
                 return manage("bind_ids", bucket=bucket, workspace_id=workspace, branch_id=branches[branch], **kwargs)
 
@@ -184,7 +175,7 @@ def run(binary, daemon):
             else:
                 raise AssertionError("the mount endpoint accepted a name-based provisioning request")
             for bucket in (a, b):
-                bind(bucket, "work")
+                bind(bucket, "work", write_mode="exclusive")
             assert manage("status", bucket=a)["branch_id"] == manage("status", bucket=b)["branch_id"]
             manage("acquire", bucket=a)
             key, data = "目录/file 1+%.txt", b"shared bytes"
@@ -222,7 +213,7 @@ def run(binary, daemon):
             s3.put_object(Bucket=b, Key="copy", Body=b"new writer")
             assert s3.get_object(Bucket=a, Key="copy")["Body"].read() == b"new writer"
             pair = ("editor-east", "editor-west")
-            bind(pair[0], "editable", write_mode="serialized")
+            bind(pair[0], "editable")
             session = bind(pair[1], "editable", write_mode="serialized")
             assert session["writable"] and session["write_mode"] == "serialized"
             s3.put_object(Bucket=pair[0], Key="note.txt", Body=b"east")
@@ -234,22 +225,46 @@ def run(binary, daemon):
             s3.complete_multipart_upload(Bucket=pair[1], Key="note.txt", UploadId=upload,
                                          MultipartUpload={"Parts":[{"PartNumber":1, "ETag":part["ETag"]}]})
             assert s3.get_object(Bucket=pair[0], Key="note.txt")["Body"].read() == b"west"
-            if daemon:
-                with urllib.request.urlopen(ui + "/api/workspaces") as response:
-                    assert session["workspace_id"] in [w["id"] for w in json.load(response)]
-                branch_api = f"{ui}/api/workspaces/{session['workspace_id']}/branches/{session['branch_id']}"
-                with urllib.request.urlopen(branch_api + "/s3-mounts") as response:
-                    assert [m["bucket"] for m in json.load(response)] == list(pair)
-                with urllib.request.urlopen(branch_api + "/files?path=/") as response:
-                    listing = json.load(response)
-                    assert [entry["path"] for entry in listing["entries"]] == ["/note.txt"]
-                query = urllib.parse.urlencode({"path":"/note.txt", "version":listing["version"], "offset":0, "size":100})
-                with urllib.request.urlopen(branch_api + "/file?" + query) as response:
-                    assert response.read() == b"west"
+            with urllib.request.urlopen(ui + "/api/workspaces") as response:
+                assert session["workspace_id"] in [w["id"] for w in json.load(response)]
+            branch_api = f"{ui}/api/workspaces/{session['workspace_id']}/branches/{session['branch_id']}"
+            with urllib.request.urlopen(branch_api + "/s3-mounts") as response:
+                assert [m["bucket"] for m in json.load(response)] == list(pair)
+            with urllib.request.urlopen(branch_api + "/files?path=/") as response:
+                listing = json.load(response)
+                assert [entry["path"] for entry in listing["entries"]] == ["/note.txt"]
+            query = urllib.parse.urlencode({"path":"/note.txt", "version":listing["version"], "offset":0, "size":100})
+            with urllib.request.urlopen(branch_api + "/file?" + query) as response:
+                assert response.read() == b"west"
+            if geesefs:
+                path = Path(directory).resolve() / "mounts" / "desktop"
+                def command(tool, identifier, **fields):
+                    return post("/api/commands/" + tool, request_id=identifier, request=fields)
+
+                command("branch_switch", "select-desktop-branch", workspace=workspace, branch=branches["editable"])
+                mounted = command("mount_prepare", "desktop-attach", workspace=workspace,
+                                  branch=branches["editable"], path=str(path))["result"]["binding"]
+                assert (path / "note.txt").read_bytes() == b"west"
+                with (path / "desktop.txt").open("wb") as f:
+                    f.write(b"from desktop")
+                    f.flush()
+                    os.fsync(f.fileno())
+                assert s3.get_object(Bucket=pair[0], Key="desktop.txt")["Body"].read() == b"from desktop"
+                saved = command("mount_save", "desktop-save", mount=mounted["id"],
+                                expected_binding_generation=mounted["generation"])
+                revision = saved["result"]["revision"]
+                history = path.with_name("history")
+                snapshot = command("mount_prepare", "desktop-history", workspace=workspace, branch=branches["editable"],
+                                   revision=revision, access="read_only", path=str(history))["result"]["binding"]
+                s3.put_object(Bucket=pair[0], Key="desktop.txt", Body=b"updated")
+                assert (history / "desktop.txt").read_bytes() == b"from desktop"
+                command("mount_unmount", "desktop-history-close", mount=snapshot["id"], generation=snapshot["generation"])
+                command("branch_switch", "desktop-switch", workspace=workspace, branch=branches["main"])
+                assert not (path / "desktop.txt").exists()
             other = "sandbox-other"
-            bind(other, "main")
+            bind(other, "exclusive", write_mode="exclusive")
             assert not s3.list_objects_v2(Bucket=other).get("Contents")
-            bind("sandbox-competitor", "main")
+            bind("sandbox-competitor", "exclusive", write_mode="exclusive")
 
             def acquire(bucket):
                 try:
@@ -263,7 +278,7 @@ def run(binary, daemon):
                 assert sorted(executor.map(acquire, (other, "sandbox-competitor"))) == ["reader", "writer"]
         finally:
             stop(process)
-        process = start(directory, dashboard=daemon)
+        process = start(directory)
         try:
             assert s3.get_object(Bucket=pair[1], Key="note.txt")["Body"].read() == b"west"
             status = manage("status", bucket=a)
@@ -275,13 +290,14 @@ def run(binary, daemon):
         finally:
             stop(process)
     print("PASS  shared branch, both write modes, listing, range, copy, stale multipart, competing writers, restart")
-    if daemon:
-        print("PASS  dashboard branch listing, mount policies and cross-client file content")
+    print("PASS  dashboard branch listing, mount policies and cross-client file content")
+    if geesefs:
+        print("PASS  GeeseFS and direct S3 reads and writes, saved revision mount, branch switching")
 
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("binary", type=Path)
-    parser.add_argument("--daemon", action="store_true", help="test agentdrived with its dashboard and S3 listeners")
+    parser.add_argument("--geesefs", action="store_true", help="exercise OS mounts through the dashboard API")
     args = parser.parse_args()
-    run(args.binary.resolve(), args.daemon)
+    run(args.binary.resolve(), geesefs=args.geesefs)

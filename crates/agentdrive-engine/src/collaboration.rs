@@ -1,5 +1,4 @@
 mod authority;
-mod events;
 mod lifecycle;
 mod recovery;
 mod write_access;
@@ -94,8 +93,6 @@ impl CollaborationService {
                 CollaborationPhase::Disabled
             },
             settings,
-            executions: Vec::new(),
-            release: None,
             transition: None,
             recovery: None,
             error: None,
@@ -208,7 +205,6 @@ impl CollaborationService {
             },
             authority_epoch: branch.authority_epoch,
             mounts: mounts.into_iter().map(|mount| mount.id).collect(),
-            active_executions: record.executions.len(),
             local_saved: synchronization.local_saved,
             remote_confirmed,
             recovery_branch: record
@@ -234,24 +230,8 @@ impl CollaborationService {
             .filter(|w| !w.deleted)
         {
             let failed = self.failed_authorities(workspace.id).await?;
-            for mut record in self.runtime.state.collaborations(workspace.id).await? {
-                if record.transition.is_none()
-                    && record
-                        .release
-                        .as_ref()
-                        .is_some_and(|release| release.reason == ReleaseReason::Idle)
-                {
-                    record.release = None;
-                    record.phase = CollaborationPhase::Following;
-                    self.save_record(&record).await?;
-                }
-
-                if record.release.is_some()
-                    && record.recovery.is_none()
-                    && !failed.contains(&record.branch)
-                {
-                    self.runtime.publishing_turns.lock().insert(record.branch);
-                } else if self.transition_active(&record)
+            for record in self.runtime.state.collaborations(workspace.id).await? {
+                if self.transition_active(&record)
                     || (record.settings.enabled && failed.contains(&record.branch))
                 {
                     self.runtime
@@ -375,15 +355,9 @@ impl CollaborationService {
             if record.phase == CollaborationPhase::Switching {
                 return self.resume_view_switch(record).await;
             }
-            if self.transition_active(record) && record.release.is_some() {
-                return self.release_authority(record).await;
-            }
             return self.suspend(record).await;
         }
         let now = self.runtime.clock.monotonic_ms();
-        if record.release.is_some() {
-            return self.release_authority(record).await;
-        }
         let writer = branch.owner == self.runtime.location && branch.state == BranchState::Writable;
         let expected = if writer {
             CollaborationPhase::Writing
@@ -498,8 +472,7 @@ impl CollaborationApi for CollaborationService {
             .collaboration(branch.id)
             .await?
             .unwrap_or_else(|| self.new_record(&branch, actor.clone(), settings.clone()));
-        if record.release.is_some()
-            || record.transition.is_some()
+        if record.transition.is_some()
             || record.recovery.is_some()
             || self
                 .failed_authorities(branch.workspace)
@@ -520,7 +493,6 @@ impl CollaborationApi for CollaborationService {
         record.settings = settings;
         record.actor = actor.clone();
         record.error = None;
-        record.release = None;
         record.phase = if global_enabled {
             CollaborationPhase::Following
         } else {
@@ -564,13 +536,5 @@ impl CollaborationApi for CollaborationService {
             result.push(self.describe(&record).await?);
         }
         Ok(result)
-    }
-
-    async fn execution_event(
-        &self,
-        actor: &Principal,
-        request: CollaborationEvent,
-    ) -> Result<CollaborationStatus> {
-        self.accept_event(actor, request).await
     }
 }

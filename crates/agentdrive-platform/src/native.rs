@@ -6,11 +6,8 @@ use std::{
     sync::Arc,
 };
 
-#[cfg(target_os = "macos")]
-#[path = "nfs.rs"]
-mod implementation;
-#[cfg(target_os = "linux")]
-#[path = "fuse.rs"]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[path = "geesefs.rs"]
 mod implementation;
 #[cfg(windows)]
 #[path = "winfsp.rs"]
@@ -29,6 +26,18 @@ impl std::fmt::Debug for NativeMountDriver {
     }
 }
 impl NativeMountDriver {
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    pub fn configure_geesefs(
+        &self,
+        endpoint: String,
+        admin_endpoint: String,
+        access_key: String,
+        secret_key: String,
+    ) -> Result<()> {
+        self.implementation
+            .configure(endpoint, admin_endpoint, access_key, secret_key)
+    }
+
     pub fn new(roots: Vec<PathBuf>) -> Result<Arc<Self>> {
         let mut canonical = Vec::new();
         for root in roots {
@@ -45,12 +54,16 @@ impl NativeMountDriver {
 
 #[async_trait]
 impl MountDriver for NativeMountDriver {
+    fn supports_shared_writable_mounts(&self) -> bool {
+        cfg!(any(target_os = "linux", target_os = "macos"))
+    }
+
     fn supports_automatic_collaboration(&self) -> bool {
-        cfg!(agentdrive_native_mount)
+        cfg!(windows)
     }
 
     fn handle_tracking_scope(&self) -> HandleTrackingScope {
-        if cfg!(any(target_os = "linux", windows)) {
+        if cfg!(windows) {
             HandleTrackingScope::Native
         } else {
             HandleTrackingScope::Protocol
@@ -99,9 +112,14 @@ impl MountDriver for NativeMountDriver {
 
     async fn mount(&self, spec: MountSpec, file_system: Arc<dyn FileSystem>) -> Result<()> {
         self.normalize_path(&spec.binding.path).await?;
-        #[cfg(agentdrive_native_mount)]
+        #[cfg(windows)]
         {
             self.implementation.mount(spec, file_system).await
+        }
+        #[cfg(any(target_os = "linux", target_os = "macos"))]
+        {
+            let _ = file_system;
+            self.implementation.mount(&spec.binding).await
         }
         #[cfg(not(agentdrive_native_mount))]
         {
@@ -113,34 +131,19 @@ impl MountDriver for NativeMountDriver {
         }
     }
 
-    async fn open_handles(&self, binding: &MountBinding) -> Result<usize> {
-        #[cfg(agentdrive_native_mount)]
-        {
-            self.implementation.open_handles(binding).await
-        }
-        #[cfg(not(agentdrive_native_mount))]
-        {
-            let _ = binding;
-            Err(Error::new(
-                ErrorCode::Unsupported,
-                "native mount support is not enabled",
-            ))
-        }
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    async fn flush(&self, binding: &MountBinding) -> Result<()> {
+        self.implementation.flush(binding).await
     }
 
+    #[cfg(windows)]
+    async fn open_handles(&self, binding: &MountBinding) -> Result<usize> {
+        self.implementation.open_handles(binding).await
+    }
+
+    #[cfg(windows)]
     async fn rebind(&self, previous: &MountBinding, next: &MountBinding) -> Result<()> {
-        #[cfg(agentdrive_native_mount)]
-        {
-            self.implementation.rebind(previous, next).await
-        }
-        #[cfg(not(agentdrive_native_mount))]
-        {
-            let _ = (previous, next);
-            Err(Error::new(
-                ErrorCode::Unsupported,
-                "native mount support is not enabled",
-            ))
-        }
+        self.implementation.rebind(previous, next).await
     }
 
     async fn unmount(&self, binding: &MountBinding) -> Result<()> {
@@ -183,33 +186,17 @@ impl MountDriver for NativeMountDriver {
     }
 
     fn capability(&self) -> &'static str {
-        #[cfg(target_os = "linux")]
+        #[cfg(any(target_os = "linux", target_os = "macos"))]
         {
-            "linux-fuse"
+            "geesefs"
         }
         #[cfg(windows)]
         {
             "windows-winfsp"
         }
-        #[cfg(target_os = "macos")]
-        {
-            "macos-nfs"
-        }
         #[cfg(not(agentdrive_native_mount))]
         {
             "unsupported"
         }
-    }
-}
-
-#[cfg(test)]
-mod collaboration_tests {
-    use super::*;
-
-    #[test]
-    #[cfg(agentdrive_native_mount)]
-    fn compiled_native_drivers_support_automatic_collaboration() {
-        let driver = NativeMountDriver::new(Vec::new()).unwrap();
-        assert!(driver.supports_automatic_collaboration());
     }
 }

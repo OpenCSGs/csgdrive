@@ -1,4 +1,3 @@
-mod integration;
 use agentdrive_mcp::{Client, stdio_proxy};
 use agentdrive_model::{BranchId, Error, OperationId, Result, RevisionId, WorkspaceId};
 use clap::{Parser, Subcommand};
@@ -34,8 +33,6 @@ enum Command {
     },
     /// Forward MCP over standard input/output to the long-running daemon.
     Mcp,
-    /// Run an ACP or Codex app-server process with automatic persistence.
-    Integrate(integration::Options),
     /// 挂载工作区，并复用当前 location 的分支。
     Mount {
         #[arg(long)]
@@ -82,6 +79,15 @@ enum BranchCommand {
         request_id: Option<String>,
     },
 }
+fn base_url(endpoint: &str) -> Result<reqwest::Url> {
+    let mut url =
+        reqwest::Url::parse(endpoint).map_err(|error| Error::invalid(error.to_string()))?;
+    url.set_path("/");
+    url.set_query(None);
+    url.set_fragment(None);
+    Ok(url)
+}
+
 #[tokio::main]
 async fn main() {
     tracing_subscriber::fmt()
@@ -104,7 +110,7 @@ async fn main() {
 async fn run(arguments: Arguments) -> Result<bool> {
     let command = match arguments.command {
         Command::Dashboard { open } => {
-            let url = integration::base_url(&arguments.endpoint)?;
+            let url = base_url(&arguments.endpoint)?;
             println!("{url}");
             if open {
                 #[cfg(target_os = "linux")]
@@ -125,9 +131,6 @@ async fn run(arguments: Arguments) -> Result<bool> {
         }
         command => command,
     };
-    if let Command::Integrate(options) = command {
-        return integration::run(&arguments.endpoint, options).await;
-    }
     let client = Client::connect(&arguments.endpoint).await?;
     let result = async {
         match command {
@@ -186,7 +189,7 @@ async fn run(arguments: Arguments) -> Result<bool> {
                 println!("{}", serde_json::to_string_pretty(&result.structured_content)?);
                 return Ok(success);
             }
-            Command::Integrate(_) | Command::Dashboard { .. } => unreachable!(),
+            Command::Dashboard { .. } => unreachable!(),
         }
         Ok(true)
     }

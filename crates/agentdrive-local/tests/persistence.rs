@@ -320,7 +320,7 @@ fn unknown_database_format_is_unchanged() {
 #[test]
 fn server_schema_names_ids_and_checks_metadata_relationships() {
     let dir = tempfile::tempdir().unwrap();
-    let _backend = LocalBackend::open_server(dir.path()).unwrap();
+    let _backend = LocalBackend::open(dir.path()).unwrap();
     let db = rusqlite::Connection::open(dir.path().join("meta.db")).unwrap();
     db.pragma_update(None, "foreign_keys", "ON").unwrap();
     let obsolete_columns: i64 = db
@@ -618,5 +618,43 @@ async fn batch_reclamation_respects_readers_confirmation_and_empty_files() {
     assert_eq!(
         (stats.cached_bytes, stats.protected_bytes),
         (changed.size, 0)
+    );
+}
+
+#[tokio::test]
+async fn old_local_tree_pages_are_verified_and_imported_on_open() {
+    let dir = tempfile::tempdir().unwrap();
+    let workspace = WorkspaceId::new();
+    let page = Bytes::from_static(b"historical tree page");
+    let backend = LocalBackend::open(dir.path()).unwrap();
+    let object = backend
+        .put(workspace, ObjectKind::Tree, page.clone())
+        .await
+        .unwrap();
+    drop(backend);
+    let directory = dir.path().join("objects").join(workspace.to_string());
+    std::fs::create_dir_all(&directory).unwrap();
+    let path = directory.join(object.id.as_str());
+    std::fs::write(&path, b"corrupt").unwrap();
+    let database = dir.path().join("meta.db");
+    let db = rusqlite::Connection::open(&database).unwrap();
+    db.execute_batch(
+        "DELETE FROM metadata_objects; UPDATE metadata SET value=0 WHERE key='database_metadata'",
+    )
+    .unwrap();
+    drop(db);
+    assert_eq!(
+        LocalBackend::open(dir.path()).unwrap_err().code,
+        ErrorCode::Integrity
+    );
+    std::fs::write(&path, &page).unwrap();
+    let backend = LocalBackend::open(dir.path()).unwrap();
+    std::fs::remove_file(path).unwrap();
+    assert_eq!(
+        backend
+            .read_range(workspace, &object, 0, 1024)
+            .await
+            .unwrap(),
+        page
     );
 }

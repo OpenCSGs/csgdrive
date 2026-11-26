@@ -2224,7 +2224,9 @@ async fn concurrent_mounts_reuse_location_branch_and_mount() {
         )
         .await
         .unwrap();
-    assert_eq!(other_path.error.unwrap().code, ErrorCode::MountBusy);
+    let second = mounted(other_path);
+    assert_ne!(second.id, binding.id);
+    assert!(!second.follows_selection);
     success(
         harness
             .engine
@@ -3801,7 +3803,7 @@ async fn failed_object_batch_preserves_checkpoint_and_retries_without_data_loss(
         .join("objects")
         .join(workspace.id.to_string())
         .join(object.id.as_str());
-    std::fs::create_dir(&obstruction).unwrap();
+    std::fs::create_dir_all(&obstruction).unwrap();
     assert!(harness.engine.services.files.fsync(&fs).await.is_err());
     let failed = harness.local.branch(binding.branch).await.unwrap().unwrap();
     assert_eq!(failed.saved_seq, before.saved_seq);

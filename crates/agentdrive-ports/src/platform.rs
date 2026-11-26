@@ -40,6 +40,10 @@ pub enum HandleTrackingScope {
 
 #[async_trait]
 pub trait MountDriver: Send + Sync {
+    fn supports_shared_writable_mounts(&self) -> bool {
+        false
+    }
+
     /// Whether the compiled backend supports collaboration and native binding updates.
     fn supports_automatic_collaboration(&self) -> bool {
         false
@@ -49,6 +53,10 @@ pub trait MountDriver: Send + Sync {
     }
     async fn normalize_path(&self, path: &std::path::Path) -> Result<PathBuf>;
     async fn mount(&self, spec: MountSpec, file_system: Arc<dyn FileSystem>) -> Result<()>;
+    /// Publish pending client writes before saving or detaching this mount.
+    async fn flush(&self, _binding: &MountBinding) -> Result<()> {
+        Ok(())
+    }
     /// Counts driver-visible file, directory and metadata handles, including incomplete opens.
     async fn open_handles(&self, _binding: &MountBinding) -> Result<usize> {
         Err(Error::new(

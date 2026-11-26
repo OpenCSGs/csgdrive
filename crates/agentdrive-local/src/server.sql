@@ -29,3 +29,9 @@ CREATE TABLE IF NOT EXISTS object_verification (
     size INTEGER NOT NULL, etag TEXT, version TEXT, hashes BLOB NOT NULL,
     PRIMARY KEY (target, workspace_id, hash)
 );
+
+CREATE TABLE IF NOT EXISTS local_s3_listener (
+    id INTEGER PRIMARY KEY CHECK(id=1),
+    secret TEXT NOT NULL DEFAULT (hex(randomblob(32))),
+    port INTEGER NOT NULL DEFAULT 0 CHECK(port BETWEEN 0 AND 65535)
+);

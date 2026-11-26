@@ -20,11 +20,11 @@ make -j "$(getconf _NPROCESSORS_ONLN)" verify
 
 | Platform | Native filesystem requirements | Build |
 | --- | --- | --- |
-| Linux | FUSE 3 utilities, `/dev/fuse`, permission to mount | Default features |
-| macOS | Built-in NFSv3 client | `make -j "$(sysctl -n hw.ncpu)" build` |
+| Linux | GeeseFS, FUSE 3 utilities, `/dev/fuse`, permission to mount | Default features |
+| macOS | GeeseFS and [macFUSE](https://macfuse.github.io/) | `make -j "$(sysctl -n hw.ncpu)" build` |
 | Windows | MSVC, [WinFsp 2.1](https://github.com/winfsp/winfsp/releases/tag/v2.1) including its Developer feature | PowerShell: `make -j $env:NUMBER_OF_PROCESSORS build` |
 
-On macOS the daemon serves NFS over loopback. Put mount points inside a private directory owned by the current user. Windows loads WinFsp from its registered installation path and uses a local NTFS volume for state.
+On Linux and macOS, install GeeseFS with `make install-geesefs` and add `$HOME/.local/bin` to the daemon's `PATH`. Set `BINDIR` to choose another installation directory. The installer verifies the upstream binary's SHA-256 digest. Install the platform FUSE driver before mounting. On macOS, approve the macFUSE system software in System Settings and restart if macOS requests it. Windows loads WinFsp from its registered installation path and uses a local NTFS volume for state.
 
 ## Run
 

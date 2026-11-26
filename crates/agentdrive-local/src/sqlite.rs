@@ -20,10 +20,29 @@ pub(crate) fn sql_error(error: rusqlite::Error) -> Error {
     Error::new(code, error.to_string())
 }
 
-const META_DB_SCHEMA_VERSION: u32 = 2;
+const META_DB_SCHEMA_VERSION: u32 = 3;
 
 pub(crate) fn initialize(connection: &mut Connection) -> Result<LocationId> {
     if has_metadata(connection)? {
+        let version: u32 = connection
+            .query_row(
+                "SELECT value FROM metadata WHERE key='schema_version'",
+                [],
+                |row| row.get(0),
+            )
+            .map_err(sql_error)?;
+        if version == 2 {
+            // The guest and desktop can now own separate writable directories on the same branch.
+            let tx = connection.transaction().map_err(sql_error)?;
+            tx.execute_batch("DROP INDEX IF EXISTS mounts_writer")
+                .map_err(sql_error)?;
+            tx.execute(
+                "UPDATE metadata SET value=?1 WHERE key='schema_version'",
+                [META_DB_SCHEMA_VERSION],
+            )
+            .map_err(sql_error)?;
+            tx.commit().map_err(sql_error)?;
+        }
         let location: String = connection
             .query_row(
                 "SELECT value FROM metadata WHERE key='location_id'",
@@ -72,7 +91,7 @@ pub(crate) fn validate_format(connection: &Connection) -> Result<()> {
             )
             .optional()
             .map_err(sql_error)?;
-        if stored != Some(META_DB_SCHEMA_VERSION) {
+        if !matches!(stored, Some(2 | META_DB_SCHEMA_VERSION)) {
             return Err(Error::new(
                 ErrorCode::Unsupported,
                 "unsupported local database schema version",

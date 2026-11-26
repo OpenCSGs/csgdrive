@@ -11,7 +11,7 @@ use axum::{
 };
 use serde::Deserialize;
 use serde_json::{Value, json};
-use std::{path::PathBuf, sync::Arc};
+use std::sync::Arc;
 
 #[cfg(test)]
 #[path = "merge_history_tests.rs"]
@@ -83,7 +83,6 @@ pub(crate) fn api(services: Services) -> Router {
             "/api/workspaces/{workspace}/branches/{branch}/file",
             get(branch_file),
         )
-        .route("/api/lifecycle", post(lifecycle))
         .route("/api/commands/{command}", post(management_command))
         .with_state(services)
 }
@@ -489,128 +488,6 @@ async fn revision_diff(
             )
             .await?,
     ))
-}
-
-#[derive(Debug, Deserialize)]
-struct LifecycleInput {
-    request_id: String,
-    #[serde(flatten)]
-    event: LifecycleEvent,
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(tag = "event", rename_all = "snake_case")]
-enum LifecycleEvent {
-    Attach {
-        workspace: WorkspaceId,
-        mount_path: PathBuf,
-        branch: Option<BranchId>,
-        #[serde(default)]
-        automatic: bool,
-    },
-    Check {
-        workspace: WorkspaceId,
-        mount_path: PathBuf,
-    },
-    Save {
-        mount: MountId,
-        expected_binding_generation: u64,
-    },
-}
-
-fn checked(record: OperationRecord) -> Result<OperationRecord> {
-    match record.error.clone() {
-        Some(error) => Err(error),
-        None => Ok(record),
-    }
-}
-
-async fn lifecycle(
-    State(services): State<Services>,
-    Extension(actor): Extension<Principal>,
-    Json(input): Json<LifecycleInput>,
-) -> std::result::Result<Json<Value>, ApiError> {
-    let context = RequestContext {
-        principal: actor,
-        request_id: input.request_id,
-    };
-    context.validate()?;
-    let value = match input.event {
-        LifecycleEvent::Attach {
-            workspace,
-            mount_path,
-            branch,
-            automatic,
-        } => {
-            let record = checked(
-                services
-                    .mounts
-                    .prepare(
-                        context,
-                        PrepareMount {
-                            workspace,
-                            branch,
-                            revision: None,
-                            path: mount_path,
-                            access: AccessMode::ReadWrite,
-                            durability: Durability::Local,
-                            automatic,
-                        },
-                    )
-                    .await?,
-            )?;
-            let Some(CommandResult::Mount { binding }) = record.result else {
-                return Err(Error::new(ErrorCode::MountBusy, "mount is not ready").into());
-            };
-            json!({"mount_path": binding.path, "binding": binding})
-        }
-        LifecycleEvent::Check {
-            workspace,
-            mount_path,
-        } => {
-            let status = services
-                .workspace
-                .status(&context.principal, workspace)
-                .await?;
-            let binding = status
-                .mounts
-                .into_iter()
-                .find(|mount| {
-                    mount.path == mount_path
-                        && mount.state == MountState::Ready
-                        && mount.access == AccessMode::ReadWrite
-                })
-                .ok_or_else(|| Error::new(ErrorCode::StaleBinding, "mount is not ready"))?;
-            let collaboration = services
-                .collaboration
-                .status(&context.principal, workspace)
-                .await?
-                .into_iter()
-                .find(|status| status.mounts.contains(&binding.id));
-            json!({"binding": binding, "collaboration": collaboration})
-        }
-        LifecycleEvent::Save {
-            mount,
-            expected_binding_generation,
-        } => {
-            json!(checked(
-                services
-                    .mounts
-                    .save(
-                        context,
-                        SaveMount {
-                            mount,
-                            expected_binding_generation,
-                            durability: Durability::Local,
-                            wait_for_remote_ms: None,
-                            message: None,
-                        }
-                    )
-                    .await?
-            )?)
-        }
-    };
-    Ok(Json(value))
 }
 
 async fn sandboxes(

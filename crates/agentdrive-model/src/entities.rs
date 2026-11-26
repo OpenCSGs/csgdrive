@@ -260,6 +260,9 @@ pub enum MountState {
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct MountBinding {
+    /// This desktop directory follows the workspace selection on branch_switch.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub follows_selection: bool,
     pub id: MountId,
     pub workspace: WorkspaceId,
     pub branch: BranchId,

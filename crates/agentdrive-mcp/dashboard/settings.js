@@ -71,7 +71,10 @@ export function createSettingsPage({api, element, $}) {
     const remote = current.runtime.workspace_remotes?.[workspace];
     const rows = [['存储模式', '仅本地存储']];
     if (remote && remote.enabled !== false) {
-      if (remote.backend === 'opencsg') {
+      if (remote.backend === 'scion') {
+        rows[0][1] = 'Scion';
+        rows.push(['Scion 域名', remote.endpoint], ['Scion 仓库', remote.repository]);
+      } else if (remote.backend === 'opencsg') {
         rows[0][1] = 'OpenCSG Codes';
         rows.push(['OpenCSG 域名', remote.endpoint], ['Codes 仓库', remote.repository],
           ['存储分支', remote.branch], ['存储目录', remote.prefix], ['XNet', remote.xnet ? '已启用' : '未启用']);

@@ -120,7 +120,6 @@ impl CollaborationService {
         }
         let branch = self.runtime.branch(branch_id).await?;
         if record.phase == CollaborationPhase::Writing
-            && record.release.is_none()
             && record.transition.is_none()
             && record.recovery.is_none()
             && branch.owner == self.runtime.location
@@ -161,13 +160,6 @@ impl CollaborationService {
         }
         if record.transition.is_some() {
             self.finish_transition(&mut record).await?;
-        }
-        if record.release.is_some() {
-            return Err(Error::new(
-                ErrorCode::BranchBusy,
-                "branch is waiting to release write authority",
-            )
-            .retryable());
         }
         match self.acquire(&mut record, expected).await {
             Ok(()) => Ok(()),

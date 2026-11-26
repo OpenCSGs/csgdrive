@@ -20,11 +20,13 @@ make -j "$(getconf _NPROCESSORS_ONLN)" verify
 
 | 平台 | 原生文件系统要求 | 构建方式 |
 | --- | --- | --- |
-| Linux | FUSE 3 工具、`/dev/fuse` 和挂载权限 | 使用默认 features |
-| macOS | 系统自带的 NFSv3 客户端 | `make -j "$(sysctl -n hw.ncpu)" build` |
+| Linux | GeeseFS、FUSE 3 工具、`/dev/fuse` 和挂载权限 | 使用默认 features |
+| macOS | GeeseFS 和 [macFUSE](https://macfuse.github.io/) | `make -j "$(sysctl -n hw.ncpu)" build` |
 | Windows | MSVC，以及包含 Developer 功能的 [WinFsp 2.1](https://github.com/winfsp/winfsp/releases/tag/v2.1) | PowerShell：`make -j $env:NUMBER_OF_PROCESSORS build` |
 
-macOS 在本机回环地址提供 NFS 服务。请将挂载点放在当前用户的私有目录中。Windows 从注册的安装路径加载 WinFsp，状态目录使用本地 NTFS 卷。
+Linux 和 macOS 使用 `make install-geesefs` 安装 GeeseFS，并将 `$HOME/.local/bin` 加入服务进程的 `PATH`。使用 `BINDIR` 可以指定安装目录。安装程序会校验发布文件的 SHA-256，挂载前还需安装对应的 FUSE 驱动。Windows 从注册的安装路径加载 WinFsp，状态目录使用本地 NTFS 卷。
+
+macOS 用户需要在系统设置中批准 macFUSE，并按系统提示重新启动。
 
 ## 运行
 

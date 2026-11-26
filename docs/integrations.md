@@ -2,7 +2,7 @@
 
 [English](integrations.md) | [简体中文](integrations.zh-CN.md)
 
-Start `agentdrived`; the local connection needs no token. Native directories require FUSE, the built-in macOS NFS client, or WinFsp. Mount paths must be inside the daemon's `mount_roots`. The agent's execution environment must be able to access the mounted directory.
+Start `agentdrived`; the local connection needs no token. Install GeeseFS with FUSE on Linux, GeeseFS with macFUSE on macOS, or WinFsp on Windows. Mount paths must be inside the daemon's `mount_roots`. The agent's execution environment must be able to access the mounted directory.
 
 ## MCP and mounted directories
 
@@ -26,7 +26,7 @@ The corresponding MCP tool is `mount_prepare`, with these minimum arguments:
 
 A `location_id` belongs to the daemon data directory and survives restarts. Repeated native mounts reuse the selected branch. To share a branch across remote sandboxes, give each CSI volume its own bucket alias on the same AgentDrive service. Each alias maps to the same workspace and branch IDs. The service dashboard reads that branch directly. [S3 mount setup](../apps/drive-s3/README.md)
 
-Identical mount requests at the same path from the same principal return the existing binding, allowing multiple agents to share the directory. A different principal cannot reuse that binding, including one with `manage` permission. File edits and branch switches affect everyone using that directory. A branch permits one writable mount; explicitly unmount it before moving to another directory. Unmounting and agent disconnection preserve the selected branch. Explicit CLI or MCP branch creation provides separate working content.
+Identical mount requests at the same path from the same principal return the existing binding, allowing multiple agents to share the directory. A different principal cannot reuse that binding, including one with `manage` permission. File edits and branch switches affect everyone using that directory. A branch can have one writable desktop directory and a separate mount for its local sandbox. Unmount the desktop directory before attaching it at a different path. Unmounting and agent disconnection preserve the selected branch. Explicit CLI or MCP branch creation provides separate working content.
 
 MCP returns `result.binding`, including `id`, `branch`, `path`, and `generation`. Agents use the returned path for file operations. Connecting MCP does not change an agent's working directory or filesystem permissions. `mount_save` accepts `mount` and `expected_binding_generation` to save the mounted branch.
 
@@ -54,104 +54,13 @@ WinFsp creates its own directory mount point. On Windows, AgentDrive removes the
 
 If mounting fails after the move, the original files remain at `backup_path`; the original path may be empty. Pause file access and retry with the same request ID and identical arguments, including after daemon restart. A completed retry reuses the imported branch. Inspect `operation_get` or `operation_by_request` after a lost response. If import itself failed, correct the source and use a new request ID. Do not start another conversion on an already moved path.
 
-## Application launch commands
+## Saving mounted files
 
-Applications that need protocol-managed working directories and saving at task completion can use these commands:
-
-```sh
-agentdrive integrate --protocol acp --workspace "$WORKSPACE" \
-  --mount-path "$AGENTDRIVE_DIRECTORY/mounts/project" -- your-acp-agent
-```
-
-```sh
-agentdrive integrate --protocol codex-app-server --workspace "$WORKSPACE" \
-  --mount-path "$AGENTDRIVE_DIRECTORY/mounts/project" -- codex app-server --listen stdio://
-```
-
-The bridge exchanges newline-delimited JSON-RPC, reuses the mount, and launches the agent after the directory is ready. ACP `session/new`, `session/load`, and `session/resume`, plus Codex `thread/start`, `thread/resume`, `thread/fork`, and `turn/start`, receive the mounted directory as `cwd`. Conversation IDs remain managed by the application.
-
-## Saving and recovery
-
-Autosave runs once pending changes reach approximately two seconds of age, including during continuous writes; the daemon checks once per second. Pending uploads and follower updates are checked every two seconds. A save captures the current files of the shared branch.
-
-The bridge queries the current mount binding before each task. For a manually managed mount, it saves on completion, cancellation, failure, agent exit, or disconnection and forwards normal completion responses after a successful local save. For an automatic mount, it registers the execution before forwarding the task, then reports its terminal outcome to the daemon. The daemon completes saving and permission release asynchronously after the driver reports no tracked handles. Retried requests retain their identity, and duplicate protocol requests replay completed responses. Shared mounts remain available after disconnection.
-
-Switching or restoring a branch can change the binding ID or generation. Delayed save requests fail with `STALE_BINDING`; the next task queries the current binding again. Reconnection after a daemon restart restores saved content and checks the native mount. Changes that never reached a save can be lost.
-
-Custom applications can call `POST /api/lifecycle`:
-
-| Event | Fields | Behavior |
-| --- | --- | --- |
-| `attach` | `request_id`, `workspace`, `mount_path`, optional `branch`, optional `automatic` | Prepare or reuse the mount; return `binding` and `mount_path`. Uses the daemon's collaboration setting. `automatic: true` requires automatic mode to be available. |
-| `check` | `request_id`, `workspace`, `mount_path` | Query the current writable binding and collaboration status at the normalized path returned by attach. |
-| `save` | `request_id`, `mount`, `expected_binding_generation` | Save that mount generation and return its operation record. |
-
-The daemon publishes remotely in the background. `remote_confirmed` indicates successful remote publication of the operation.
-
-## Automatic collaboration
-
-Enable automatic collaboration and configure remote storage. Mount the shared branch and register each turn through the webhook. The first file mutation requests write ownership. Finish writing the turn's output, including flushing application buffers, before sending the terminal callback.
-
-AgentDrive commits and publishes the native turn’s changes. The Mounts panel shows registered executions, the writer and save progress. CSI clients use the branch write policy: exclusive mode supports explicit writer handoff, and serialized mode permits each bound sandbox to publish its changes.
-
-With automatic collaboration enabled, `mount_save`, `revision_commit` (commit or checkpoint), `branch_restore`, and `merge_apply` request write authority through the same coordinator, including commands on an unmounted local branch. Protected branches retain their existing ownership rules. The coordinator checks the requested head, generation, and optional mutation sequence before and after acquisition. A lease epoch change alone can be reconciled when these content conditions still match. Recoverable unsaved requests reuse their request ID; changed content requires rereading the branch and submitting a new request. Merge preparation uses fixed revisions without claiming authority. Applying a merge or resuming a restore validates the target again after acquiring authority.
-
-Disabling the global switch preserves stable branches' current authority for manual management. Releases and recovery switches that have already frozen mutations continue to completion. New writable mounts use the shared branch selected by the request, an existing mount, the local selection, or the workspace root branch. Local-only storage and read-only mounts retain ordinary mount behavior.
-
-Wrap a Codex App Server process to register executions and forward completion outcomes:
-
-```sh
-agentdrive integrate --protocol codex-app-server \
-  --workspace "$WORKSPACE" --branch "$BRANCH" \
-  --mount-path "$AGENTDRIVE_DIRECTORY/mounts/project" -- codex app-server
-```
-
-The wrapper supports the same `--branch` option for ACP and detects the daemon's collaboration setting. Optional `--automatic` requires automatic mode to be available and cannot override a disabled global switch. This command wraps the process it launches; it does not subscribe to unrelated desktop-app sessions. No model-issued MCP acquisition call is required.
-
-Custom integrations call these local HTTP endpoints:
-
-| Endpoint | Input / output |
-| --- | --- |
-| `GET /api/workspaces/{workspace}/collaboration` | Returns branch coordination status and associated local mount IDs. |
-| `PUT /api/collaboration` | `{mount, expected_binding_generation, enabled}`. The setting must match the global switch. |
-| `POST /api/collaboration/events` | `{mount, source, thread_id, turn_id, phase}`; phase is `started`, `completed`, `interrupted`, or `failed`. |
-| `POST /api/collaboration/codex` | Codex notification with additional `mount` and `source` fields. Accepts `turn/started` and terminal `turn/completed` notifications. |
-
-Register `started` before the execution accesses the work directory. Reuse the same source, thread, turn, and mount identifiers for its completion. The daemon associates registration with the mount generation and write authority; clients do not supply an unlock epoch. Repeated terminal events are idempotent, and stale events cannot release a later grant. A successful event response acknowledges coordination state, not completion of remote publication or permission release.
-
-To simulate a turn, set `MOUNT_ID` to the local writable mount ID and use a fresh `turn_id` for each execution.
-
-```sh
-send_turn_event() {
-  curl --fail-with-body -sS http://127.0.0.1:7421/api/collaboration/events \
-    -H 'Content-Type: application/json' \
-    -d "{\"mount\":\"$MOUNT_ID\",\"source\":\"worker\",\"thread_id\":\"session-1\",\"turn_id\":\"$TURN_ID\",\"phase\":\"$1\"}"
-}
-TURN_ID="$(uuidgen)"
-send_turn_event started
-# Write and flush the turn output in the mounted directory.
-send_turn_event completed
-```
-
-Example Codex notification:
-
-```json
-{
-  "mount": "<mount-id>",
-  "source": "codex-local",
-  "method": "turn/completed",
-  "params": {
-    "threadId": "thread-123",
-    "turn": {"id": "turn-456", "status": "completed"}
-  }
-}
-```
-
-The terminal states `completed`, `failed` and `interrupted` preserve accepted changes. After handoff, reopen files by their original paths to read the new version.
+Agents can read and write the mounted directory through their ordinary file tools. Flush changed files before calling `mount_save` with the current mount ID and generation. A successful operation reports `local_saved`. Inspect `remote_confirmed` when requesting remote durability.
 
 ## Branches and dashboard
 
-`agentdrive branch create` and MCP `branch_create` explicitly create branches while preserving the selection. `agentdrive branch switch` and MCP `branch_switch` save the previous branch and update this location's workspace selection. CLI and MCP complete the switch in one call. On `MOUNT_BUSY`, close files and processes using the directory or restart the Agent, then retry `branch_switch` with the original request ID. Other errors preserve their specific cause.
+`agentdrive branch create` and MCP `branch_create` explicitly create branches while preserving the selection. `agentdrive branch switch` and MCP `branch_switch` save the previous branch and update this location's workspace selection. CLI and MCP complete the switch in one call. On Windows, retry the same request after closing any file or directory that WinFsp reports as busy. Other errors preserve their specific cause.
 
 Existing databases retain their branches and selections. With no selection, one writable local branch is reused automatically; multiple writable local branches require an explicit `branch_switch`.
 
@@ -163,7 +72,6 @@ Local saving, remote confirmation and mount readiness have separate indicators. 
 
 Read-only endpoints are `GET /api/workspaces` and `GET /api/workspaces/{workspace}`. The latter returns `status`, `revisions`, `summary` and `origins`. `summary` contains `branch_count`, `mount_count`, `ready_mount_count` and `mounted_branch_count`. `status.mounts` contains unreleased bindings sorted by path. `origins` identifies each branch's source branch and revision, revision availability, and whether it is the workspace root. `selected_branch` is this location's default selection for the workspace. Global runtime settings are available at `/settings`; see [configuration](configuration.md).
 
-Protocol references: [ACP sessions](https://agentclientprotocol.com/protocol/v1/session-setup), [ACP turns](https://agentclientprotocol.com/protocol/v1/prompt-turn), and [Codex app-server](https://developers.openai.com/codex/app-server/).
 
 The cards show active branches, local mount bindings, distinct branches used by ready mounts, and remote synchronization for the selected workspace. Released bindings are excluded; preparing, paused and recovery-required bindings remain visible with their state. The branch graph connects each branch to its exact creation revision using `source_branch` and `base_revision`; source revisions can be commits, autosaves or checkpoints. Click a source revision to inspect it. **Default** marks the local selection for requests that omit a branch; mounted badges count ready directories.
 
@@ -173,7 +81,7 @@ The **Branch and mount relationships** panel on this page shows branch ownership
 
 **Branch management** (`/branches`) creates a named branch from selected source content. Local branches can use `source_branch` to capture current working content, including uncommitted changes. Use `source` to fork a saved revision in the workspace. These two parameters are mutually exclusive. The list shows all known branches and their origins, with switch and mount links for locally writable branches. Switching updates the local selection and any mounted directory using the previous selected branch.
 
-The pages call existing MCP services through `POST /api/commands/{command}`. Allowed commands are `branch_create`, `branch_switch`, `mount_prepare`, `mount_save`, `mount_unmount`, `mount_release`, `operation_get` and `operation_by_request`, with the same argument shapes as the MCP tools. The daemon identity and binding generation checks apply. Progress separately reports `local_saved`, `remote_confirmed` and `mount_ready`. Each action retains its `request_id` across reloads and interrupted responses so the browser can query or retry the original request. Busy directories show release instructions and recovery controls.
+The pages call existing MCP services through `POST /api/commands/{command}`. Allowed commands are `branch_create`, `branch_switch`, `mount_prepare`, `mount_save`, `mount_unmount`, `mount_release`, `operation_get` and `operation_by_request`, with the same argument shapes as the MCP tools. The daemon identity and binding generation checks apply. Progress separately reports `local_saved`, `remote_confirmed` and `mount_ready`. Each action retains its `request_id` across reloads and interrupted responses so the browser can query or retry the original request. The page displays recovery controls for operations that request a mount release.
 
 The branch badge distinguishes unsaved changes (`mutation_seq != saved_seq`), automatically saved but uncommitted changes (matching sequences with `dirty`), and committed content (matching sequences without `dirty`). Saved content has a durable local checkpoint. The tooltip identifies checkpoints awaiting an autosave revision; remote confirmation appears in the synchronization card. Stopped writers have a separate indicator.
 
@@ -192,10 +100,6 @@ If the branch changes during browsing, refresh the file dialog to read its lates
 The default dashboard landing page is `/archive`, above Branches & Versions in the navigation. Select a project and branch to read its current files without changing the mounted branch. The page uses `GET /api/workspaces/{workspace}/archive` for current workspace status without loading revision history, and shares `BranchFilesApi` directory and file reads with the branch dialog. Filtering applies to loaded entries in the current directory; hidden files can be revealed. Markdown uses safe document text with a source toggle. Project, branch and directory are preserved in the URL.
 
 Remote confirmation requires a known remote reference with matching owner, authority epoch, generation, durable sequence and working root, plus locally saved changes. An empty queue alone does not establish remote saving. Status reflects the last known confirmation. To read the latest changes from a CSI client, reopen the file in the other sandbox or click **刷新文件** in the dashboard.
-
-## Native NFS on macOS
-
-Each working directory is served over loopback NFSv3. Handoff keeps the volume mounted and fences writes from outdated file handles.
 
 ## Workspace discovery and deletion
 
