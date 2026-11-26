@@ -172,12 +172,12 @@ impl IndexedTreeQuery {
 
 #[async_trait]
 impl TreeQuery for IndexedTreeQuery {
-    async fn lookup(
+    async fn lookup_node(
         &self,
         workspace: WorkspaceId,
         object: &ObjectRef,
         path: &WorkspacePath,
-    ) -> Result<Option<Inode>> {
+    ) -> Result<Option<Node>> {
         let root = self.root(workspace, object).await?;
         let directories = IndexReader::<DirectoryEntry>::new(
             self.content.as_ref(),
@@ -192,6 +192,7 @@ impl TreeQuery for IndexedTreeQuery {
             usize::MAX,
         );
         let mut inode = Self::inode(&inodes, &root.inodes, InodeId::ROOT).await?;
+        let mut names = Vec::new();
         for name in path.as_str().split('/').filter(|name| !name.is_empty()) {
             if inode.kind != FileKind::Directory {
                 return Ok(None);
@@ -207,9 +208,14 @@ impl TreeQuery for IndexedTreeQuery {
             if entry.parent != inode.id || directory_key(&entry)? != key {
                 return Err(Error::integrity("directory key mismatch"));
             }
+            names.push(entry.name);
             inode = Self::inode(&inodes, &root.inodes, entry.inode).await?;
         }
-        Ok(Some(inode))
+        Ok(Some(Node {
+            path: format!("/{}", names.join("/")).try_into()?,
+            inode,
+            dirty: false,
+        }))
     }
 
     async fn differences(

@@ -70,26 +70,17 @@ fn source(src: &CopySource) -> S3Result<(&str, &str)> {
     }
 }
 
-fn read_conditions(
-    etag: &str,
-    if_match: Option<&ETagCondition>,
-    if_none_match: Option<&ETagCondition>,
-) -> S3Result<()> {
-    if let Some(condition) = if_match
-        && !condition.is_any()
-        && condition.as_etag().and_then(ETag::as_strong) != Some(etag)
-    {
-        return Err(s3_error!(PreconditionFailed));
+fn check_read_target(version: Option<&str>, part: Option<i32>) -> S3Result<()> {
+    if version.is_some_and(|v| v != "null") {
+        return Err(s3_error!(NoSuchVersion));
     }
-    if let Some(condition) = if_none_match
-        && (condition.is_any() || condition.as_etag().map(ETag::value) == Some(etag))
-    {
-        return Err(s3_error!(NotModified));
+    if part.is_some() {
+        return Err(s3_error!(NotImplemented, "individual multipart reads"));
     }
     Ok(())
 }
 
-fn copy_conditions(
+fn read_conditions(
     meta: &ObjectMeta,
     matches: Option<&ETagCondition>,
     differs: Option<&ETagCondition>,
@@ -106,8 +97,11 @@ fn copy_conditions(
         || modified_since.is_none_or(|t| modified > *t),
         |tag| !tag.is_any() && tag.as_etag().map(ETag::value) != Some(meta.etag.as_str()),
     );
-    if !unchanged || !changed {
+    if !unchanged {
         return Err(s3_error!(PreconditionFailed));
+    }
+    if !changed {
+        return Err(s3_error!(NotModified));
     }
     Ok(())
 }
@@ -255,8 +249,15 @@ impl S3 for Gateway {
         req: S3Request<HeadObjectInput>,
     ) -> S3Result<S3Response<HeadObjectOutput>> {
         let i = req.input;
+        check_read_target(i.version_id.as_deref(), i.part_number)?;
         let m = self.store.head(&i.bucket, &i.key).await.map_err(error)?;
-        read_conditions(&m.etag, i.if_match.as_ref(), i.if_none_match.as_ref())?;
+        read_conditions(
+            &m,
+            i.if_match.as_ref(),
+            i.if_none_match.as_ref(),
+            i.if_modified_since.as_ref(),
+            i.if_unmodified_since.as_ref(),
+        )?;
         Ok(S3Response::new(HeadObjectOutput {
             content_length: Some(m.size as i64),
             e_tag: Some(ETag::Strong(m.etag)),
@@ -270,9 +271,16 @@ impl S3 for Gateway {
         req: S3Request<GetObjectInput>,
     ) -> S3Result<S3Response<GetObjectOutput>> {
         let i = req.input;
+        check_read_target(i.version_id.as_deref(), i.part_number)?;
         let reader = self.store.reader(&i.bucket, &i.key).await.map_err(error)?;
         let m = reader.meta.clone();
-        read_conditions(&m.etag, i.if_match.as_ref(), i.if_none_match.as_ref())?;
+        read_conditions(
+            &m,
+            i.if_match.as_ref(),
+            i.if_none_match.as_ref(),
+            i.if_modified_since.as_ref(),
+            i.if_unmodified_since.as_ref(),
+        )?;
         let partial = i.range.is_some();
         let range = match i.range {
             Some(requested) => requested
@@ -340,13 +348,14 @@ impl S3 for Gateway {
             return Err(s3_error!(NotImplemented, "conditional copy destination"));
         }
         let reader = self.store.reader(bucket, key).await.map_err(error)?;
-        copy_conditions(
+        read_conditions(
             &reader.meta,
             i.copy_source_if_match.as_ref(),
             i.copy_source_if_none_match.as_ref(),
             i.copy_source_if_modified_since.as_ref(),
             i.copy_source_if_unmodified_since.as_ref(),
-        )?;
+        )
+        .map_err(|_| s3_error!(PreconditionFailed))?;
         if reader.meta.size > MAX_OBJECT as u64 {
             return Err(s3_error!(EntityTooLarge));
         }
@@ -472,13 +481,14 @@ impl S3 for Gateway {
         self.store.check_writer(&i.bucket).await.map_err(error)?;
         let (bucket, key) = source(&i.copy_source)?;
         let reader = self.store.reader(bucket, key).await.map_err(error)?;
-        copy_conditions(
+        read_conditions(
             &reader.meta,
             i.copy_source_if_match.as_ref(),
             i.copy_source_if_none_match.as_ref(),
             i.copy_source_if_modified_since.as_ref(),
             i.copy_source_if_unmodified_since.as_ref(),
-        )?;
+        )
+        .map_err(|_| s3_error!(PreconditionFailed))?;
         let range = match i.copy_source_range {
             Some(range) => Range::parse(&range)
                 .map_err(|_| s3_error!(InvalidRange))?
@@ -532,6 +542,10 @@ impl S3 for Gateway {
         req: S3Request<AbortMultipartUploadInput>,
     ) -> S3Result<S3Response<AbortMultipartUploadOutput>> {
         let i = req.input;
+        self.store
+            .authorize_upload_abort(&i.bucket)
+            .await
+            .map_err(error)?;
         self.uploads.abort(&i.upload_id, &i.bucket, &i.key).await?;
         Ok(S3Response::new(AbortMultipartUploadOutput::default()))
     }

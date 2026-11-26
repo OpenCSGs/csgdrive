@@ -220,7 +220,9 @@ pub(crate) fn encode_operation(record: OperationRecord) -> Result<Value> {
 
 impl ServerHandler for McpServer {
     fn get_info(&self) -> ServerConfig {
-        ServerConfig::new(ServerCapabilities::builder().enable_tools().build()).with_server_info(Implementation::new("agentdrive", env!("CARGO_PKG_VERSION"))).with_instructions("AgentDrive manages durable workspaces and isolated agent sessions. Mutation tools require a stable request_id. Retry with the same request_id and identical request. Inspect local_saved, remote_confirmed, mount_ready and phase independently. branch_switch attempts the entire switch in one call. On MOUNT_BUSY, close processes using the directory or restart the Agent, then retry branch_switch with the same request_id. Other waiting_for_quiesce operations continue through mount_release after the mount is no longer in use. Use workspace_status to obtain current BranchGuard values.")
+        ServerConfig::new(ServerCapabilities::builder().enable_tools().build())
+            .with_server_info(Implementation::new("agentdrive", env!("CARGO_PKG_VERSION")))
+            .with_instructions("AgentDrive manages durable workspaces. Mutations require a stable request_id. Retry with the same request_id and identical request. Inspect local_saved, remote_confirmed, mount_ready and phase independently. Use workspace_status for current BranchGuard values. For branch_switch, retry the same request after resolving a retryable mount error. Use mount_release to resume other pending mount handoffs.")
     }
     async fn list_tools(
         &self,
@@ -396,7 +398,7 @@ pub fn tool_catalog() -> Vec<Tool> {
         ),
         tool::<Command<SwitchBranch>>(
             "branch_switch",
-            "Save and switch this location's branch and mounted directory in one call. On MOUNT_BUSY, close processes using the directory or restart the Agent, then retry with the same request_id. Other failures retain their specific cause.",
+            "Save and switch this location's selected branch and desktop mount. A running Sandbox keeps its own branch mount.",
             false,
         ),
         tool::<Command<RestoreBranch>>(
@@ -466,7 +468,7 @@ pub fn tool_catalog() -> Vec<Tool> {
         ),
         tool::<Command<Unmount>>(
             "mount_unmount",
-            "Unmount an idle binding with generation verification.",
+            "Unmount the binding identified by its mount ID and generation.",
             false,
         ),
         tool::<OperationQuery>(

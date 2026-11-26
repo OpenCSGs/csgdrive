@@ -58,8 +58,7 @@ Omit `write_mode` to use serialized writes. Set `read_only: true` to bind a read
 ### Assign one writer
 
 Set `write_mode` to `exclusive` when binding each alias.
-The first binding sets the mode for the branch. A second alias must specify
-the same mode.
+The first writable alias sets the mode for the branch. Subsequent writable aliases must specify the same mode.
 
 ```sh
 # Set BRANCH_ID to the existing branch for exclusive writes.
@@ -88,7 +87,7 @@ Clients can probe a bucket, list objects (V1/V2), read byte ranges, create
 directory markers, and write, copy or delete objects. The gateway supports up
 to 64 MiB per uploaded object and eight unfinished multipart uploads. Uploads expire after one hour without a successful part, and the service releases abandoned parts from memory. Clients start a new upload after expiration or restart.
 
-GET streams the requested byte range from one file version. Single and batch deletes check ETag and size under the branch reservation. Requests to delete a specific version or to match a deletion timestamp return an error. Source ETag and date conditions apply to both copy operations.
+GET streams the requested byte range from one file version. GET and HEAD support the current S3 object or its null version. Access saved AgentDrive revisions through revision aliases. Individual multipart reads are unsupported. Single and batch deletes check ETag and size under the branch reservation. Requests to delete a specific version or to match a deletion timestamp return an error. GET, HEAD and both copy operations honor ETag and modification date conditions.
 
 ## Verification
 

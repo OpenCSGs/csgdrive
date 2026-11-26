@@ -147,18 +147,9 @@ impl Store {
         }
         let runtime = &self.engine.runtime;
         let _gate = runtime.lock_branch(s.branch_id).await;
-        runtime
-            .authorize(
-                &self.principal,
-                s.workspace_id,
-                Some(s.branch_id),
-                Permission::Read,
-            )
+        let (_, b) = self
+            .authorized_branch(s.workspace_id, s.branch_id, Permission::Read)
             .await?;
-        let b = runtime.branch(s.branch_id).await?;
-        if b.state == BranchState::Deleted {
-            return Err(Error::new(ErrorKind::NoSuchBucket, "branch was deleted"));
-        }
         let version = format!(
             "{}:{}:{}:{}",
             b.id, b.authority_epoch, b.generation, b.mutation_seq
@@ -222,7 +213,7 @@ impl Store {
         // A disconnected HTTP client cannot drop the guard while AgentDrive's SQLite commit is running.
         tokio::spawn(async move {
             let guard = store.leases.guard(&bucket).await?;
-            let session = guard.session();
+            let session = &guard.binding;
             let inode = store
                 .engine
                 .update_branch_object(

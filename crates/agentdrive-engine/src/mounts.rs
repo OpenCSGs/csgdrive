@@ -1023,7 +1023,8 @@ impl MountApi for MountService {
             if branch.workspace != request.workspace {
                 return Err(Error::invalid("branch belongs to another workspace"));
             }
-            self.runtime
+            let workspace = self
+                .runtime
                 .authorize(
                     &operation.operation.principal,
                     request.workspace,
@@ -1037,7 +1038,7 @@ impl MountApi for MountService {
             if let Some(revision) = request.revision {
                 self.revisions
                     .trees
-                    .revision(request.workspace, revision)
+                    .readable_revision(&operation.operation.principal, &workspace, revision)
                     .await?;
             }
             request.branch = Some(branch.id);

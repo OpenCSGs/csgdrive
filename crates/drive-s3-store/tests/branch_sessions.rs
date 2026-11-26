@@ -879,3 +879,238 @@ async fn revision_alias_keeps_its_saved_root_and_rejects_writes_after_restart() 
     );
     assert_eq!(store.get("current", "new.txt").await.unwrap(), &b"new"[..]);
 }
+
+#[tokio::test]
+async fn read_only_alias_does_not_choose_the_first_writers_mode() {
+    let root = tempdir().unwrap();
+    let store = open_store(root.path()).await.unwrap();
+    let (workspace, main) = create_workspace(&store, "policies").await;
+    for first_writer in [WriteMode::Exclusive, WriteMode::Serialized] {
+        let other = if first_writer == WriteMode::Exclusive {
+            WriteMode::Serialized
+        } else {
+            WriteMode::Exclusive
+        };
+        let branch = fork(&store, workspace, main, &format!("branch-{first_writer:?}")).await;
+        let view = format!("view-{branch}");
+        store
+            .bind_view(&view, workspace, branch, other, None, true)
+            .await
+            .unwrap();
+        let writer = format!("writer-{branch}");
+        store
+            .bind_ids(&writer, workspace, branch, first_writer)
+            .await
+            .unwrap();
+        assert_eq!(store.status(&view).await.unwrap().write_mode, first_writer);
+        assert_eq!(
+            store.check_writer(&view).await.unwrap_err().kind,
+            ErrorKind::AccessDenied
+        );
+        assert_eq!(
+            store
+                .bind_ids("another-writer", workspace, branch, other)
+                .await
+                .unwrap_err()
+                .kind,
+            ErrorKind::Conflict
+        );
+    }
+}
+
+#[tokio::test]
+async fn read_grants_do_not_confer_writer_ownership() {
+    use agentdrive_model::{Grant, Permission};
+    let root = tempdir().unwrap();
+    let owner = open_store(root.path()).await.unwrap();
+    let (workspace, branch) = create_workspace(&owner, "permissions").await;
+    for alias in ["first", "second"] {
+        owner
+            .bind_ids(alias, workspace, branch, WriteMode::Exclusive)
+            .await
+            .unwrap();
+    }
+    let engine = owner.engine();
+    let actor: Principal = "reader".to_owned().try_into().unwrap();
+    let reader = Store::from_engine(
+        engine.clone(),
+        &root.path().join("s3-sessions.sqlite3"),
+        actor.clone(),
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        reader.check_bucket("first").await.unwrap_err().kind,
+        ErrorKind::AccessDenied
+    );
+    let mut record = engine
+        .runtime
+        .state
+        .workspace(workspace)
+        .await
+        .unwrap()
+        .unwrap();
+    record.grants.push(Grant {
+        principal: actor,
+        branch: Some(branch),
+        permissions: vec![Permission::Read],
+    });
+    engine
+        .runtime
+        .state
+        .commit(agentdrive_ports::LocalCommit {
+            workspaces: vec![record],
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    reader.check_bucket("first").await.unwrap();
+    reader
+        .bind_view("view", workspace, branch, WriteMode::Serialized, None, true)
+        .await
+        .unwrap();
+    assert_eq!(
+        reader
+            .bind_ids("writer", workspace, branch, WriteMode::Exclusive)
+            .await
+            .unwrap_err()
+            .kind,
+        ErrorKind::AccessDenied
+    );
+    assert_eq!(
+        reader.acquire("first").await.unwrap_err().kind,
+        ErrorKind::AccessDenied
+    );
+    let epoch = owner.acquire("first").await.unwrap().epoch;
+    assert_eq!(
+        reader.check_writer("first").await.unwrap_err().kind,
+        ErrorKind::AccessDenied
+    );
+    assert_eq!(
+        reader
+            .authorize_upload_abort("first")
+            .await
+            .unwrap_err()
+            .kind,
+        ErrorKind::AccessDenied
+    );
+    assert_eq!(
+        reader.handoff("first", "second").await.unwrap_err().kind,
+        ErrorKind::AccessDenied
+    );
+    assert_eq!(
+        reader.release("first").await.unwrap_err().kind,
+        ErrorKind::AccessDenied
+    );
+    let held = owner.status("first").await.unwrap();
+    assert!(held.writable);
+    assert_eq!(held.epoch, epoch);
+}
+
+#[tokio::test]
+async fn snapshot_reads_preserve_key_spelling_and_check_the_source_branch() {
+    use agentdrive_model::{BranchGuard, Grant, Permission};
+    use agentdrive_ports::{CommitKind, CommitRevision, LocalCommit};
+    let root = tempdir().unwrap();
+    let store = open_store(root.path()).await.unwrap();
+    let (workspace, source) = create_workspace(&store, "archives").await;
+    let other = fork(&store, workspace, source, "other").await;
+    store
+        .bind_ids("live", workspace, source, WriteMode::Serialized)
+        .await
+        .unwrap();
+    store
+        .put("live", "Photos/Image", Bytes::from_static(b"original"))
+        .await
+        .unwrap();
+    let engine = store.engine();
+    let branch = engine.runtime.branch(source).await.unwrap();
+    let saved = engine
+        .services
+        .revisions
+        .commit(
+            request("save-photo"),
+            CommitRevision {
+                guard: BranchGuard::from(&branch),
+                kind: CommitKind::Commit,
+                message: None,
+                durability: Default::default(),
+            },
+        )
+        .await
+        .unwrap();
+    assert!(saved.error.is_none(), "{:?}", saved.error);
+    let revision = engine.runtime.branch(source).await.unwrap().formal_head;
+    store
+        .bind_view(
+            "snapshot",
+            workspace,
+            other,
+            WriteMode::Serialized,
+            Some(revision),
+            true,
+        )
+        .await
+        .unwrap();
+    for alias in ["live", "snapshot"] {
+        assert_eq!(store.get(alias, "Photos/Image").await.unwrap(), "original");
+        for key in ["photos/Image", "Photos/image"] {
+            assert_eq!(
+                store.head(alias, key).await.unwrap_err().kind,
+                ErrorKind::NoSuchKey
+            );
+        }
+    }
+    let actor: Principal = "viewer".to_owned().try_into().unwrap();
+    let mut record = engine
+        .runtime
+        .state
+        .workspace(workspace)
+        .await
+        .unwrap()
+        .unwrap();
+    record.grants.push(Grant {
+        principal: actor.clone(),
+        branch: Some(other),
+        permissions: vec![Permission::Read],
+    });
+    engine
+        .runtime
+        .state
+        .commit(LocalCommit {
+            workspaces: vec![record],
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    let viewer = Store::from_engine(engine, &root.path().join("s3-sessions.sqlite3"), actor)
+        .await
+        .unwrap();
+    assert_eq!(
+        viewer
+            .bind_view(
+                "new-view",
+                workspace,
+                other,
+                WriteMode::Serialized,
+                Some(revision),
+                true
+            )
+            .await
+            .unwrap_err()
+            .kind,
+        ErrorKind::AccessDenied
+    );
+    assert_eq!(
+        viewer
+            .get("snapshot", "Photos/Image")
+            .await
+            .unwrap_err()
+            .kind,
+        ErrorKind::AccessDenied
+    );
+    assert_eq!(
+        viewer.list("snapshot", "").await.unwrap_err().kind,
+        ErrorKind::AccessDenied
+    );
+}

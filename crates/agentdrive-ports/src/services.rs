@@ -83,6 +83,16 @@ pub trait ObjectGraph: Send + Sync {
 #[async_trait]
 pub trait RevisionReader: Send + Sync {
     async fn revision(&self, workspace: WorkspaceId, revision: RevisionId) -> Result<Revision>;
+    async fn readable_revision(
+        &self,
+        actor: &Principal,
+        workspace: &Workspace,
+        id: RevisionId,
+    ) -> Result<Revision> {
+        let revision = self.revision(workspace.id, id).await?;
+        workspace.authorize(actor, revision.branch, Permission::Read)?;
+        Ok(revision)
+    }
     async fn tree(&self, workspace: WorkspaceId, root: &ObjectRef) -> Result<FileTree>;
 }
 
@@ -94,7 +104,19 @@ pub trait TreeQuery: Send + Sync {
         workspace: WorkspaceId,
         root: &ObjectRef,
         path: &WorkspacePath,
-    ) -> Result<Option<Inode>>;
+    ) -> Result<Option<Inode>> {
+        Ok(self
+            .lookup_node(workspace, root, path)
+            .await?
+            .map(|node| node.inode))
+    }
+    /// Return the path spelling recorded in the directory index.
+    async fn lookup_node(
+        &self,
+        workspace: WorkspaceId,
+        root: &ObjectRef,
+        path: &WorkspacePath,
+    ) -> Result<Option<Node>>;
     async fn differences(
         &self,
         workspace: WorkspaceId,

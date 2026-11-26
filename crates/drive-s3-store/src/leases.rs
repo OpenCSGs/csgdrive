@@ -25,12 +25,6 @@ pub(super) struct WriteGuard {
     pub binding: MountSession,
 }
 
-impl WriteReservation for WriteGuard {
-    fn session(&self) -> &MountSession {
-        &self.binding
-    }
-}
-
 impl Database {
     async fn run<T: Send + 'static>(
         &self,
@@ -157,9 +151,8 @@ fn check_session_schema(db: &Connection, version: i32) -> Result<()> {
     Ok(())
 }
 
-#[async_trait::async_trait]
-impl SessionRepository for Database {
-    async fn bind(
+impl Database {
+    pub(super) async fn bind(
         &self,
         bucket: &str,
         workspace: WorkspaceId,
@@ -169,26 +162,30 @@ impl SessionRepository for Database {
         read_only: bool,
     ) -> Result<MountSession> {
         let bucket = bucket.to_owned();
-        self.run(move |c| {
-            c.execute_batch("BEGIN IMMEDIATE")?;
-            c.execute(
-                "INSERT INTO drive_branches(branch_id,workspace_id,serialized) VALUES (?1,?2,?3) ON CONFLICT(branch_id) DO NOTHING",
-                params![branch.to_string(), workspace.to_string(), mode == WriteMode::Serialized],
+        self.run(move |mut connection| {
+            let tx = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+            // Only a writable alias establishes the policy for subsequent writers.
+            tx.execute(
+                "INSERT INTO drive_branches(branch_id,workspace_id,serialized) VALUES (?1,?2,?3)
+                 ON CONFLICT(branch_id) DO UPDATE SET serialized=excluded.serialized
+                 WHERE NOT ?4 AND drive_branches.serialized != excluded.serialized
+                 AND NOT EXISTS (SELECT 1 FROM drive_sessions WHERE branch_id=?1 AND read_only=0)",
+                params![branch.to_string(), workspace.to_string(), mode == WriteMode::Serialized, read_only],
             )?;
-            c.execute(
+            tx.execute(
                 "INSERT INTO drive_sessions(bucket,branch_id,revision,read_only) VALUES(?1,?2,?3,?4) ON CONFLICT(bucket) DO NOTHING",
                 params![bucket, branch.to_string(), revision.map(|id| id.to_string()), read_only],
             )?;
-            let result = status(&c, &bucket)?;
+            let result = status(&tx, &bucket)?;
             if result.branch_id != branch || result.workspace_id != workspace || (!read_only && result.write_mode != mode) || result.revision != revision || result.read_only != read_only {
                 return Err(Error::new(ErrorKind::Conflict, "existing binding or branch write mode differs"));
             }
-            c.execute_batch("COMMIT")?;
+            tx.commit()?;
             Ok(result)
         }).await
     }
 
-    async fn branch_mounts(
+    pub(super) async fn branch_mounts(
         &self,
         workspace: WorkspaceId,
         branch: BranchId,
@@ -207,24 +204,28 @@ impl SessionRepository for Database {
         .await
     }
 
-    async fn status(&self, bucket: &str) -> Result<MountSession> {
+    pub(super) async fn status(&self, bucket: &str) -> Result<MountSession> {
         let bucket = bucket.to_owned();
         self.run(move |c| status(&c, &bucket)).await
     }
-    async fn guard(&self, bucket: &str) -> Result<Box<dyn WriteReservation>> {
+    pub(super) async fn guard(&self, bucket: &str) -> Result<WriteGuard> {
         let branch = self.status(bucket).await?.branch_id;
         let reservation = self.reserve(branch).await?;
         // Bindings are immutable. Recheck ownership after preceding transfers finish.
         let binding = self.status(bucket).await?;
         binding.require_writer()?;
-        Ok(Box::new(WriteGuard {
+        Ok(WriteGuard {
             _reservation: reservation,
             binding,
-        }))
+        })
     }
 
-    async fn change(&self, bucket: &str, change: SessionChange) -> Result<MountSession> {
-        let branch = self.status(bucket).await?.branch_id;
+    pub(super) async fn change(
+        &self,
+        bucket: &str,
+        branch: BranchId,
+        change: SessionChange,
+    ) -> Result<MountSession> {
         let reservation = self.reserve(branch).await?;
         let bucket = bucket.to_owned();
         self.run(move |c| {

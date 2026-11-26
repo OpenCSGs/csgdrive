@@ -1,6 +1,7 @@
 """Exercise the path-style S3 endpoint against an isolated local AgentDrive directory."""
 import argparse
 import concurrent.futures
+from datetime import timedelta
 import json
 import os
 import socket
@@ -59,6 +60,17 @@ def conditional_requests(s3, bucket):
     copy = dict(Bucket=bucket, Key=target, CopySource={"Bucket":bucket, "Key":key})
     rejected(412, s3.copy_object, **copy, CopySourceIfNoneMatch=current)
     mtime = s3.head_object(Bucket=bucket, Key=key)["LastModified"]
+    for read in (s3.get_object, s3.head_object):
+        args = dict(Bucket=bucket, Key=key)
+        rejected(404, read, **args, VersionId="old-version")
+        rejected(501, read, **args, PartNumber=2)
+        rejected(304, read, **args, IfModifiedSince=mtime)
+        rejected(412, read, **args, IfUnmodifiedSince=mtime - timedelta(seconds=1))
+        reply = read(**args, VersionId="null", IfMatch=current, IfUnmodifiedSince=mtime - timedelta(seconds=1))
+        assert reply["ETag"] == current
+        if "Body" in reply:
+            assert reply["Body"].read() == b"after"
+        rejected(304, read, **args, IfNoneMatch=current, IfModifiedSince=mtime - timedelta(seconds=1))
     rejected(412, s3.copy_object, **copy, CopySourceIfModifiedSince=mtime)
     assert contents(target) == b"preserved"
     upload = s3.create_multipart_upload(Bucket=bucket, Key=target)["UploadId"]
