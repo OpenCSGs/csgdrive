@@ -1,245 +1,110 @@
-# 配置与远程存储
+# 配置与工作区存储
 
 [English](configuration.md) | [简体中文](configuration.zh-CN.md)
 
-## 守护进程配置
+## 启动服务
 
-运行 `agentdrived init --directory /absolute/path/to/agentdrive` 创建 `agentdrive.json`、挂载目录与文件交换目录。通过 `agentdrived serve --config /absolute/path/to/agentdrive/agentdrive.json` 启动服务。配置文件每秒检查一次。Dashboard、CLI 和 MCP 直接连接本地服务，无需访问令牌。
+```sh
+agentdrived init --directory /srv/agentdrive
+agentdrived serve --config /srv/agentdrive/agentdrive.json
+```
 
-生成的配置包含 `data_dir`、`listen`、`mount_roots`、`directory_roots` 和 `collaboration`。
+在浏览器中打开 `http://127.0.0.1:7421/`。Dashboard、CLI 和 MCP 访问同一个 AgentDrive 服务，共用工作区数据库。需要接入 Kubernetes CSI 或其他 S3 客户端时，请在服务环境中设置 `DRIVE_S3_ACCESS_KEY` 和 `DRIVE_S3_SECRET_KEY`，并配置客户端可以访问的内网地址。
 
-| 字段 | 含义与默认值 |
+```sh
+agentdrived serve --config /srv/agentdrive/agentdrive.json \
+  --drive-s3-listen 10.0.0.10:19731 --drive-s3-admin-port 19732
+```
+
+CSI 驱动使用上述两项凭据请求 AgentDrive。AgentDrive 访问上游对象存储使用工作区配置中的凭据或服务运行环境中的凭据。
+
+## 启动配置与运行时设置
+
+`init` 创建 `agentdrive.json` 和相关目录。文件路径使用绝对路径。每个数据库目录同一时间由一个服务使用。
+
+| 启动字段 | 用途 |
 | --- | --- |
-| `data_dir` | 本地状态目录的绝对路径，初始化使用 `<directory>/state`；每个目录由一个 daemon 使用。 |
-| `listen` | 本机回环监听地址，初始化使用 `127.0.0.1:7421`。 |
-| `mount_roots` | 允许挂载的绝对路径列表，初始化创建 `<directory>/mounts`。 |
-| `directory_roots` | 允许导入导出的绝对路径列表，省略时为 `[]`；初始化允许 `<directory>/exchange`。 |
-| `principal` | 工作区操作记录使用的本地身份，默认 `owner`；全部客户端共用此身份。 |
-| `allowed_origins` | 额外允许的 HTTP Origin，默认 `[]`；CLI 和 stdio 连接省略 Origin。 |
-| `collaboration` | 默认 `{ "enabled": true }`，适用于此 daemon 的全部工作区与可写挂载。 |
-| `cache` | 本地版本内容缓存容量 `max_bytes`，默认 `2147483648`（2 GiB），必须为正整数；使用远程存储时生效。 |
-| `workspace_remotes` | 按工作区 ID 指定 S3 或 OpenCSG 存储。省略该 ID 或使用 `null` 表示仅保存在本机。 |
+| `data_dir` | 保存 SQLite 数据库、本地文件内容、缓存和临时文件。默认目录为 `<directory>/state`。 |
+| `listen` | Dashboard 和 MCP 的回环监听地址，默认为 `127.0.0.1:7421`。 |
+| `mount_roots` | 允许本地挂载的根目录，默认为 `<directory>/mounts`。 |
+| `directory_roots` | 允许导入和导出的根目录，默认为 `<directory>/exchange`。 |
+| `principal` | 服务记录客户端操作时使用的身份，默认为 `owner`。 |
 
-文件系统路径必须为绝对路径。启动前创建允许的根目录。JSON 字符串不展开 `~` 或环境变量；Windows 路径可以使用转义反斜线或正斜线。未知字段会被拒绝，配置文件最大为 1 MiB。配置和状态通过 daemon 用户的文件系统权限管理。
+启动配置在重启后生效。新建数据库时，服务从启动文件读取缓存容量、自动协作和 HTTP 来源的初始设置。之后的运行时设置保存在 SQLite。Dashboard 的「设置」页面展示当前配置，「创建工作区」用于选择文件存储位置。
 
-已有配置未指定 `principal` 时，程序保留原来第一项凭据对应的身份。迁移后忽略 `credentials` 和 `administrators`，保存设置时移除这些字段；原有令牌文件不再读取。远程存储继续使用 OpenCSG token 或 S3 凭据。
-
-## 运行时更新与 Dashboard 设置
-
-通过左下角的“设置”或 `/settings` 查看当前生效的配置。页面只读，可以选择工作区查看其存储位置。没有工作区时也能查看自动协作状态、缓存上限、HTTP 访问来源和启动配置。修改本机服务设置时，编辑“启动配置”中列出的 `agentdrive.json`。
-
-| 配置 | 生效时间 |
-| --- | --- |
-| `workspace_remotes` | 创建工作区时确定存储目标；同一目标的凭据可以更新 |
-| `cache` | 下次缓存检查，每 30 秒执行一次 |
-| `allowed_origins` | 下一次 HTTP 请求，包括已有 MCP 会话 |
-| `collaboration.enabled` | 下一次文件操作或协作检查；正在释放和恢复的操作继续执行 |
-| `data_dir`、`listen`、`mount_roots`、`directory_roots`、`principal`、进程环境 | 重启 daemon 后 |
-
-Origin 使用 `scheme://host[:port]` 格式，不能包含路径、结尾斜线、凭据、通配符或显式默认端口。同源请求与没有 Origin 的请求可以访问。服务继续使用回环监听地址、Host 与 Origin 检查；此配置不启用 CORS 响应头。
-
-外部文件修改无效时，保留当前配置并在设置页面显示错误。修正文件后，下次检查清除错误。编辑配置时应使用原子替换；启动配置修改需要重启。
-
-- `GET /api/settings` 返回当前 `runtime`、只读 `startup`、`config_path`、`revision` 和 `reload_error`。
-- `PUT /api/settings` 接受 `{ "revision": "<GET 返回的 revision>", "runtime": { "cache": { ... }, "allowed_origins": [], "workspace_remotes": {}, "collaboration": { "enabled": true } } }`，需要提供 GET 返回的完整运行配置。
-
-响应会隐藏已保存的远程密钥。配置版本过期或文件被外部修改时返回 409。校验失败保留当前配置与文件。页面会自动刷新并显示当前生效的配置版本。
-
-## 自动协作
-
-启用 `collaboration.enabled` 并配置远程存储后，首次修改共享分支的文件会申请写权限。Agent 在 turn 开始时登记，结束时发送回调。AgentDrive 自动提交并上传，最后一个 turn 结束且远端确认保存后交还写权限。挂载点管理页面可查看当前写入方、活动 turn 和保存状态。
-
-可以在 `agentdrive.json` 中将 `collaboration.enabled` 设为 `false` 以关闭自动协作。已开始的交接或恢复会继续完成。
-
-## 本地缓存容量
-
-`cache.max_bytes` 管理此 daemon 全部工作区的不可变对象缓存。后台每 30 秒检查一次，超过设置容量时清理到容量的 75%，按字节向下取整。程序内部的磁盘剩余空间阈值为 64 MiB：低于此值时也会启动清理，直到同时满足容量目标和剩余空间阈值，或者已经没有可清理的内容。
-
-清理只处理已获得远端确认、没有活动读取者且没有受保护引用的对象。当前分支内容、待发布数据、合并候选内容和固定缓存受到保护。受保护内容较多时，实际占用可能超过设置容量。SQLite 元数据、工作文件和临时文件另外占用磁盘空间。仅本地存储的工作区完整保留历史。Dashboard 以 GiB 显示配置的缓存上限。
+- `GET /api/settings` 返回 `startup`、`runtime`、`revision` 和配置文件路径。返回值会隐藏密钥。
+- 修改运行时设置时，将读到的完整 `runtime` 对象和当前 `revision` 提交给 `PUT /api/settings`。配置版本已改变会返回 409。保存成功后，新请求和服务重启都会使用更新后的设置。
+- `allowed_origins` 接受完整的 HTTP(S) 来源地址。`cache.max_bytes` 控制本地不可变对象的缓存容量，默认 2 GiB。服务每 30 秒检查一次缓存，保留本地需要使用的对象和正在读取的文件。
+- `collaboration.enabled` 默认为 true，控制本地可写挂载的自动协作。S3 挂载的写入方式由 S3 管理接口指定。
 
 ## 选择工作区存储
 
-在 Dashboard 点击“创建工作区”，选择“仅本地存储”、“S3 兼容存储（含 OSS）”或“OpenCSG Codes”。选择 Codes 时还可以勾选 XNet。每个工作区的存储位置和 XNet 选择在创建时确定，之后可在“设置 → 存储设置”中选择工作区查看。
+在 Dashboard 创建工作区，或向 `POST /api/workspaces` 提交 `request_id`、`name` 和可选的 `storage` 对象。请求中断后使用同一个 `request_id` 重试。省略 `storage` 会选择本地文件存储。工作区创建时确定存储位置。「设置 → 存储设置」展示该位置，同一位置的访问凭据可通过设置 API 更新。
 
-可以在配置文件中更新同一目标的访问凭据。已有工作区的存储目标记录在工作区元数据中。设置接口、配置文件重新加载和服务启动都会核对该记录。另一台机器连接此工作区时，使用相同的目标和自己的访问凭据。
+SQLite 保存工作区、分支、文件路径、版本，以及文件和内容标识之间的对应关系。S3 或 OpenCSG 根据内容标识保存实际文件。备份需要同时保全 SQLite 的一致性备份、本地存储目录中尚待发布的文件和仅在本地保存的文件，以及上游的文件内容。数据库目录包含保存过的后端凭据，应限制其文件系统权限。
 
-如果重新加载配置文件时提示工作区的存储位置已在创建时确定，请在 `agentdrive.json` 中为该工作区 ID 恢复原来的存储位置。运行中的服务会继续使用上次生效的配置，文件修正后会自动重新加载。如果同一错误导致服务启动失败，请修正文件后重新启动。
+### S3 与 OSS
 
-以下配置将一个工作区保存到 S3。其他工作区使用各自的配置。
+先创建目标 bucket。以下 JSON 可直接作为创建工作区接口的请求内容。
 
 ```json
 {
-  "workspace_remotes": {
-    "7380e2a8-9c21-4ae7-99a1-9cc605f4b412": {
-      "backend": "s3",
-      "bucket": "team-files",
-      "region": "us-east-1"
-    }
+  "request_id": "create-shared",
+  "name": "shared",
+  "storage": {
+    "backend": "s3",
+    "bucket": "drive-content",
+    "prefix": "agentdrive/v1",
+    "region": "us-east-1",
+    "endpoint": "http://127.0.0.1:9000",
+    "allow_http": true
   }
 }
 ```
 
-Dashboard 调用 `POST /api/workspaces` 创建工作区，提交 `request_id` 和 `name`。省略 `storage` 或提交 `"storage": null` 表示仅保存在本机，也可以通过 `storage` 提交完整的远程配置。
+| 存储字段 | 用途 |
+| --- | --- |
+| `bucket` | 必填，使用已有 bucket 的名称。 |
+| `prefix` | 默认为 `agentdrive/v1`。文件内容路径为 `<prefix>/<workspace UUID>/objects/<content ID>`。 |
+| `region` | S3 签名区域，默认为 `us-east-1`。 |
+| `endpoint` | 不包含 bucket 名称的 S3 API 地址，客户端使用 path-style 请求。未设置时依次读取 `AWS_ENDPOINT_URL_S3`、`AWS_ENDPOINT_URL` 和 `AWS_ENDPOINT`，再使用 AWS 区域地址。 |
+| `allow_http` | 默认为 false。在使用 HTTP 的测试环境中设置为 true。 |
+| `credentials` | 可选，包含 `access_key_id`、`secret_access_key` 和可选的 `session_token`。省略后使用服务环境或 IAM 角色提供的凭据。 |
 
-如果响应丢失，或操作仍处于 `reserved` 状态，点击“重试创建”会使用原来的 `request_id`。刷新页面后仍会保留这个 ID，重新打开表单时需要再次填写所需的密钥。如果服务返回 `failed` 且 `local_saved: false`，表单会恢复编辑。修正配置并重新提交时，Dashboard 会生成新的 `request_id`，即使错误标记为 `retryable: true`。
+服务环境可以设置 `AWS_ACCESS_KEY_ID`、`AWS_SECRET_ACCESS_KEY`，临时凭据还需提供 `AWS_SESSION_TOKEN`。工作区已配置的凭据优先。适配器也支持 Web Identity、容器角色和实例角色。文件上传使用带条件的对象创建，文件大于 8 MiB 时使用分段上传。后端需要支持强一致的 GET/HEAD、条件创建和分段上传。目录名称和工作区分支名称由 AgentDrive 查询 SQLite。
 
-创建工作区时会验证远程连接。S3 检查在 `.connection-check/` 下创建并删除临时对象。Codes 检查在 `<prefix>/checks/` 下创建并清理临时文件，Git 会记录这些操作。
+### OpenCSG Codes 与可选 XNet
 
-`<data_dir>/meta.db` 是本地 SQLite 数据库，并使用 WAL 文件。远程同步上传不可变文件内容、目录和 inode 索引、版本历史、已发布的操作结果、工作区控制记录和分支引用；数据库文件本身不会上传。目标 daemon 通过 `sync` 的 `direction: "pull"` 将已发布记录导入自己的数据库。本机身份、分支选择、挂载、缓存保留设置、尚未完成的工作和配置分别由各台机器管理。存储结构见[架构说明](architecture.zh-CN.md)。
-
-## OpenCSG Codes 字段
-
-创建专用 Codes 仓库，并通过添加 README 等方式初始化存储分支。在“创建工作区”中选择 **OpenCSG Codes**，填写域名、`namespace/repository`、分支和访问 token，然后创建工作区。token 需要仓库文件的读写权限。对应的配置如下：
+创建一个包含初始 Git 提交的 Codes 仓库。可以在 Dashboard 填写存储位置，也可以在创建工作区的请求中使用以下 `storage` 对象。
 
 ```json
 {
-  "workspace_remotes": {
-    "7380e2a8-9c21-4ae7-99a1-9cc605f4b412": {
-      "backend": "opencsg",
-      "enabled": true,
-      "endpoint": "https://opencsg-stg.com",
-      "repository": "your-namespace/agentdrive-storage",
-      "branch": "main",
-      "prefix": "agentdrive/v1",
-      "token": "your-access-token",
-      "allow_http": false
-    }
-  }
+  "backend": "opencsg",
+  "endpoint": "https://hub.example.org",
+  "repository": "team/drive-content",
+  "branch": "main",
+  "prefix": "agentdrive/v1",
+  "token": "<repository-token>",
+  "xnet": false
 }
 ```
 
-| 工作区存储字段 | 必填要求 / 默认值 | 行为 |
-| --- | --- | --- |
-| `backend` | 必填，`opencsg` | 选择 Codes HTTP 适配器。 |
-| `enabled` | `true` | 创建远程工作区时使用 `true`。 |
-| `endpoint` | 必填 | HTTP(S) 域名，可包含端口。不包含 API 路径、凭据、查询参数或 fragment。HTTP 需要 `allow_http: true`。 |
-| `repository` | 必填 | 已有 Codes 仓库，使用 `namespace/name` 格式。 |
-| `branch` | `main` | 已存在且初始化完成的存储分支，名称不包含 `/`。 |
-| `prefix` | `agentdrive/v1` | 此分支中保存 AgentDrive 数据的目录。 |
-| `xnet` | `false` | 允许通过 XNet 传输 Codes 仓库判定为 LFS 的文件。 |
-| `token` | 必填 | 仓库访问 token，通过 Bearer 认证发送。 |
-| `allow_http` | `false` | 明确启用 HTTP 开发环境地址。 |
+令牌需要读写仓库文件的权限。`endpoint` 为 HTTP(S) 来源地址。测试环境使用 HTTP 时设置 `allow_http: true`。Git 存储分支默认为 `main`，存储目录默认为 `agentdrive/v1`。每个 AgentDrive 工作区分支的标识和历史均保存在 SQLite。普通文件按最大 4 MiB 分成内容块，逐块验证 SHA-256，仓库保存块内容，数据库保存块清单和排列顺序。
 
-仓库名称的各个部分、分支名和目录的各级名称支持 ASCII 字母、数字、`-`、`_` 和 `.`，拒绝首尾句点、连续句点及 `.lock` 后缀。
-
-Dashboard 将 token 保存在配置文件中，Unix 文件权限为 `0600`。GET 设置接口返回空 token。通过设置接口保存全局配置时，空 token 会保留已有凭据。HTTP 请求拒绝跳转，错误信息不会包含服务端响应正文。
-
-适配器使用已有的 Codes 文件 HTTP API。读取指定 Git commit 的内容，写入通过 `start_sha` 检查分支当前版本。连接检查验证正常更新、拒绝过期版本更新和重复创建时保留已有文件的行为。服务行为不兼容或检查结果无法确认时，配置不会启用。启动支持离线工作，首次写入执行相同检查。
-
-AgentDrive 继续管理 workspace、branch、autosave、commit、merge、操作结果和写入所有权。Git commit 记录每次存储操作，因此一个 AgentDrive revision 可以产生多个 Git commit。在默认的 Codes 配置下，每个不可变对象包含 manifest 和最大 4 MiB 的数据块，通过 SHA-256 校验；base64 文本保证二进制内容经过 JSON 文件接口后保持完整。远程引用沿用 S3 后端使用的 AgentDrive 元数据。
-
-存储分支及其内部文件交由 AgentDrive 管理。远程物理删除尚未启用，Git 历史保留存储修改记录，需要为 base64 编码和 Git 历史增长准备容量。每个对象可能产生多次 HTTP 请求和 Git commit，传输时间受仓库大小和服务响应时间影响。AgentDrive 所在机器无需安装 Git 命令。
-
-### 在 OpenCSG Codes 中启用 XNet
-
-创建工作区时勾选 XNet，AgentDrive 会检查 Codes 仓库的 XNet 令牌接口。检查失败时，创建表单会显示原因。
-
-在 Codes 仓库启用 XNet，并向 daemon 使用的身份授予仓库读写权限。在每台需要写入 XNet 文件的机器上，为 daemon 使用的 Python 环境安装 `hf-xet==1.1.10`。如使用独立环境，启动 daemon 前将 `AGENTDRIVE_XNET_PYTHON` 设置为该环境的 Python 可执行文件路径。默认使用 `python3`。下面的命令创建独立环境。
+使用 XNet 时，请在 Codes 仓库开启 XNet，并在创建工作区时勾选 XNet。运行 AgentDrive 的机器需要安装传输依赖。
 
 ```sh
-python3 -m venv ~/.agentdrive-xnet
-~/.agentdrive-xnet/bin/python -m pip install 'hf-xet==1.1.10'
-export AGENTDRIVE_XNET_PYTHON="$HOME/.agentdrive-xnet/bin/python"
+python3 -m venv /opt/agentdrive-xnet
+/opt/agentdrive-xnet/bin/python -m pip install 'hf-xet==1.1.10'
+export AGENTDRIVE_XNET_PYTHON=/opt/agentdrive-xnet/bin/python
 ```
 
-从这个环境启动 daemon。
+使用该环境启动服务。Codes 的 preupload 接口为每个非空文件选择传输方式。分类为 LFS 的文件通过 XNet 上传，Git 仓库保存标准 LFS 指针。普通文件使用内容块存储。下载时 AgentDrive 校验文件大小和内容标识。
 
-在创建工作区时选择“OpenCSG Codes”，勾选“通过 XNet 传输仓库的大文件”，也可以在该 Codes 配置中设置 `"xnet": true`。AgentDrive 将非空文件对象的内部仓库路径和大小提交给 Codes 的 `preupload` 接口。仓库判定为 LFS 的文件通过 XNet 传输，其指针、工作区记录和分支引用保存在同一 Codes 仓库。判定为普通文件的对象继续使用 Codes 原有格式。读取这些文件时，AgentDrive 从 Codes 的固定 Git commit 下载，并校验文件长度和内容摘要。读取已有文件无需安装 Python。请为传输中的文件预留临时目录空间。
+## 多台机器共享一个分支
 
-## S3 字段
+让 Dashboard、CLI 和 MCP 客户端访问同一个 AgentDrive 服务。CSI 挂载时给每个卷分配不同的 bucket 别名，在服务端将这些别名绑定到同一工作区的同一分支。
 
-将 S3 配置写入对应工作区 ID 的条目。
+两个桌面都需要编辑时，绑定使用 `write_mode: "serialized"`。服务依次提交对象写入。两个桌面编辑同一个文件时，后一次提交成功的内容成为当前内容。在另一个桌面重新打开文件，或刷新 Dashboard 的分支文件列表，即可查看修改。需要指定唯一写入方时，使用 `exclusive` 模式。在交接前刷新待写文件，通过管理接口交接写入权。已经退出写入的挂载需要创建新的会话才能再次取得写入权。
 
-```json
-{
-  "workspace_remotes": {
-    "7380e2a8-9c21-4ae7-99a1-9cc605f4b412": {
-      "bucket": "agentdrive",
-      "prefix": "agentdrive/v1",
-      "region": "us-east-1",
-      "endpoint": "http://127.0.0.1:9000",
-      "allow_http": true
-    }
-  }
-}
-```
-
-这是使用本地 RustFS S3 API endpoint 的配置片段，请保留其他已生成的字段。`endpoint` 是 S3 API 的基础 URL，不包含 bucket 名称、凭据、查询参数或 fragment。适配器使用 path-style 请求，并追加 bucket 名称。端口应采用部署环境提供的 S3 API 端口。
-
-| 工作区存储字段 | 必填要求 / 默认值 | 行为 |
-| --- | --- | --- |
-| `backend` | `s3` | 已有 S3 配置可以继续省略此字段。 |
-| `enabled` | `true` | 创建远程工作区时使用 `true`。 |
-| `credentials` | 省略或 `null` | 使用服务环境或 IAM 角色；也可以填写 `access_key_id`、`secret_access_key` 和可选的 `session_token`。 |
-| `bucket` | 必填，非空字符串 | 已存在的 bucket 名称。守护进程不会创建 bucket。 |
-| `prefix` | `agentdrive/v1` | bucket 内共享的命名空间；首尾 `/` 会被移除，结果必须是有效且非空的对象路径。 |
-| `region` | `us-east-1` | 签名使用的 region；AWS S3 应填写 bucket 所在的 region。 |
-| `endpoint` | 省略或 `null` | 可选的 S3 基础 URL。没有 endpoint 覆盖设置时，依赖库会生成 AWS regional endpoint。 |
-| `allow_http` | `false` | 明确使用 HTTP 开发环境 endpoint 时设置为 `true`；HTTPS endpoint 保持 `false`。 |
-
-使用 AWS S3 时，替换 bucket 和 region，并省略自定义 endpoint：
-
-```json
-{
-  "workspace_remotes": {
-    "7380e2a8-9c21-4ae7-99a1-9cc605f4b412": {
-      "bucket": "your-existing-bucket",
-      "prefix": "agentdrive/v1",
-      "region": "eu-west-1",
-      "allow_http": false
-    }
-  }
-}
-```
-
-## S3 凭据与环境变量优先级
-
-创建工作区时可以将 S3 凭据保存到配置文件，Unix 保存权限为 `0600`。GET 设置接口会清空 `secret_access_key` 和 `session_token`；PUT 中同一个 Access Key ID 的空密钥表示保留已有凭据。修改 Session Token 时同时填写 Secret Access Key；将 `credentials` 设为 `null` 使用环境凭据。配置中的凭据优先于环境凭据。
-
-S3 凭据由**守护进程**读取。请在启动 `agentdrived serve` 的终端或服务环境中设置变量。
-
-```sh
-export AWS_ACCESS_KEY_ID='your-access-key-id'
-export AWS_SECRET_ACCESS_KEY='your-secret-access-key'
-# Temporary credentials also require AWS_SESSION_TOKEN.
-./target/debug/agentdrived serve --config "$AGENTDRIVE_DIRECTORY/agentdrive.json"
-```
-
-PowerShell 使用 `$env:AWS_ACCESS_KEY_ID = 'your-access-key-id'` 和 `$env:AWS_SECRET_ACCESS_KEY = 'your-secret-access-key'`，随后启动 `agentdrived.exe`。
-
-当前锁定版本的 `object_store` 按以下顺序选择凭据来源：
-
-1. `AWS_ACCESS_KEY_ID` 和 `AWS_SECRET_ACCESS_KEY`，以及可选的 `AWS_SESSION_TOKEN`。两个 key 字段需要同时提供。
-2. `AWS_WEB_IDENTITY_TOKEN_FILE` 和 `AWS_ROLE_ARN`，以及可选的 `AWS_ROLE_SESSION_NAME`。
-3. 用于容器任务角色的 `AWS_CONTAINER_CREDENTIALS_RELATIVE_URI`。
-4. 用于 EKS Pod Identity 的 `AWS_CONTAINER_CREDENTIALS_FULL_URI` 和 `AWS_CONTAINER_AUTHORIZATION_TOKEN_FILE`。
-5. 前述来源均未提供时，使用实例元数据凭据。
-
-当前适配器不会读取 `~/.aws/credentials`、`AWS_PROFILE` 或 AWS CLI SSO 会话。请导出有效凭据，或者使用支持的角色凭据来源。静态环境变量凭据在启动时读取，替换后需要重新启动守护进程。
-
-AgentDrive 调用 `AmazonS3Builder::from_env()` 后应用自身配置。配置中的 `bucket`、`region` 和 `allow_http`，包括默认值，都会覆盖对应的 AWS 环境变量。省略 `endpoint` 时，依次读取 `AWS_ENDPOINT_URL_S3`、`AWS_ENDPOINT_URL`、`AWS_ENDPOINT`。均未设置时使用 AWS 区域地址。服务会验证工作区使用的实际地址。适配器会选择 path-style 请求和基于 ETag 的条件写入。
-
-## S3 存储要求与同步验证
-
-存储服务需要支持 GET/HEAD、按前缀列举、对象写入、分段上传和终止上传，以及强一致读取。AgentDrive 使用 `If-None-Match: *` 创建不可变对象，并以相同条件完成分段上传；更新引用时使用携带之前 ETag 的 `If-Match`。条件写入行为见 [AWS S3 文档](https://docs.aws.amazon.com/AmazonS3/latest/userguide/conditional-writes.html)。大于 8 MiB 的文件使用分段上传，分段大小根据文件大小在 8 至 64 MiB 之间选择。存储凭据权限应限制在选定的 bucket 和命名空间内。
-
-守护进程启动时会构建 S3 客户端，但启动成功不能证明 bucket 或凭据可用。按照 [CLI 示例](cli.zh-CN.md)导入内容后，明确执行推送，并查看原始导入操作的结果记录：
-
-```sh
-jq -n --arg workspace "$WORKSPACE" '{workspace:$workspace,direction:"push"}' |
-  agentdrive call sync --request-id "$RUN_ID-push" --json -
-jq -n --arg operation "$(jq -r '.id' "$AGENTDRIVE_DIRECTORY/demo-import.json")" '{operation:$operation}' |
-  agentdrive call operation_get --json -
-```
-
-检查原始操作的 `remote_confirmed`。`workspace_status.capabilities.remote_configured` 表示该工作区是否启用 S3 或 OpenCSG，`pending_jobs` 表示队列长度。保存配置但设置 `enabled: false` 时，返回 `remote_configured: false`。启用远程存储后，守护进程每三秒重试待同步任务。`local_saved: true` 的结果记录仍然可能包含远端错误；请保留 operation ID，并参考[恢复说明](operations.zh-CN.md)。
-
-要检查条件写入、并发更新、20 MiB 分段内容和两个守护进程之间的同步，请使用隔离的 [S3/RustFS 测试](validation.zh-CN.md)。这些测试使用独立的测试 bucket，不适合作为生产环境健康检查。
-
-## 多台机器
-
-参与同一工作区的守护进程需要为该工作区选择相同后端和目标：S3 使用相同的 endpoint、bucket、prefix 和签名 region；OpenCSG 使用相同的域名、仓库、存储分支和 prefix。在接收端的 `workspace_remotes` 中填写源工作区 ID 和相同的远程目标。每台机器使用独立的状态目录和 `LocationId`。目标机器上本地 principal 需要是工作区所有者，或者获得适当授权。各机器通过自己的 daemon 连接远程存储。
-
-在源机器执行推送，然后在目标机器使用相同 workspace ID 调用 `sync`，设置 `direction: "pull"`。拉取会导入历史和远端分支引用。可以使用已保留的版本创建本地分支；需要接管已有可写分支时，完成在线 `ownership_transfer`。详见[操作说明](operations.zh-CN.md)和 [MCP 参考](mcp.zh-CN.md)。
-
-配置定义见[文件结构](../crates/agentdrive-config/src/file.rs)、[远程配置](../crates/agentdrive-config/src/remote.rs)、[运行配置管理](../crates/agentdrive-config/src/store.rs)、[S3 适配器](../crates/agentdrive-s3/src/lib.rs)和 [OpenCSG 适配器](../crates/agentdrive-opencsg/src/lib.rs)，依赖版本见 [Cargo.lock](../Cargo.lock)。
+一个独立运行的 AgentDrive 数据库拥有自己的工作区目录，即使两个服务使用同一个 bucket 或 Git 仓库。迁移服务时请同时恢复数据库和文件内容。另见[架构说明](architecture.zh-CN.md)和 [S3 接口说明](../apps/drive-s3/README.md)。

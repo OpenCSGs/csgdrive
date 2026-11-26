@@ -5,6 +5,7 @@ import json
 import os
 from pathlib import Path
 import socket
+import sqlite3
 import subprocess
 import tempfile
 import time
@@ -124,24 +125,15 @@ with tempfile.TemporaryDirectory(prefix='agentdrive-storage-') as temporary:
             status, failure = settings({'revision': current['revision'], 'runtime': runtime})
             assert status == 409 and 'fixed at creation' in str(failure), (status, failure)
             assert config_path.read_bytes() == before
-        config = json.loads(before)
-        del config['workspace_remotes'][workspace]
-        pending = root / 'pending.json'
-        pending.write_text(json.dumps(config))
-        os.replace(pending, config_path)
-        for _ in range(200):
-            current = settings()[1]
-            if current['reload_error']:
-                break
-            time.sleep(0.05)
-        assert 'fixed at creation' in current['reload_error'], current
-        assert call('workspace_status', {'workspace': workspace})['capabilities']['remote_configured']
+        assert 'workspace_remotes' not in json.loads(before)
+        with sqlite3.connect(root / 'state' / 'meta.db') as db:
+            routes = {key: json.loads(value) for key, value in
+                      db.execute('SELECT workspace,config FROM workspace_storage')}
+            assert routes[shared]['prefix'] == own_store['prefix']
+            assert routes[workspace]['bucket'] == profile['bucket']
+            assert db.execute('SELECT count(*) FROM metadata_objects').fetchone()[0] > 0
         daemon.terminate()
         daemon.wait(timeout=30)
-        invalid = subprocess.run([str(binaries / ('agentdrived' + exe)), 'serve', '--config', str(config_path)],
-                                 capture_output=True, text=True, timeout=20)
-        assert invalid.returncode != 0 and 'fixed at creation' in invalid.stderr, invalid.stderr
-        config_path.write_bytes(before)
         daemon = start()
         assert settings()[1]['runtime']['workspace_remotes'][shared]['credentials']['secret_access_key'] == ''
         destination = root / 'exchange' / 'after-restart'

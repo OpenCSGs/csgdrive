@@ -1,12 +1,13 @@
 import { renderDocument } from './file-preview.js';
 
-export function createFileBrowser({api, element, container, onNavigate}) {
+export function createFileBrowser({api, element, container, onNavigate, onMounts}) {
   const body = element('section', 'branch-files-body');
   const toolbar = element('div', 'branch-files-toolbar');
   const refresh = element('button', 'secondary', '刷新文件'); refresh.type = 'button';
   const directory = element('nav', 'branch-directory'); directory.setAttribute('aria-label', '目录路径');
   toolbar.append(directory, refresh);
   const status = element('p', 'changes-status'); status.setAttribute('role', 'status');
+  const mountPolicy = element('p', 'changes-status'); mountPolicy.hidden = true;
   const layout = element('div', 'changes-layout');
   const sidebar = element('div', 'changed-files');
   const list = element('div', 'branch-file-list'); list.setAttribute('aria-label', '分支文件列表');
@@ -16,13 +17,14 @@ export function createFileBrowser({api, element, container, onNavigate}) {
   const hiddenFiles = element('input'); hiddenFiles.type = 'checkbox'; hiddenLabel.append(hiddenFiles, document.createTextNode('显示隐藏文件'));
   sidebar.append(filter, hiddenLabel, list, more);
   const preview = element('div', 'diff-preview branch-file-preview'); preview.setAttribute('aria-live', 'polite');
-  layout.append(sidebar, preview); body.append(toolbar, status, layout); container.append(body);
+  layout.append(sidebar, preview); body.append(toolbar, mountPolicy, status, layout); container.append(body);
   let context = null, path = '/', version = null, cursor = null, request = null, fileRequest = null, selected = null, changed = false, entries = [];
   let previewPath = null, previewMode = 'reading', loadedPages = 0, restoreSelection = null;
-  let imageURL = null;
+  let imageURL = null, mountRequest = null;
   const imageTypes = {png:'image/png',jpg:'image/jpeg',jpeg:'image/jpeg',gif:'image/gif',webp:'image/webp',bmp:'image/bmp',avif:'image/avif',ico:'image/x-icon'};
   function releaseImage() { if (imageURL) { URL.revokeObjectURL(imageURL); imageURL = null; } }
   function clear() {
+    mountRequest?.abort(); mountPolicy.hidden = true; mountPolicy.textContent = '';
     context = null; entries = []; selected = null; request?.abort(); fileRequest?.abort();
     releaseImage();
     previewPath = null; previewMode = 'reading'; loadedPages = 0; restoreSelection = null;
@@ -192,12 +194,33 @@ export function createFileBrowser({api, element, container, onNavigate}) {
       destination += '/' + name; segment(name, destination);
     });
   }
+  async function refreshMountPolicy() {
+    mountRequest?.abort();
+    const current = new AbortController(); mountRequest = current;
+    try {
+      const mounts = await api(`${base()}/s3-mounts`, {signal:current.signal});
+      if (current.signal.aborted) return;
+      onMounts?.(context.branch.id, mounts);
+      mountPolicy.hidden = !mounts.length;
+      if (!mounts.length) return;
+      const session = mounts[0];
+      if (session.write_mode === 'serialized') {
+        mountPolicy.textContent = `S3 挂载 · ${mounts.length} 个挂载可写。每次写入依次保存；同时修改同一文件时，显示最后一次成功写入的内容。`;
+      } else {
+        mountPolicy.textContent = session.holder ? `S3 挂载 · 独占写入。当前写入方为 ${session.holder}，其余挂载只读。` : 'S3 挂载 · 独占写入。当前没有写入方。';
+      }
+    } catch (error) {
+      if (current.signal.aborted) return;
+      mountPolicy.textContent = `无法读取 S3 挂载状态：${error.message}`;
+      mountPolicy.hidden = false;
+    }
+  }
   function navigate(destination, latest = false) {
     restoreSelection = latest && destination === path && previewPath ? restoreSelection || {path:previewPath, pages:loadedPages} : null;
     if (!restoreSelection) { previewPath = null; previewMode = 'reading'; filter.value = ''; }
     request?.abort(); fileRequest?.abort(); path = destination; cursor = null; selected = null; entries = []; loadedPages = 0;
     releaseImage();
-    if (latest) { version = null; changed = false; }
+    if (latest) { version = null; changed = false; refreshMountPolicy(); }
     renderDirectory(); onNavigate?.(path);
     list.replaceChildren(); preview.replaceChildren(); more.hidden = true; status.textContent = '正在读取目录…'; page();
   }

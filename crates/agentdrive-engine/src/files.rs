@@ -251,42 +251,6 @@ impl FileService {
         Ok(())
     }
 
-    async fn check_capacity(
-        &self,
-        branch: &Branch,
-        old_size: u64,
-        new_size: u64,
-        additional_nodes: u64,
-    ) -> Result<()> {
-        let workspace = self
-            .runtime
-            .state
-            .workspace(branch.workspace)
-            .await?
-            .ok_or_else(|| Error::integrity("workspace is missing"))?;
-        let usage = self.runtime.state.usage(branch.id).await?;
-        if new_size > workspace.max_file_bytes
-            || usage.inodes.saturating_add(additional_nodes) > workspace.max_inodes
-        {
-            return Err(Error::new(
-                ErrorCode::CapacityExceeded,
-                "workspace file or inode limit exceeded",
-            ));
-        }
-        let next = usage
-            .bytes
-            .checked_sub(old_size)
-            .and_then(|total| total.checked_add(new_size))
-            .ok_or_else(|| Error::integrity("invalid working tree size"))?;
-        if next > workspace.max_working_bytes {
-            return Err(Error::new(
-                ErrorCode::CapacityExceeded,
-                "workspace size limit exceeded",
-            ));
-        }
-        Ok(())
-    }
-
     async fn commit_nodes(
         &self,
         mut branch: Branch,
@@ -484,7 +448,7 @@ impl FileSystem for FileService {
                 "directory entry already exists",
             ));
         }
-        self.check_capacity(&branch, 0, 0, 1).await?;
+        self.runtime.check_capacity(&branch, 0, 0, 1).await?;
         let now = self.runtime.clock.now_ns();
         let inode = Inode {
             id: InodeId(branch.next_inode),
@@ -553,7 +517,8 @@ impl FileSystem for FileService {
         }
         if let Some(size) = attributes.size {
             Self::permission(context, &node.inode, 2)?;
-            self.check_capacity(&branch, node.inode.size, size, 0)
+            self.runtime
+                .check_capacity(&branch, node.inode.size, size, 0)
                 .await?;
         }
         if node.inode.kind == FileKind::File {
@@ -710,7 +675,8 @@ impl FileSystem for FileService {
             .checked_add(data.len() as u64)
             .ok_or_else(|| Error::invalid("write range overflow"))?
             .max(node.inode.size);
-        self.check_capacity(&branch, node.inode.size, size, 0)
+        self.runtime
+            .check_capacity(&branch, node.inode.size, size, 0)
             .await?;
         self.prepare_write(&branch, &node).await?;
         let written = match self

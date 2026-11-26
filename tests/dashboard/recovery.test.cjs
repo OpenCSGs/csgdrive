@@ -7,10 +7,10 @@ const {chromium} = require('playwright');
 
 let server, browser, endpoint;
 before(async () => {
-  const source = path.resolve(__dirname, '../../crates/agentdrive-mcp/dashboard/commands.js');
+  const dashboard = path.resolve(__dirname, '../../crates/agentdrive-mcp/dashboard');
   server = createServer(async (request, response) => {
-    if (request.url === '/commands.js') {
-      response.writeHead(200, {'Content-Type':'text/javascript'}).end(await readFile(source));
+    if (['/commands.js', '/ui.js'].includes(request.url)) {
+      response.writeHead(200, {'Content-Type':'text/javascript'}).end(await readFile(path.join(dashboard, request.url.slice(1))));
       return;
     }
     response.writeHead(200, {'Content-Type':'text/html'}).end(`<!doctype html><input id="draft"><main></main>
@@ -42,6 +42,7 @@ after(async () => {
 
 async function open(t, handle) {
   const page = await browser.newPage();
+  await page.addInitScript(() => Object.defineProperty(crypto, 'randomUUID', {value:undefined}));
   const calls = [], errors = [];
   page.on('pageerror', error => errors.push(error.message));
   t.after(async () => { await page.close(); assert.deepEqual(errors, []); });

@@ -363,6 +363,18 @@ fn http_error(error: reqwest::Error) -> Error {
 
 #[async_trait]
 impl RemoteObjectStore for S3Backend {
+    async fn check_file_storage(&self) -> Result<()> {
+        let path = Path::from(format!(
+            "{}/.connection-check/{}",
+            self.prefix,
+            OperationId::new()
+        ));
+        match self.client.head(&path).await {
+            Ok(_) | Err(object_store::Error::NotFound { .. }) => Ok(()),
+            Err(error) => Err(store_error(error)),
+        }
+    }
+
     async fn upload(&self, workspace: WorkspaceId, mut source: ObjectStream) -> Result<()> {
         let path = self.object_key(workspace, &source.reference.id);
         match self.client.head(&path).await {

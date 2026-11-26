@@ -11,12 +11,34 @@
 | `agentdrive-ports` | 存储、文件系统、挂载、时钟、目录和应用接口 |
 | `agentdrive-engine` | 文件行为，以及工作区、版本、挂载、同步、缓存、所有权和合并流程 |
 | `agentdrive-local` | 进程锁定、SQLite 元数据、不可变对象、工作文件、租约和读取验证 |
-| `agentdrive-s3` | 不可变对象的流式传输和引用的条件更新 |
-| `agentdrive-opencsg` | Codes HTTP 对象传输、数据块验证和引用的条件更新 |
+| `drive-s3`、`drive-s3-store` | S3 请求、分段上传、挂载别名、写入模式和分支写锁 |
+| `agentdrive-s3` | 文件内容上传、下载和校验 |
+| `agentdrive-opencsg` | Codes 文件内容传输、分块校验和可选 XNet |
 | `agentdrive-platform` | NFS/FUSE/WinFsp 回调、受目录范围限制的主机目录访问和时钟 |
 | `agentdrive-mcp` | 具有明确类型的工具、本地 HTTP 路由、Dashboard 与设置接口、客户端和 stdio 转发 |
 | `agentdrive-test-support` | 可控时钟、挂载和存储测试替代对象、服务中断和确认丢失的故障注入 |
 | `agentdrived` / `agentdrive` | 守护进程生命周期和命令行客户端 |
+
+## 分支数据流
+
+```mermaid
+flowchart LR
+  A(["VM A · /workspace"]) --> VA["virtiofs · PVC A"]
+  B(["VM B · /workspace"]) --> VB["virtiofs · PVC B"]
+  VA & VB -->|CSI client · S3| G["drive-s3"]
+  G --> M["drive-s3-store"]
+  M -->|bucket → workspace ID + branch ID| E["agentdrive-engine"]
+  UI(["Drive UI / MCP"]) --> E
+  M --> L[("SQLite · bindings / write locks")]
+  E --> D[("SQLite · paths / branches / revisions / backend")]
+  E -->|file bytes| P{"workspace storage"}
+  P --> S[("S3 bucket")]
+  P --> C["OpenCSG Codes"]
+  P --> H[("Local files")]
+  C -->|optional| X(["XNet"])
+```
+
+每个 workspace 选择一个内容后端。多个 CSI 挂载使用各自的 bucket 别名，服务从 SQLite 查询实际的 workspace ID 和 branch ID。原有档案室和 MCP 使用同一个 engine，能读取尚未创建命名版本的修改。个人电脑上的多个 sandbox 连接本机服务；异地 sandbox 连接同一个远端服务。
 
 ## 模块职责
 
@@ -48,8 +70,6 @@
 | `apps/agentdrived/main` | 创建适配器、运行 HTTP 服务和后台任务、正常关闭服务 |
 
 `agentdrive-ports` 定义 engine 使用的接口，存储和平台适配器负责实现接口。配置模块依赖 model 中的数据类型，数据库、挂载和网络服务由 daemon 创建。daemon 将同一个 `LiveConfig` 传给 engine 和 HTTP 入口；`ConfigStore` 统一发布配置，使用配置的模块为每次操作取得完整快照。启动和运行期间修改均通过 `apps/agentdrived/settings::remote_storage` 选择远程适配器。
-
-两种远程后端均实现 `RemoteObjectStore` 和 `RemoteRefStore`。engine 复用已有的发布顺序、持久化重试、历史导入和所有权管理流程。OpenCSG HTTP 路径、Bearer 认证、响应解析、数据块编码及 Git 分支版本检查由 `agentdrive-opencsg` 管理，领域对象和 MCP 工具继续使用原有版本含义。
 
 工作区发现通过 `RemoteRefStore` 枚举 ID，校验控制记录并缓存有权访问的元数据，不创建挂载。工作区服务为手动刷新和 daemon 每 2 秒执行的刷新提供同一套流程。全局删除通过条件更新修改已有控制记录并关闭发布入口，随后持久化本机删除标记；已删除状态不能被旧元数据覆盖。删除记录发布后禁止新增发布和历史保留操作。其他 location 复用检查句柄的正常卸载流程清理挂载。内容对象与 Git 历史继续保留，Dashboard 负责选择、确认和错误展示。
 
@@ -116,17 +136,13 @@ MCP 和 HTTP webhook 都通过应用接口调用 engine。工作目录的 NFS、
 
 ## 配置生命周期
 
-`ConfigStore::open` 读取并校验文件。`StartupConfig` 在服务创建时提供存储目录、挂载、连接与本地 principal。缓存策略、远程连接和 HTTP Origin 允许列表由同一个 `ArcSwap<Snapshot>` 保存。缓存清理在操作期间保持同一份快照；HTTP Origin 检查为每次请求取得当前快照。
-
-daemon 每秒检查配置文件。Dashboard 保存与文件加载使用同一个 `ConfigStore` 和写入锁。保存时检查配置版本，在同目录写入并同步临时文件，替换配置文件，然后发布快照；Unix 还会同步目录。文件错误、无效内容以及启动配置变化都会保留当前有效配置，并提供错误信息。配置版本检查会拒绝过期的 API 保存请求及已经检测到的外部修改；外部编辑器不使用 daemon 的写入锁，建议通过原子替换文件提交修改。
-
-daemon 通过 `ConfigStore` 管理每个工作区的存储位置，并通过工作区元数据验证存储位置。接口隐藏已保存的远程密钥。修改本地目录、principal 或监听地址需要重启。`ConfigApplier` 检查远程连接、保存配置，并在生命周期、发布和内容保护期间更换适配器。参见[配置说明](configuration.zh-CN.md)。
+启动 JSON 指定监听地址、服务身份和状态目录。运行设置保存在 SQLite 的 `server_settings`，各工作区的连接配置保存在 `workspace_storage`。Web UI 通过设置接口修改运行配置，连接密钥在响应中隐藏。连接相同内容后端的独立数据库各自管理自己的工作区。
 
 ## 本地持久化
 
 每个守护进程状态目录包含 `engine.lock`、`meta.db`、SQLite WAL 文件，以及 `objects/`、`staging/` 和 `working/`。进程锁定确保只有一个写入者。SQLite 使用 WAL 和 `synchronous=FULL`。修改数据库结构前会检查持久化格式版本，存储错误通过明确的错误类型返回。
 
-所有存储模式均将 `meta.db` 和 WAL 文件保存在本地。远程后端接收不可变对象，以及下文说明的控制记录和分支引用。拉取操作将已发布历史导入接收端的数据库；本机身份、分支选择、挂载关联、缓存保留设置和尚未完成的工作属于本地状态。缓存容量仅统计不可变对象文件。远程模式使用 `cache.max_bytes`，自动计算 75% 的清理目标，并使用内部固定的 64 MiB 磁盘剩余空间阈值。本地模式完整保留历史内容。
+状态目录中的 `meta.db` 和 SQLite WAL 保存工作区、分支、版本和目录关系。使用远程内容后端时，本机仍可缓存文件字节。备份需要同时保存数据库和文件内容后端；仅本地的工作区还需要保存本机内容目录。
 
 object ID 使用 SHA-256 对域分隔标记、格式版本、对象类型和内容字节计算摘要。发布时验证摘要和大小，将临时文件同步到存储设备，以不可变名称发布文件并登记对象。Unix 会在发布后同步目录，Windows 使用 write-through 文件移动。元数据事务引用已经安装的不可变对象，读取租约保护打开的内容，使其不会被缓存回收。
 
@@ -154,21 +170,13 @@ object ID 使用 SHA-256 对域分隔标记、格式版本、对象类型和内�
 
 ## 同步与所有权
 
-工作区由不可变对象、通过条件写入更新的工作区控制记录和分支引用组成。分支引用包含 owner、epoch、generation、source generation、head 和不可变历史索引。历史索引记录版本和操作结果。
+`meta.db` 中的 `nodes` 记录分支路径，`metadata_objects` 保存目录树和历史索引，`published_refs` 通过 SQL 条件更新保存版本引用。S3 网关收到文件后校验并上传内容，再提交分支的新目录项。确认失败时客户端可重试。操作的 `request_id` 和命名版本由数据库维护。
 
-连续的同步任务只有在 branch、owner、authority epoch 和 generation 相同、source generation 连续、durable sequence 不减少时才能合并。停止、删除、generation 变化或所有权变化会结束当前任务组。发布前验证最新历史索引保留了每项 operation 的身份和原始结果，然后比较远端当前引用与最新对象树，只上传新增依赖。最新 branch 引用通过条件写入确认后，所有相关结果确认和队列清理在一个 SQLite 事务中提交。每个 workspace 按顺序发布，不同 workspace 的请求可以并行，共享四个上传许可；更换存储需要取得独占发布锁。发布确认与挂载完成更新操作记录时，会在事务内检查原记录是否发生变化；并发修改触发重新读取和重试，从而保留远端确认与挂载状态。清理远端保留记录期间，已确认操作继续返回持久保存的完成进度。
+`s3-sessions.sqlite3` 保存 bucket 与分支的绑定和写入模式。使用 `serialized` 时，多个挂载可以写入，网关在每次发布期间持有该分支的文件锁，写入权交接也使用同一个锁，同时修改一个文件时，最后一次成功提交的内容可见。`exclusive` 保留指定写入方，交接会更新 epoch 并禁止旧挂载继续写入。两种模式均在文件发布时检查写入权限。
 
-`OperationRecord.sync_progress` 提供队列位置、发布阶段及对象和字节计数。`mount_save` 可以限制远端等待时间，返回持久化结果后继续发布。文件系统的远端 fsync 仍然需要完成确认才能成功返回。
+## OpenCSG 和 S3 的内容布局
 
-发布时先上传全部被引用的对象，再对分支引用执行 compare-and-swap。条件写入使用存储提供程序返回的不透明版本值。确认丢失时，发布程序检查原始操作的历史记录。本地持久化任务支持重试和进程重启。工作区控制记录保护发布或读取过程中使用的根对象，并协调 GC 阶段。远端物理删除已禁用。
-
-拉取会导入远端历史和引用，并保留活动本地分支的状态。接管已有分支需要经过确认的所有权交接。交接时停止旧写入者，完成其发布队列，然后通过条件写入更新 owner 和 epoch。新的 location 接管已确认状态。该 API 无法强制替换无法联系的 owner。
-
-## OpenCSG 存储格式
-
-配置的 Codes 仓库分支包含 `<prefix>/<workspace>/objects/<object-id>.json` manifest、`chunks/<sha256>` base64 文件、`control.json` 和 `branches/<branch-id>.json`。manifest 保留原始 `ObjectRef`，每个数据块最多包含 4 MiB 原始内容。上传在发布 manifest 前验证完整对象的大小和摘要。下载读取指定 Git commit，并使用大小受限的缓冲区验证每个数据块和完整对象。分支发现通过指定 commit 的分页 tree API 完成。
-
-Git 分支 head 作为 `VersionedRef.version` 返回。单文件 POST/PUT 携带 `start_sha`，Gitaly 条件更新会拒绝已经变化的分支版本。其他引用和对象的写入也会推进同一 Git 分支，因此不可变对象创建支持重试，引用冲突交给 engine 处理。写入后读取当前内容可以确认响应丢失的操作，无法读取结果时返回 `CasOutcome::Unknown`。连接检查验证更新和创建行为，验证通过后才会写入工作区数据。所有 workspace branch 和 revision 都保存为该存储分支内的 AgentDrive 记录，Git commit 记录存储操作。远程物理删除继续禁用。
+S3 在工作区前缀下按内容 ID 保存文件字节。OpenCSG Codes 使用配置的 Git 存储分支保存文件数据块；对应的块清单保存在 SQLite 的 `file_manifests`。启用 XNet 后，符合仓库大文件规则的内容经 XNet 上传，Git 保存相应的 LFS 指针。工作区分支和命名版本均通过 AgentDrive 查询。
 
 ## 合并
 

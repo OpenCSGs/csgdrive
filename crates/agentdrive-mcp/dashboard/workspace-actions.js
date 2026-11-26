@@ -1,3 +1,5 @@
+import { newRequestId } from './ui.js';
+
 export function createWorkspaceActions({api, element, changed}) {
   const dialog = element('dialog', 'revision-dialog workspace-delete-dialog');
   const title = element('h2', '', '删除工作区'); title.id = 'workspace-delete-title';
@@ -21,7 +23,7 @@ export function createWorkspaceActions({api, element, changed}) {
     if (confirm.disabled) return;
     const workspace = target, key = `agentdrive-workspace-delete:${workspace.id}`;
     let requestId = localStorage.getItem(key);
-    if (!requestId) { requestId = crypto.randomUUID(); localStorage.setItem(key, requestId); }
+    if (!requestId) { requestId = newRequestId(); localStorage.setItem(key, requestId); }
     busy = true; update(); error.textContent = ''; confirm.textContent = '正在删除…';
     try {
       const result = await api('/api/commands/workspace_delete', {method:'POST', headers:{'Content-Type':'application/json'},
@@ -143,7 +145,7 @@ export function createWorkspaceCreator({api, element, created}) {
     busy = true; error.textContent = '';
     try {
       const profile = editor.read();
-      const request = {request_id:ticket?.request_id || crypto.randomUUID(), name:input.value.trim(), storage:profile};
+      const request = {request_id:ticket?.request_id || newRequestId(), name:input.value.trim(), storage:profile};
       ticket = structuredClone(request);
       if (ticket.storage?.backend === 'opencsg') delete ticket.storage.token;
       if (ticket.storage?.credentials) {

@@ -42,7 +42,7 @@ The agent creates, mounts or adopts a workspace through MCP, then continues usin
 
 ### 2. Synchronize local results to remote storage
 
-When creating a workspace, choose local storage, S3-compatible storage (including OSS and RustFS), or OpenCSG Codes. For an XNet-enabled Codes repository, select XNet to use its large-file rules. **Settings → Storage** shows the destination fixed at creation. Collaborating machines connect to that same destination. [Connection guide](docs/configuration.md)
+When creating a workspace, choose local storage, S3-compatible storage (including OSS and RustFS), or OpenCSG Codes. For an XNet-enabled Codes repository, select XNet to use its large-file rules. **Settings → Storage** shows the destination fixed at creation. Collaborating sandboxes connect to the same AgentDrive service. SQLite stores workspace and branch metadata. The selected backend stores file contents. [Connection guide](docs/configuration.md)
 
 > Save this branch remotely. After remote publication is confirmed, report the workspace ID, branch, version and handoff document path.
 
@@ -50,15 +50,7 @@ The agent can request remote durability with `mount_save` and inspect `remote_co
 
 ### 3. Let an agent on another machine continue
 
-Keep a `HANDOFF.md` in the project with the goal, completed work, important files, validation steps and remaining tasks. Save it remotely with the results.
-
-Give the receiving agent the workspace ID, source branch or revision and handoff path:
-
-> Pull the latest confirmed remote project data, read HANDOFF.md, create my branch from the specified source, mount it locally and continue the next task.
-
-The receiving agent uses `sync`, creates a branch from the intended source and mounts it. To continue writing **the same branch**, stop writes and release mounts on the previous machine, transfer write ownership with `ownership_transfer`, then pull and confirm adoption at the destination location. [Handoff and recovery](docs/operations.md)
-
-Handoffs carry files, versions and branch information. Task context can travel as project documents. Running processes, chat history and client credentials are managed by each agent client.
+Give each sandbox its own S3 mount alias and bind both aliases to the same workspace and branch. Mount the volumes through CSI. After a sandbox saves a file, reopen it from the other sandbox or select **Refresh files** in the Archive. A branch can serialize writes from both mounts or reserve writing for one holder. See the [drive-s3 setup](apps/drive-s3/README.md) and [architecture diagram](docs/architecture.md#branch-data-flow).
 
 ### 4. Read results in the Archive and inspect changes in history
 
@@ -68,7 +60,7 @@ Open the dashboard, select a project and enter **Archive**:
 - Read Markdown as a document or source. Preview PNG, JPEG, GIF, WebP, BMP, AVIF and ICO images up to 20 MiB and download the original file. Page through text and inspect other binary files in hexadecimal.
 - Click any segment of the `/a/b/c` directory path to navigate. Filter the current directory, reveal hidden files and return to the same project, branch and directory through its URL.
 - See local progress, remote confirmation and directory usage separately. Browsing leaves the agent's mounted branch unchanged.
-- Files reflect locally known current contents, including unsaved or uncommitted edits. Ask the agent to pull remote updates before reviewing new work from another machine.
+- The Archive includes uncommitted changes. Select **Refresh files** after another sandbox saves a file.
 
 ![Archive: preview a saved PNG screenshot directly in the branch](docs/images/archive-image.png)
 

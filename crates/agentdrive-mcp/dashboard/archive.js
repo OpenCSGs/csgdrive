@@ -26,7 +26,11 @@ export function createArchivePage({api, element, container}) {
   const footer = element('p','archive-footer','文件预览包含尚未提交的修改。异地接手前，请由 Agent 确认远端保存，并在目标机器拉取最新内容。');
   container.append(heading,empty,workspace,footer);
   let snapshot = null, selected = null, project = null, currentPath = '/';
-  const browser = createFileBrowser({api, element, container:files, onNavigate:path => {
+  const s3Mounts = new Map();
+  const browser = createFileBrowser({api, element, container:files, onMounts:(id, mounts) => {
+    s3Mounts.set(id, mounts);
+    if (id === selected) renderContext(snapshot.branches.find(branch => branch.id === id));
+  }, onNavigate:path => {
     currentPath = path;
     if (!selected || location.pathname !== '/archive') return;
     const url = new URL(location.href); url.searchParams.set('workspace',project); url.searchParams.set('branch',selected); url.searchParams.set('path',path);
@@ -61,6 +65,7 @@ export function createArchivePage({api, element, container}) {
     history.href = '/dashboard?'+new URLSearchParams({workspace:project,branch:branch.id});
     const state = status(branch);
     const mounted = snapshot.mounts.filter(mount => mount.branch === branch.id && mount.state === 'ready');
+    const csi = s3Mounts.get(branch.id) || [];
     const card = (label,value,description,warning=false) => {
       const block = element('div',`archive-state${warning ? ' attention' : ''}`);
       block.append(element('span','archive-state-label',label),element('strong','',value),element('span','archive-state-description',description));
@@ -69,9 +74,9 @@ export function createArchivePage({api, element, container}) {
     states.replaceChildren(
       card('本地进度',state.saved ? '本机已保存' : '有未保存修改',!state.saved ? '正在等待本机保存' : branch.dirty ? '工作内容尚未正式提交' : '工作内容已提交',!state.saved),
       card('远程保存',state.remote,state.confirmed ? '与本机内容一致 · 上次确认' : snapshot.capabilities.remote_configured ? '交接前确认远端保存结果' : '文件和版本保存在本机',snapshot.capabilities.remote_configured && !state.confirmed),
-      card('工作目录',mounted.length ? `${mounted.length} 个目录使用中` : '当前未挂载',branch.state === 'available' ? '写权限可领取' : branch.owner === snapshot.location ? '由本机管理此分支' : '本机读取副本 · 同步后更新')
+      csi.length ? card('S3 工作目录', `${csi.length} 个挂载已绑定`, csi.map(mount => mount.bucket).join(' · ')) : card('工作目录',mounted.length ? `${mounted.length} 个目录使用中` : '当前未挂载',branch.state === 'available' ? '写权限可领取' : branch.owner === snapshot.location ? '由本机管理此分支' : '本机读取副本 · 同步后更新')
     );
-    if (mounted.length) states.lastChild.title = mounted.map(mount => mount.path).join('\n');
+    if (mounted.length && !csi.length) states.lastChild.title = mounted.map(mount => mount.path).join('\n');
   }
   function select(id,path='/') {
     const branch = snapshot.branches.find(value => value.id === id && value.state !== 'deleted');
@@ -84,7 +89,7 @@ export function createArchivePage({api, element, container}) {
     const active = status?.branches.filter(branch => branch.state !== 'deleted') || [];
     empty.hidden = active.length > 0; workspace.hidden = !active.length; footer.hidden = !active.length;
     if (!active.length) { selected = null; browser.clear(); return; }
-    if (previousProject !== project) { selected = null; search.value = ''; }
+    if (previousProject !== project) { s3Mounts.clear(); selected = null; search.value = ''; }
     const query = new URLSearchParams(location.search);
     const requested = query.get('workspace') === project ? query.get('branch') : null;
     const id = active.find(branch => branch.id === requested)?.id || active.find(branch => branch.id === selected)?.id || active.find(branch => branch.id === status.selected_branch)?.id || active[0].id;
@@ -93,6 +98,6 @@ export function createArchivePage({api, element, container}) {
     else { renderBranches(); renderContext(active.find(branch => branch.id === id)); browser.update(project,active); }
   }
   search.oninput = renderBranches;
-  function clear() { snapshot = null; selected = null; project = null; browser.clear(); branches.replaceChildren(); states.replaceChildren(); branchTitle.textContent = ''; branchOrigin.textContent = ''; workspace.hidden = true; empty.hidden = true; footer.hidden = true; }
+  function clear() { s3Mounts.clear(); snapshot = null; selected = null; project = null; browser.clear(); branches.replaceChildren(); states.replaceChildren(); branchTitle.textContent = ''; branchOrigin.textContent = ''; workspace.hidden = true; empty.hidden = true; footer.hidden = true; }
   return {show,clear,refresh:browser.refresh};
 }

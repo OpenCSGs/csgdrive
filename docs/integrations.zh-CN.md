@@ -24,7 +24,7 @@ agentdrive mount --workspace "$WORKSPACE" "$AGENTDRIVE_DIRECTORY/mounts/project"
 }
 ```
 
-`location_id` 属于 daemon 的数据目录，重启后保持不变。同一 location 重复挂载同一 workspace 时，复用本机选择的分支。新 location 首次挂载时，自动从该 workspace 主分支最近发布的保存版本创建 `location-<location-id>` 分支并保存选择。已配置 S3 时，可以直接指定远程 workspace ID，程序会读取其元数据。创建 workspace 的 location 使用已经选中的 `main`。主分支缺失或尚未发布时，请求返回错误。
+`location_id` 属于 daemon 的数据目录，重启后保持不变。本机重复挂载同一工作区会复用选中的分支。多个远端 sandbox 共享分支时，每份 CSI 卷使用同一 AgentDrive 服务上的独立 bucket 别名，绑定到相同的 workspace ID 和 branch ID。该服务的档案室可以直接查看分支文件。[S3 挂载配置](../apps/drive-s3/README.md)
 
 同一个 principal 使用相同路径和参数重复挂载会返回已有 binding，多个 Agent 可以共享目录。其他 principal 即使具有 `manage` 权限，也无法复用该 binding。共享目录中的文件修改与分支切换影响全部使用者。一个分支最多有一个可写挂载；更换目录时，需要显式卸载原目录。卸载和 Agent 断开都保留本机分支选择。需要隔离工作内容时，通过 CLI 或 MCP 显式创建分支。
 
@@ -92,7 +92,7 @@ agentdrive integrate --protocol codex-app-server --workspace "$WORKSPACE" \
 
 启用全局自动协作并配置远端存储后，Agent 将共享分支挂载到本机目录，首次修改时申请写权限。通过 webhook 登记每个 turn，在结束时发送回调。发送结束回调之前请等待该轮文件写入完成，包含应用缓冲区中的内容。
 
-AgentDrive 提交这轮修改并上传。最后一个已登记的 turn 结束，且远端分支确认相同版本后，其他 location 可以接手续写。上传中断时，本地保留记录并重试。挂载点管理页面显示当前写入方、活动 turn、本机保存与远端确认状态。
+AgentDrive 会提交并发布本机挂载目录中这一轮的修改。挂载点管理页面显示当前写入方、已登记的 turn 和保存进度。CSI 客户端按分支的写入模式工作。独占模式支持主动交接写入方，按次写入模式允许各个已绑定的 sandbox 保存文件。
 
 自动协作开启时，`mount_save`、`revision_commit`（正式提交或 checkpoint）、`branch_restore` 和 `merge_apply` 通过同一个协作服务申请写权限，也支持没有挂载目录的本机分支。受保护分支保留现有权限规则。申请前后都会检查请求指定的版本、generation 和可选的修改序号；内容条件仍然匹配时可以使用新的权限 epoch。尚未保存且允许重试的请求继续使用原 request_id，内容已经变化时需要重新读取分支并提交新请求。准备合并使用固定版本，不申请写权限；应用合并和继续恢复版本时会重新申请权限并检查目标内容。
 
@@ -159,7 +159,7 @@ Codex 通知格式示例：
 
 **合并记录** 页签展示通过 MCP 执行的合并，包括准备、修改候选内容、应用、失败和挂载恢复。支持按照分支、来源、目标、location、状态和时间筛选，并继续加载后续记录。每条记录保留准备时的来源版本和目标版本；详情提供动作时间线，以及候选内容或应用结果与原目标、来源、共同基础、上一个候选版本的文件比较。版本历史中的合并版本可以跳转到对应记录。
 
-本地保存、远端确认和挂载就绪分别显示。其他 location 同步后可以查看已发布的记录和候选内容，挂载提示描述记录中的操作状态。旧记录会注明历史信息不完整；文件冲突已经解决不代表文章内容或业务决定已经复核。页面使用只读接口 `GET /api/workspaces/{workspace}/merges`、`GET /api/workspaces/{workspace}/merges/{record}` 和 `GET /api/workspaces/{workspace}/merges/{record}/events`，记录和动作独立分页，并遵守现有分支读取权限。
+本地保存、远端确认和挂载就绪分别显示。连接同一服务的客户端可以查看相同的记录和候选内容，挂载提示描述记录中的操作状态。旧记录会注明历史信息不完整；文件冲突已经解决不代表文章内容或业务决定已经复核。页面使用只读接口 `GET /api/workspaces/{workspace}/merges`、`GET /api/workspaces/{workspace}/merges/{record}` 和 `GET /api/workspaces/{workspace}/merges/{record}/events`，记录和动作独立分页，并遵守现有分支读取权限。
 
 只读 JSON 接口为 `GET /api/workspaces` 和 `GET /api/workspaces/{workspace}`。后者返回 `status`、`revisions`、`summary` 和 `origins`。`summary` 包含 `branch_count`、`mount_count`、`ready_mount_count`、`mounted_branch_count`；`status.mounts` 仅保留未释放记录，并按路径排序。`origins` 为每个 branch 提供来源 branch、准确的来源 revision、版本是否可读和工作区根分支标识。`selected_branch` 是当前 location 对此工作区的默认选择。通过 `/settings` 编辑全局运行配置，详见[配置说明](configuration.zh-CN.md)。
 
@@ -171,7 +171,7 @@ Codex 通知格式示例：
 
 页面中的 **分支与挂载关系** 通过关系查询接口显示写入所属 location、本机挂载路径、principal、访问模式、挂载状态和创建来源。支持搜索分支名称、本机目录、使用者和短 ID，以及按照分支、写入所属 location、本机挂载情况筛选。“更多筛选”提供具体挂载状态、挂载位置、完整 mount ID 和已释放记录。查询条件保存在 URL 中，清空筛选恢复全部分支。每页最多显示 50 条，点击“继续加载”读取后续记录；刷新保留条件并重新读取第一页。展开记录详情可查看远端观测版本与时间，展开创建来源可查看创建时捕获的内容对象。远端挂载、远端默认分支和机器在线状态标记为未知。
 
-**分支管理**（`/branches`）支持选择来源分支、来源内容和名称创建分支。本机分支可通过 `source_branch` 捕获当前工作内容，包括尚未提交的修改；指定已保存版本时使用 `source`，其他 location 的分支也使用此方式。两个来源参数互斥。列表展示全部已知分支及其来源，本机可写分支提供切换和挂载入口。切换使用会更新本机默认分支，并切换原默认分支正在使用的挂载目录。
+**分支管理**（`/branches`）支持选择来源分支、来源内容和名称创建分支。本机分支可通过 `source_branch` 捕获当前工作内容，包括尚未提交的修改；指定已保存版本时使用 `source`。两个来源参数互斥。列表展示全部已知分支及其来源，本机可写分支提供切换和挂载入口。切换使用会更新本机默认分支，并切换原默认分支正在使用的挂载目录。
 
 页面通过 `POST /api/commands/{command}` 调用现有 MCP 服务。允许的操作为 `branch_create`、`branch_switch`、`mount_prepare`、`mount_save`、`mount_unmount`、`mount_release`、`operation_get` 和 `operation_by_request`，参数结构与对应 MCP 工具一致。请求使用本地 daemon 身份，原有服务执行 binding generation 校验。操作进度分别显示 `local_saved`、`remote_confirmed` 和 `mount_ready`。页面为每次操作保存稳定的 `request_id`，刷新或请求中断后可查询结果、重试原请求。目录被占用时显示释放占用提示与继续操作按钮。
 
@@ -191,7 +191,7 @@ Codex 通知格式示例：
 
 Dashboard 默认进入 `/archive`，导航位于“分支与版本”上方。选择项目和分支后直接阅读当前文件，保持挂载分支不变。页面通过 `GET /api/workspaces/{workspace}/archive` 获取当前工作区状态，无需加载全部版本历史；与分支弹框共用 `BranchFilesApi` 的目录和文件读取。筛选仅针对当前目录已载入的条目，隐藏文件可以通过开关显示。Markdown 通过安全文本节点渲染，并提供源码视图。项目、分支和目录保存在页面地址中。
 
-远端确认要求已知远端记录的 owner、authority epoch、generation、durable sequence 和 working root 与本机一致，并且本机修改已保存；同步队列为空本身不表示远端已保存。页面展示最近一次确认，查看其他机器的新成果前，通过 MCP 拉取远端更新。
+远端确认要求已知远端记录的 owner、authority epoch、generation、durable sequence 和 working root 与本机一致，并且本机修改已保存；同步队列为空本身不表示远端已保存。页面展示最近一次确认。在另一个 sandbox 中重新打开文件，或在档案室点击“刷新文件”，可以读取 CSI 客户端保存的修改。
 
 ## macOS 内置 NFS
 
@@ -199,8 +199,8 @@ Dashboard 默认进入 `/archive`，导航位于“分支与版本”上方。�
 
 ## 工作区发现与删除
 
-Dashboard 在首次进入和主动刷新时发现当前远端存储中有权限访问的工作区，后台每 2 秒更新工作区列表和删除状态。选择工作区时加载分支信息，挂载目录由用户单独选择。远端不可用时保留本机列表并显示刷新错误。MCP 客户端可调用 `workspace_discover`，无需预先知道 workspace ID。
+Dashboard 从服务数据库读取工作区列表。选择工作区可以查看分支，MCP 客户端也可以通过同一服务调用 `workspace_discover` 查询工作区。
 
-每个工作区提供删除按钮，确认弹窗要求输入工作区名称。`workspace_delete` 使用标准请求格式，参数为 `request: {"workspace":"<workspace-id>"}`。删除需要管理权限、本机目录已经卸载、本机保存和发布任务已经完成。远端通过 compare-and-swap 在没有活动发布任务时记录删除状态；遇到失败或结果未知，处理提示中的问题后使用原 request_id 重试。
+每个工作区提供删除按钮，确认弹窗要求输入工作区名称。`workspace_delete` 使用标准请求格式，参数为 `request: {"workspace":"<workspace-id>"}`。删除需要管理权限、本机目录已经卸载、本机保存和发布任务已经完成。服务在发布任务完成后将删除状态保存到 SQLite；遇到失败或结果未知，处理提示中的问题后使用原 request_id 重试。
 
-删除作用于当前存储范围内的整个工作区。删除后工作区从列表移除，后续导入和发布会被拒绝。其他 location 收到删除状态后停止访问本机副本，并在句柄关闭后完成目录卸载；断网的 location 重连后接收删除状态。删除记录和存储对象保留用于一致性检查与存储历史，此操作不清除底层对象或 Git 历史。仅存储在本机的工作区同样可以删除。
+删除工作区对该服务的所有客户端生效。工作区从列表移除，后续读取和写入会被拒绝，服务保留删除记录、存储对象和 Git 历史。

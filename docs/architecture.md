@@ -11,12 +11,34 @@
 | `agentdrive-ports` | Storage, filesystem, mount, clock, directory, and application interfaces |
 | `agentdrive-engine` | File semantics and workspace, revision, mount, replication, cache, ownership, merge workflows |
 | `agentdrive-local` | A process lock, SQLite metadata, immutable objects, working files, leases, verified reads |
-| `agentdrive-s3` | Streaming immutable object transport and conditional reference updates |
-| `agentdrive-opencsg` | Codes HTTP object transport, chunk verification and conditional reference updates |
+| `drive-s3`, `drive-s3-store` | S3 requests, multipart uploads, mount bindings and SQLite write reservations |
+| `agentdrive-s3` | Upload, download and verify file contents |
+| `agentdrive-opencsg` | Codes file transfer, chunk verification and optional XNet |
 | `agentdrive-platform` | NFS/FUSE/WinFsp callbacks, contained host-directory access and clock |
 | `agentdrive-mcp` | Typed tools, local HTTP routing, dashboard and settings HTTP API, client, stdio forwarding |
 | `agentdrive-test-support` | Deterministic clocks, mount and storage doubles, injected outages and lost acknowledgements |
 | `agentdrived` / `agentdrive` | Daemon lifecycle and command-line client |
+
+## Branch data flow
+
+```mermaid
+flowchart LR
+  A(["VM A · /workspace"]) --> VA["virtiofs · PVC A"]
+  B(["VM B · /workspace"]) --> VB["virtiofs · PVC B"]
+  VA & VB -->|CSI client · S3| G["drive-s3"]
+  G --> M["drive-s3-store"]
+  M -->|bucket → workspace ID + branch ID| E["agentdrive-engine"]
+  UI(["Drive UI / MCP"]) --> E
+  M --> L[("SQLite · bindings / write locks")]
+  E --> D[("SQLite · paths / branches / revisions / backend")]
+  E -->|file bytes| P{"workspace storage"}
+  P --> S[("S3 bucket")]
+  P --> C["OpenCSG Codes"]
+  P --> H[("Local files")]
+  C -->|optional| X(["XNet"])
+```
+
+Each workspace selects one content backend. Each CSI mount uses a bucket alias that resolves to a workspace ID and branch ID in SQLite. The Archive and MCP share the same engine and can read changes before a named revision is created. Local sandboxes share one daemon. Remote sandboxes connect to the same service.
 
 ## Module responsibilities
 
@@ -49,8 +71,6 @@
 | `apps/agentdrived/main` | Construct adapters, start HTTP and background workers, shut down cleanly |
 
 `agentdrive-ports` describes the interfaces used by the engine. Storage and platform adapters implement those interfaces. The configuration crate depends on model types and does not construct database, mount or network services. The daemon supplies one `LiveConfig` handle to the engine and HTTP gateway. Only `ConfigStore` publishes replacement snapshots; consumers obtain a consistent snapshot for each operation. `apps/agentdrived/settings::remote_storage` selects the remote adapter for both startup and runtime changes.
-
-Both remote backends implement `RemoteObjectStore` and `RemoteRefStore`. The engine reuses its existing publication order, durable retries, history import and ownership workflows. OpenCSG-specific HTTP paths, Bearer authentication, response parsing, chunk encoding and Git branch version checks remain inside `agentdrive-opencsg`; domain objects and MCP tools retain their existing version semantics.
 
 Workspace discovery enumerates IDs through `RemoteRefStore`, validates workspace control records, and caches authorized metadata without creating mounts. The workspace service shares this workflow between explicit refresh and the daemon's 2-second refresh. Global deletion uses a conditional update to the existing control record and publication barrier, then records an irreversible local deletion marker. Publication and history retention cannot begin after this marker is published. Peer locations retire mounts through the normal handle-aware release workflow. Objects and Git history remain stored; the dashboard handles selection, confirmation and error presentation only.
 
@@ -102,17 +122,11 @@ Handoff updates the view in the existing mount. Open file handles retain their o
 
 ## Configuration lifecycle
 
-`ConfigStore::open` reads and validates the file. `StartupConfig` supplies storage paths, mounts, transport and the local principal. Cache policy, remote connections and allowed HTTP origins share one `ArcSwap<Snapshot>`. Cache collection retains one snapshot for each operation; HTTP Origin checks use the current snapshot.
-
-A daemon worker checks the configuration file once per second. A dashboard save uses the same store and writer lock, checks the expected file revision, writes and synchronizes a temporary file in the same directory, replaces the configuration file, and publishes the snapshot. On Unix the directory is also synchronized. File errors, invalid values and changes to startup settings preserve the active configuration and report an error. Configuration revision checks reject stale API writers and detected external file edits; external editors do not participate in the daemon's writer lock. Use atomic file replacement when editing externally.
-
-The daemon stores each workspace destination in `ConfigStore` and checks its identity against workspace metadata. Responses redact saved remote secrets. Changing local directories, the principal or the listen address requires a restart. `ConfigApplier` verifies new remote connections and persists configuration while protecting lifecycle, publication and object-retention operations. See [configuration](configuration.md).
+The startup JSON supplies the listener, principal and state directory. SQLite stores runtime settings in `server_settings` and backend profiles in `workspace_storage`. The dashboard updates settings through the existing API. Responses redact credentials. Independent databases maintain independent workspaces even when they use the same content backend.
 
 ## Local persistence
 
 Each daemon state directory contains `engine.lock`, `meta.db`, SQLite WAL files, `objects/`, `staging/`, and `working/`. A process lock permits one writer. SQLite uses WAL and `synchronous=FULL`. Persisted format versions are checked before schema changes. Storage errors propagate as typed errors.
-
-`meta.db` and its WAL files remain local in all storage modes. Remote backends receive immutable objects and the control/branch references described below. Pulling imports published history into the receiving daemon's database; local identity, branch selections, mount bindings, cache pins and pending work remain local state. Cache capacity covers immutable object files only. In remote mode, the collector uses `cache.max_bytes`, a derived 75% collection target, and an internal 64 MiB minimum-free-space threshold. Local mode retains all historical content.
 
 Object IDs hash a domain separator, format version, object kind, and bytes with SHA-256. Publication verifies the digest and size, flushes the temporary file, publishes its immutable name, and registers it. Unix directories are flushed after publication; Windows uses a write-through file move. A metadata transaction references installed immutable objects. Reader leases protect open content from cache eviction.
 
@@ -140,19 +154,13 @@ Each state directory persists one `location_id`. Therefore `workspace_selections
 
 ## Replication and ownership
 
-A workspace has immutable objects plus a conditional workspace control record and conditional branch references. A branch reference contains its owner, epoch, generation, source generation, heads, and immutable history index. The history index records revisions and operation receipts.
+In `meta.db`, `nodes` maps branch paths to inodes, `metadata_objects` stores trees and history indexes, and `published_refs` stores versioned references using conditional SQL updates. For a file PUT the gateway verifies and uploads the content before committing the new branch entry. Clients may retry failed requests. The database records operation IDs and named revisions.
 
-Publication groups consecutive jobs for the same branch, owner, authority epoch and generation, with increasing source generations and nondecreasing durable sequences. A stopped/deleted reference or a generation/authority change ends the group. The newest history index must retain every covered operation with its original identity and result. The publisher compares the new graph with roots retained by the current remote reference, uploads new dependencies once, and conditionally publishes the newest reference. All covered receipts and queue removals then commit together in SQLite. Publication and mount completion update receipts with transactional expected-record checks. A concurrent change causes the update to reload and retry, preserving both remote confirmation and mount state. Confirmed receipts expose their persisted completed progress during retention cleanup. A workspace publication gate preserves ordering; independent workspace requests can proceed concurrently under the shared upload limit. Installing workspace storage connections takes the exclusive publication barrier.
+`s3-sessions.sqlite3` stores the mount aliases and write policy. With `serialized`, multiple mounts can edit the branch and the gateway reserves that branch during publication using a file lock shared with ownership transfers. The last successful update to a file becomes visible. With `exclusive`, one holder may publish. Handoff advances the epoch and fences the old mount. Both modes check permission at publication.
 
-Publication completes its dependency uploads before compare-and-swap of the branch reference. Opaque provider versions are used for conditional writes. When an acknowledgement is lost, the publisher inspects the original operation's history record. Durable local jobs survive retries and process restarts. Workspace control records protect in-progress publication/read roots and coordinate the GC phase protocol. Physical remote deletion is disabled. `OperationRecord.sync_progress` exposes queue position, publication stage and object/byte counts. `mount_save` bounds remote waiting and leaves publication running after returning its durable receipt; filesystem remote fsync continues to require confirmation before success.
+## OpenCSG and S3 content layout
 
-Pull imports remote history and references without changing an active local branch. Explicit adoption follows a confirmed ownership transfer. Transfer stops the old writer, drains its publication queue, then conditionally advances owner and epoch. The new location adopts the confirmed state. An unreachable owner cannot be forcibly replaced by this API.
-
-## OpenCSG storage representation
-
-A configured Codes repository branch contains `<prefix>/<workspace>/objects/<object-id>.json` manifests, `chunks/<sha256>` base64 files, `control.json`, and `branches/<branch-id>.json`. Manifests retain the original `ObjectRef`; chunks contain at most 4 MiB of source bytes. Upload validates the complete object's size and digest before publishing its manifest. Downloads pin a Git commit and verify each chunk and the complete object with bounded buffers. Branch discovery uses the paged tree API at a pinned commit.
-
-The Git branch head is an opaque `VersionedRef.version`. Single-file POST/PUT requests supply `start_sha`; Gitaly's conditional branch update rejects an advanced head. Independent reference and object writes can move this shared head, so immutable creates retry and the engine handles reference conflicts. After a write, the adapter reads the current bytes to recover a lost acknowledgement; an unreadable outcome returns `CasOutcome::Unknown`. A connection probe verifies the service's update and create semantics before writes are enabled. All workspace branches and revisions remain AgentDrive records within this storage branch; Git commits describe storage operations. Physical remote deletion remains disabled.
+S3 stores file bytes by content ID under the workspace prefix. OpenCSG Codes stores content chunks on the configured Git branch. SQLite stores the chunk manifest in `file_manifests`. With XNet enabled, files that match the repository's large-file rules use XNet transfer and a Git LFS pointer. AgentDrive serves workspace branches and named revisions from its database.
 
 ## Merge
 

@@ -4,7 +4,7 @@
 
 ## Request identity and receipts
 
-For command tools, reuse a `request_id` for the same tool and identical arguments. Identity is scoped to the local principal on the receiving daemon and persists across restarts. A conflicting reuse returns `REQUEST_ID_CONFLICT`. Commands reserve their operation before executing the recorded workflow. `operation_by_request` recovers a request submitted to that daemon; `operation_get` also reads published receipts imported from other locations by their operation ID. Independent locations can use the same request label while preserving every receipt during synchronization. `operation_cancel` takes an existing operation ID directly; see the [MCP parameter reference](mcp.md).
+For command tools, reuse a `request_id` for the same tool and identical arguments. Identity is scoped to the local principal on the receiving daemon and persists across restarts. A conflicting reuse returns `REQUEST_ID_CONFLICT`. Commands reserve their operation before executing the recorded workflow. `operation_by_request` recovers a request submitted to that daemon. `operation_get` reads a receipt from the service database by its operation ID. `operation_cancel` takes an existing operation ID directly; see the [MCP parameter reference](mcp.md).
 
 On upgrade, saved legacy receipts whose branch has no local branch record move to replicated history, releasing their request labels while preserving lookup by operation ID. The migration runs once in a transaction, including for databases that already have the replicated-receipt table. Legacy receipts have no originating location field. Receipts for branches present locally, including transferred or adopted branches, retain their request reservations so existing local commands remain idempotent. An ambiguous legacy receipt on an adopted branch can therefore still require a fresh request label for a new command.
 
@@ -44,13 +44,13 @@ Keep the state directory on a local filesystem with correct file flush and atomi
 
 ## Replication, cache, and ownership
 
-`sync` supports `push`, `pull`, and `both`. Pulling a workspace onto a fresh location imports its history. The first writable `mount_prepare` also imports a missing workspace and creates this location’s branch from the root branch’s latest published working root. Later mounts reuse the local selection. A remote history reference does not grant local write ownership.
+All clients for a workspace connect to the same AgentDrive service. SQLite stores branches, revision history and writer assignments. The selected S3 or OpenCSG backend stores file content. For a fresh client, open the existing workspace in the dashboard or bind a CSI volume to its workspace and branch IDs.
 
 Use `cache_prefetch` to download a revision or selected paths. Use `cache_pin` with `enabled: true` to retain a complete selection for offline use; `cache_status` reports both completeness and pin protection. Unpinning permits later collection after other protection is absent. Cache capacity eviction removes remotely confirmed objects without active readers or protected references. Unconfirmed objects superseded by checkpoints can also be reclaimed after checking all retained roots and active readers.
 
-While S3 is enabled, set the local cache capacity with `cache.max_bytes` in `agentdrive.json`. Collection starts above that capacity or below the internal 64 MiB free-space threshold and targets 75% of the configured capacity. Protected content can keep usage above the setting. Local-only workspaces retain all history. See [configuration](configuration.md) for workspace storage selection and the local SQLite database.
+While S3 is enabled, set the local cache capacity with `cache.max_bytes` in the dashboard settings or through `PUT /api/settings`. Collection starts above that capacity or below the internal 64 MiB free-space threshold and targets 75% of the configured capacity. Protected content can keep usage above the setting. Local-only workspaces retain all history. See [configuration](configuration.md) for workspace storage selection and the local SQLite database.
 
-Ownership transfer is online. Stop writing files and release writable mounts on the old location. Submit `ownership_transfer` with the current `BranchGuard` and the destination `LocationId`. The old location stops branch writes before draining publication and updating the conditional reference. Pull at the new location to adopt confirmed ownership. Retain the original transfer operation during an uncertain remote response.
+For exclusive CSI mounts, stop writing on the outgoing mount, flush its files and check for errors. Send the `handoff` command to the service with the outgoing and incoming bucket aliases. SQLite records the new writer and retires the outgoing alias. For shared editing, bind both volumes with `write_mode: "serialized"`. Each completed S3 mutation becomes visible on the branch. [S3 operations and commands](../apps/drive-s3/README.md)
 
 ## Merging files
 

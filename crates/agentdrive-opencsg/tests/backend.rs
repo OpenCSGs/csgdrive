@@ -449,3 +449,93 @@ async fn native_pointer_reads_use_the_fixed_revision_and_keep_credentials_at_the
     assert_eq!(error.code, ErrorCode::Integrity);
     service.abort();
 }
+
+#[tokio::test]
+async fn server_keeps_branch_refs_tree_pages_and_chunk_manifests_in_sql() {
+    use agentdrive_local::{DatabaseStorage, LocalBackend};
+    use agentdrive_opencsg::OpenCsgBackend;
+    use std::sync::Arc;
+
+    let server = Server::new().await;
+    let directory = tempfile::tempdir().unwrap();
+    let workspace = WorkspaceId::new();
+    let branch = BranchId::new();
+    let key = RefKey::Branch { workspace, branch };
+    let payload: Vec<u8> = (0..4 * 1024 * 1024 + 1).map(|i| (i % 251) as u8).collect();
+    let file = object_ref(ObjectKind::File, &payload);
+    let tree = object_ref(ObjectKind::Tree, b"tree");
+    let target = agentdrive_config::RemoteConfig::OpenCsg(server.config.clone())
+        .storage_target()
+        .unwrap();
+    {
+        let db = LocalBackend::open_server(directory.path()).unwrap();
+        let codes =
+            OpenCsgBackend::file_store(server.config.clone(), Arc::new(db.clone())).unwrap();
+        let backend = DatabaseStorage::new(db.clone(), target.clone(), codes).unwrap();
+        db.put(workspace, ObjectKind::Tree, Bytes::from_static(b"tree"))
+            .await
+            .unwrap();
+        backend
+            .upload(workspace, db.open(workspace, &tree).await.unwrap())
+            .await
+            .unwrap();
+        backend
+            .upload(workspace, stream(payload.clone()))
+            .await
+            .unwrap();
+        let initial = backend
+            .compare_exchange(RefUpdate {
+                key: key.clone(),
+                expected_version: None,
+                bytes: Bytes::from_static(b"branch-head"),
+            })
+            .await
+            .unwrap();
+        assert!(matches!(initial, CasOutcome::Applied { .. }));
+        let duplicate = backend
+            .compare_exchange(RefUpdate {
+                key: key.clone(),
+                expected_version: None,
+                bytes: Bytes::from_static(b"stale"),
+            })
+            .await
+            .unwrap();
+        assert!(matches!(duplicate, CasOutcome::Conflict));
+        assert!(
+            !directory
+                .path()
+                .join("objects")
+                .join(workspace.to_string())
+                .join(tree.id.as_str())
+                .exists()
+        );
+        let data = server.data.lock().unwrap();
+        let stored: Vec<_> = data
+            .files()
+            .keys()
+            .filter(|key| key.as_str() != "README.md")
+            .collect();
+        assert_eq!(stored.len(), 2);
+        assert!(stored.iter().all(|key| key.contains("/chunks/")));
+    }
+    let db = LocalBackend::open_server(directory.path()).unwrap();
+    let codes = OpenCsgBackend::file_store(server.config.clone(), Arc::new(db.clone())).unwrap();
+    let backend = DatabaseStorage::new(db, target, codes).unwrap();
+    assert_eq!(
+        backend.get(&key).await.unwrap().unwrap().bytes.as_ref(),
+        b"branch-head"
+    );
+    assert_eq!(backend.list_branches(workspace).await.unwrap(), [branch]);
+    for (reference, expected) in [(file, payload), (tree, b"tree".to_vec())] {
+        let mut result = Vec::new();
+        backend
+            .download(workspace, &reference)
+            .await
+            .unwrap()
+            .reader
+            .read_to_end(&mut result)
+            .await
+            .unwrap();
+        assert_eq!(result, expected);
+    }
+}

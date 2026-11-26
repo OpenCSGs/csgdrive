@@ -12,7 +12,7 @@ pub struct Runtime {
     pub state: Arc<dyn LocalStateStore>,
     pub clock: Arc<dyn Clock>,
     pub location: LocationId,
-    pub(crate) objects: RwLock<()>,
+    pub(crate) objects: Arc<RwLock<()>>,
     pub(crate) lifecycle: AsyncMutex<()>,
     pub(crate) sandbox_pins: Mutex<BTreeSet<BranchId>>,
     pub(crate) stopped: Mutex<BTreeSet<BranchId>>,
@@ -44,7 +44,7 @@ impl Runtime {
             state,
             clock,
             location,
-            objects: RwLock::new(()),
+            objects: Arc::default(),
             lifecycle: AsyncMutex::new(()),
             sandbox_pins: Mutex::new(BTreeSet::new()),
             stopped: Mutex::new(BTreeSet::new()),
@@ -86,6 +86,41 @@ impl Runtime {
             branch.state = BranchState::Stopped;
         }
         Ok(branch)
+    }
+
+    pub(crate) async fn check_capacity(
+        &self,
+        branch: &Branch,
+        old_size: u64,
+        new_size: u64,
+        additional_nodes: u64,
+    ) -> Result<()> {
+        let workspace = self
+            .state
+            .workspace(branch.workspace)
+            .await?
+            .ok_or_else(|| Error::integrity("workspace is missing"))?;
+        let usage = self.state.usage(branch.id).await?;
+        if new_size > workspace.max_file_bytes
+            || usage.inodes.saturating_add(additional_nodes) > workspace.max_inodes
+        {
+            return Err(Error::new(
+                ErrorCode::CapacityExceeded,
+                "workspace file or inode limit exceeded",
+            ));
+        }
+        let next = usage
+            .bytes
+            .checked_sub(old_size)
+            .and_then(|total| total.checked_add(new_size))
+            .ok_or_else(|| Error::integrity("invalid working tree size"))?;
+        if next > workspace.max_working_bytes {
+            return Err(Error::new(
+                ErrorCode::CapacityExceeded,
+                "workspace size limit exceeded",
+            ));
+        }
+        Ok(())
     }
 
     pub(crate) fn check_sandbox(&self, branch: BranchId) -> Result<()> {

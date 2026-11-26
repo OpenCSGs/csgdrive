@@ -97,6 +97,12 @@ pub trait ConfigApplier: Send + Sync + std::fmt::Debug {
     ) -> Result<()>;
 }
 
+/// Persistent runtime settings on a server. The configuration file supplies startup settings.
+pub trait RuntimeSettingsRepository: Send + Sync + std::fmt::Debug {
+    fn load(&self) -> Result<Option<RuntimeConfig>>;
+    fn save(&self, values: &RuntimeConfig) -> Result<()>;
+}
+
 /// 写入与文件加载使用同一个锁；业务操作通过 ArcSwap 读取配置。
 #[derive(Debug)]
 pub struct ConfigStore {
@@ -105,6 +111,7 @@ pub struct ConfigStore {
     live: Arc<LiveConfig>,
     writer: Mutex<()>,
     applier: OnceLock<Arc<dyn ConfigApplier>>,
+    repository: OnceLock<Arc<dyn RuntimeSettingsRepository>>,
 }
 
 impl ConfigStore {
@@ -123,7 +130,36 @@ impl ConfigStore {
             live,
             writer: Mutex::new(()),
             applier: OnceLock::new(),
+            repository: OnceLock::new(),
         }))
+    }
+
+    pub fn use_repository(&self, repository: Arc<dyn RuntimeSettingsRepository>) -> Result<()> {
+        let _writer = self.writer.lock();
+        let values = match repository.load()? {
+            Some(values) => values,
+            None => {
+                let initial = self.live.load().values.clone();
+                if !initial.workspace_remotes.is_empty() {
+                    return Err(Error::invalid(
+                        "configure server workspace storage in the dashboard",
+                    ));
+                }
+                repository.save(&initial)?;
+                initial
+            }
+        };
+        values.validate()?;
+        let revision = revision(&serde_json::to_vec(&values)?);
+        self.repository
+            .set(repository)
+            .map_err(|_| Error::invalid("settings repository already assigned"))?;
+        self.live.0.store(Arc::new(Snapshot {
+            values,
+            revision,
+            reload_error: None,
+        }));
+        Ok(())
     }
 
     pub fn set_applier(&self, applier: Arc<dyn ConfigApplier>) -> Result<()> {
@@ -171,6 +207,10 @@ impl ConfigStore {
     }
 
     pub fn reload(&self) -> Result<bool> {
+        // The open server has exclusive ownership of the database. All settings changes use update().
+        if self.repository.get().is_some() {
+            return Ok(false);
+        }
         let _writer = self.writer.lock();
         let result = (|| {
             let bytes = read(&self.path)?;
@@ -274,7 +314,9 @@ impl ConfigStore {
 
     fn update_locked(&self, mut update: SettingsUpdate) -> Result<Settings> {
         let current = self.live.load();
-        if current.revision != update.revision || revision(&read(&self.path)?) != update.revision {
+        if current.revision != update.revision
+            || (self.repository.get().is_none() && revision(&read(&self.path)?) != update.revision)
+        {
             return Err(Error::new(
                 ErrorCode::Conflict,
                 "configuration changed; reload settings before saving",
@@ -291,6 +333,21 @@ impl ConfigStore {
             }
         }
         update.runtime.validate()?;
+        if let Some(repository) = self.repository.get() {
+            let bytes = serde_json::to_vec(&update.runtime)?;
+            if bytes.len() > MAX_CONFIG_BYTES {
+                return Err(Error::invalid("configuration exceeds 1 MiB"));
+            }
+            self.apply(&current.values, &update.runtime, &mut || {
+                repository.save(&update.runtime)
+            })?;
+            self.live.0.store(Arc::new(Snapshot {
+                revision: revision(&bytes),
+                values: update.runtime,
+                reload_error: None,
+            }));
+            return Ok(self.settings());
+        }
         let config = Config::with_runtime(self.startup.clone(), update.runtime);
         let bytes = serde_json::to_vec_pretty(&config)?;
         if bytes.len() > MAX_CONFIG_BYTES {

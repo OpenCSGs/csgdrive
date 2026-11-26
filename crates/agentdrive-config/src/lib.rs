@@ -7,6 +7,7 @@ mod types;
 pub use file::{Config, StartupConfig, initialize};
 pub use remote::{OpenCsgConfig, RemoteConfig};
 pub use store::{
-    ConfigApplier, ConfigStore, LiveConfig, RuntimeConfig, Settings, SettingsUpdate, Snapshot,
+    ConfigApplier, ConfigStore, LiveConfig, RuntimeConfig, RuntimeSettingsRepository, Settings,
+    SettingsUpdate, Snapshot,
 };
 pub use types::{CacheConfig, CollaborationConfig, S3Config, S3Credentials};

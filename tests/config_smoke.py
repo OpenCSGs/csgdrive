@@ -1,4 +1,4 @@
-"""通过运行中的 daemon 验证文件热更新、设置保存与重启恢复。"""
+"""Verify runtime settings, revision conflicts, and SQLite recovery after restart."""
 import argparse
 import json
 import os
@@ -58,45 +58,26 @@ with tempfile.TemporaryDirectory(prefix='agentdrive-config-') as temporary:
     def start():
         return subprocess.Popen([str(executable), 'serve', '--config', str(path)], stdin=subprocess.DEVNULL, stdout=log, stderr=log)
 
-    def replace_config(config):
-        pending = root / 'agentdrive.pending.json'
-        pending.write_text(json.dumps(config))
-        os.replace(pending, path)
-
     try:
         daemon = start()
         initial = wait_for(lambda data: data['reload_error'] is None)
-        assert request()[0] == 200
-        configured = dict(original, cache={'max_bytes': 3 * 1024 ** 3}, allowed_origins=['https://example.com'])
-        replace_config(configured)
-        loaded = wait_for(lambda data: data['runtime']['cache']['max_bytes'] == 3 * 1024 ** 3)
-        assert loaded['runtime']['allowed_origins'] == ['https://example.com']
-        path.write_text('{')
-        failed = wait_for(lambda data: data['reload_error'] is not None)
-        assert failed['revision'] == loaded['revision']
-        assert failed['runtime'] == loaded['runtime']
-        replace_config(configured)
-        wait_for(lambda data: data['reload_error'] is None)
-        replace_config(dict(configured, data_dir=str(root / 'different-state')))
-        failed = wait_for(lambda data: data['reload_error'] and 'restart required' in data['reload_error'])
-        assert failed['startup']['data_dir'] == original['data_dir']
-        replace_config(configured)
-        recovered = wait_for(lambda data: data['reload_error'] is None)
-        runtime = recovered['runtime']
-        runtime['cache'] = {'max_bytes': 128 * 1024 ** 2}
-        update = {'revision': recovered['revision'], 'runtime': runtime}
+        runtime = dict(initial['runtime'], cache={'max_bytes': 3 * 1024 ** 3},
+                       allowed_origins=['https://example.com'])
+        update = {'revision': initial['revision'], 'runtime': runtime}
         status, saved = request('PUT', update)
         assert status == 200, saved
         assert request('PUT', update)[0] == 409
-        assert saved['runtime']['cache'] == runtime['cache']
-        assert json.loads(path.read_text(encoding='utf-8'))['cache'] == runtime['cache']
+        invalid = dict(runtime, allowed_origins=['invalid'])
+        assert request('PUT', {'revision': saved['revision'], 'runtime': invalid})[0] == 400
+        assert request()[1]['runtime'] == runtime
+        assert json.loads(path.read_text(encoding='utf-8')) == original
         assert daemon.poll() is None
         daemon.terminate()
         daemon.wait(timeout=15)
         daemon = start()
         restarted = wait_for(lambda data: data['runtime'] == saved['runtime'])
         assert restarted['revision'] == saved['revision']
-        print('configuration file reload, error recovery, HTTP save and restart checks passed')
+        print('SQLite settings, revision conflicts, validation and restart checks passed')
     finally:
         if daemon is not None and daemon.poll() is None:
             daemon.terminate()
