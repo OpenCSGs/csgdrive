@@ -2,7 +2,7 @@ use agentdrive_config::OpenCsgConfig;
 use agentdrive_model::{Error, ErrorCode, Result};
 use base64::{Engine as _, engine::general_purpose::STANDARD};
 use reqwest::{Client, Method, RequestBuilder, StatusCode, header};
-use serde::{Deserialize, de::DeserializeOwned};
+use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use serde_json::json;
 use std::time::Duration;
 use url::Url;
@@ -212,6 +212,39 @@ impl Repository {
             }
             cursor = page.cursor;
         }
+    }
+
+    pub(crate) async fn commit_bytes<'a>(
+        &self,
+        files: impl IntoIterator<Item = (&'a str, &'a [u8])>,
+    ) -> Result<()> {
+        #[derive(Serialize)]
+        struct File<'a> {
+            path: &'a str,
+            action: &'static str,
+            content: String,
+        }
+        #[derive(Serialize)]
+        struct Commit<'a> {
+            message: &'static str,
+            files: Vec<File<'a>>,
+        }
+        let files = files
+            .into_iter()
+            .map(|(path, data)| File {
+                path,
+                action: "create",
+                content: STANDARD.encode(data),
+            })
+            .collect();
+        let request = self
+            .request(Method::POST, &format!("commit/{}", self.branch))
+            .json(&Commit {
+                message: "Store AgentDrive file content",
+                files,
+            });
+        self.response::<serde_json::Value>(request).await?;
+        Ok(())
     }
 
     /// start_sha supplies the parent and the expected old branch OID to Gitaly. A stale

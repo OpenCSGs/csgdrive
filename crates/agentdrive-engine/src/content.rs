@@ -177,6 +177,27 @@ impl ContentService {
         .retryable())
     }
 
+    pub(crate) async fn upload_object(
+        &self,
+        remote: &dyn RemoteObjectStore,
+        workspace: WorkspaceId,
+        object: &ObjectRef,
+    ) -> Result<()> {
+        let stream = match self.local.open(workspace, object).await {
+            Ok(stream) => stream,
+            Err(error) if error.code == ErrorCode::NotFound => {
+                if object.kind == ObjectKind::File
+                    && remote.verified_file_exists(workspace, object).await?
+                {
+                    return Ok(());
+                }
+                self.open(workspace, object).await?
+            }
+            Err(error) => return Err(error),
+        };
+        remote.upload(workspace, stream).await
+    }
+
     pub(crate) async fn register_publication(
         &self,
         workspace: WorkspaceId,
@@ -281,6 +302,27 @@ impl ContentResolver for ContentService {
         offset: u64,
         size: u32,
     ) -> Result<Bytes> {
+        match self
+            .local
+            .read_range(workspace, reference, offset, size)
+            .await
+        {
+            Ok(bytes) => return Ok(bytes),
+            Err(error) if error.code == ErrorCode::NotFound => (),
+            Err(error) => return Err(error),
+        }
+        if let Some(remote) = self.remote(workspace)
+            && let Some(bytes) = remote
+                .read_verified_range(workspace, reference, offset, size)
+                .await?
+        {
+            if bytes.len() as u64 != reference.size.saturating_sub(offset).min(u64::from(size)) {
+                return Err(Error::integrity(
+                    "verified range length differs from the request",
+                ));
+            }
+            return Ok(bytes);
+        }
         let _lease = self.open(workspace, reference).await?;
         self.local
             .read_range(workspace, reference, offset, size)

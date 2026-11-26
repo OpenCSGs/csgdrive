@@ -5,16 +5,6 @@ CREATE INDEX IF NOT EXISTS collaborations_workspace ON collaborations(workspace)
 CREATE TABLE IF NOT EXISTS workspace_selections (workspace TEXT PRIMARY KEY, branch TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS branches (id TEXT PRIMARY KEY, workspace TEXT NOT NULL, data BLOB NOT NULL);
 CREATE INDEX IF NOT EXISTS branches_workspace ON branches(workspace);
-CREATE TABLE IF NOT EXISTS nodes (
-    branch TEXT NOT NULL,
-    path TEXT NOT NULL,
-    parent TEXT,
-    inode INTEGER NOT NULL,
-    data BLOB NOT NULL,
-    PRIMARY KEY(branch, path),
-    UNIQUE(branch, inode),
-    FOREIGN KEY(branch) REFERENCES branches(id)
-);
 CREATE TABLE IF NOT EXISTS revisions (id TEXT PRIMARY KEY, workspace TEXT NOT NULL, data BLOB NOT NULL);
 CREATE INDEX IF NOT EXISTS revisions_workspace ON revisions(workspace,id);
 CREATE INDEX IF NOT EXISTS revisions_branch_history ON revisions(

@@ -1,5 +1,5 @@
 use crate::{
-    LocalBackend,
+    LocalBackend, node_index,
     sqlite::{read_many, read_one, sql_error},
 };
 use agentdrive_model::*;
@@ -80,72 +80,91 @@ impl LocalBackend {
         mount: MountId,
         query: FileQuery,
     ) -> Result<Option<FileView>> {
-        self.db(move |connection| {
-            let transaction = connection.transaction().map_err(sql_error)?;
-            let data: Option<(Vec<u8>, Vec<u8>, Vec<u8>)> = transaction
-                .prepare_cached(
-                    "SELECT m.data,w.data,b.data FROM mounts m \
-                     JOIN branches b ON b.id=m.branch \
-                     JOIN workspaces w ON w.id=b.workspace WHERE m.id=?1",
-                )
-                .map_err(sql_error)?
-                .query_row([mount.to_string()], |row| {
-                    Ok((row.get(0)?, row.get(1)?, row.get(2)?))
-                })
-                .optional()
-                .map_err(sql_error)?;
-            let Some((mount, workspace, branch)) = data else {
-                return Ok(None);
-            };
-            let mut view = FileView {
-                mount: decode(&mount)?,
-                workspace: decode(&workspace)?,
-                branch: decode(&branch)?,
-                node: None,
-                child: None,
-                children: Vec::new(),
-            };
-            if view.mount.revision.is_none() {
-                let inode = match &query {
-                    FileQuery::Binding => None,
-                    FileQuery::Inode(id) | FileQuery::Children(id) => Some(*id),
-                    FileQuery::Child { parent, .. } => Some(*parent),
-                };
-                if let Some(inode) = inode {
-                    view.node = read_one(
-                        &transaction,
-                        "SELECT data FROM nodes WHERE branch=?1 AND inode=?2",
-                        &[view.branch.id.to_string(), inode.0.to_string()],
-                    )?;
-                }
-                if let Some(node) = &view.node {
-                    match query {
-                        FileQuery::Child { name, .. } => {
-                            let path = match name.as_str() {
-                                "." => node.path.clone(),
-                                ".." => node.path.parent().unwrap_or_else(WorkspacePath::root),
-                                name => node.path.join(name)?,
-                            };
-                            view.child = read_one(
+        loop {
+            let query = query.clone();
+            let result = self
+                .db(move |connection| {
+                    let transaction = connection.transaction().map_err(sql_error)?;
+                    let row = transaction
+                        .prepare_cached(
+                            "SELECT m.data,w.data,b.data,v.inodes IS NULL FROM mounts m
+                     JOIN branches b ON b.id=m.branch JOIN workspaces w ON w.id=b.workspace
+                     JOIN branch_node_views v ON v.branch=b.id WHERE m.id=?1",
+                        )
+                        .map_err(sql_error)?
+                        .query_row([mount.to_string()], |row| {
+                            Ok((
+                                row.get::<_, Vec<u8>>(0)?,
+                                row.get::<_, Vec<u8>>(1)?,
+                                row.get::<_, Vec<u8>>(2)?,
+                                row.get::<_, bool>(3)?,
+                            ))
+                        })
+                        .optional()
+                        .map_err(sql_error)?;
+                    let Some((mount, workspace, branch, pending)) = row else {
+                        return Ok(Ok(None));
+                    };
+                    let mut view = FileView {
+                        mount: decode(&mount)?,
+                        workspace: decode(&workspace)?,
+                        branch: decode(&branch)?,
+                        node: None,
+                        child: None,
+                        children: Vec::new(),
+                    };
+                    if view.mount.revision.is_none() {
+                        let inode = match &query {
+                            FileQuery::Binding => None,
+                            FileQuery::Inode(id) | FileQuery::Children(id) => Some(*id),
+                            FileQuery::Child { parent, .. } => Some(*parent),
+                        };
+                        if let Some(inode) = inode {
+                            if pending {
+                                return Ok(Err(view.branch.id));
+                            }
+                            view.node = node_index::one(
                                 &transaction,
-                                "SELECT data FROM nodes WHERE branch=?1 AND path=?2",
-                                &[view.branch.id.to_string(), path.lookup_key()],
+                                "n.inode=?2",
+                                &[view.branch.id.to_string(), inode.0.to_string()],
                             )?;
                         }
-                        FileQuery::Children(_) => {
-                            view.children = read_many(
-                                &transaction,
-                                "SELECT data FROM nodes WHERE branch=?1 AND parent=?2 ORDER BY path",
-                                &[view.branch.id.to_string(), node.path.lookup_key()],
-                            )?;
+                        if let Some(node) = &view.node {
+                            match query {
+                                FileQuery::Child { name, .. } => {
+                                    let path = match name.as_str() {
+                                        "." => node.path.clone(),
+                                        ".." => {
+                                            node.path.parent().unwrap_or_else(WorkspacePath::root)
+                                        }
+                                        name => node.path.join(name)?,
+                                    };
+                                    view.child = node_index::one(
+                                        &transaction,
+                                        "n.path=?2",
+                                        &[view.branch.id.to_string(), path.lookup_key()],
+                                    )?;
+                                }
+                                FileQuery::Children(_) => {
+                                    view.children = node_index::many(
+                                        &transaction,
+                                        "n.parent=?2",
+                                        "ORDER BY n.path",
+                                        &[view.branch.id.to_string(), node.path.lookup_key()],
+                                    )?;
+                                }
+                                _ => (),
+                            }
                         }
-                        _ => (),
                     }
-                }
+                    Ok(Ok(Some(view)))
+                })
+                .await?;
+            match result {
+                Ok(view) => return Ok(view),
+                Err(branch) => self.ensure_node_view(branch).await?,
             }
-            Ok(Some(view))
-        })
-        .await
+        }
     }
 
     pub(crate) async fn read_retention_state(&self) -> Result<RetentionState> {

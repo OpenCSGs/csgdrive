@@ -5,7 +5,6 @@ use async_trait::async_trait;
 use bytes::Bytes;
 use rusqlite::{Connection, OptionalExtension, params};
 use std::{collections::BTreeMap, sync::Arc};
-use tokio::io::AsyncReadExt;
 
 pub(crate) fn configure_layout(db: &mut Connection, server: bool) -> Result<()> {
     let tx = db.transaction().map_err(sql_error)?;
@@ -184,31 +183,70 @@ impl DatabaseStorage {
 
 #[async_trait]
 impl RemoteObjectStore for DatabaseStorage {
-    async fn upload(&self, workspace: WorkspaceId, source: ObjectStream) -> Result<()> {
-        if source.reference.kind == ObjectKind::File {
-            return self.files.upload(workspace, source).await;
+    async fn verified_file_exists(
+        &self,
+        workspace: WorkspaceId,
+        object: &ObjectRef,
+    ) -> Result<bool> {
+        self.files.verified_file_exists(workspace, object).await
+    }
+
+    async fn read_verified_range(
+        &self,
+        workspace: WorkspaceId,
+        object: &ObjectRef,
+        offset: u64,
+        size: u32,
+    ) -> Result<Option<Bytes>> {
+        if object.kind == ObjectKind::File {
+            self.files
+                .read_verified_range(workspace, object, offset, size)
+                .await
+        } else {
+            Ok(None)
         }
-        let mut data = Vec::new();
-        source
-            .reader
-            .take(MAX_METADATA_BYTES as u64 + 1)
-            .read_to_end(&mut data)
-            .await?;
-        if data.len() > MAX_METADATA_BYTES {
-            return Err(Error::invalid("metadata exceeds format limit"));
+    }
+    async fn publish_stored_metadata(
+        &self,
+        workspace: WorkspaceId,
+        object: &ObjectRef,
+    ) -> Result<bool> {
+        if object.kind == ObjectKind::File || object.size > MAX_METADATA_BYTES as u64 {
+            return Err(Error::invalid("expected a metadata reference"));
         }
-        verify_object(&source.reference, &data)?;
+        let object = object.clone();
         self.db
             .db(move |db| {
-                db.execute(
-                    "INSERT INTO metadata_objects(workspace,hash,data,published) VALUES(?1,?2,?3,1)
-                 ON CONFLICT(workspace,hash) DO UPDATE SET published=1",
-                    params![workspace.to_string(), source.reference.id.as_str(), data],
-                )
-                .map_err(sql_error)?;
-                Ok(())
+                let changed = db
+                    .execute(
+                        "UPDATE metadata_objects SET published=1
+                 WHERE workspace=?1 AND hash=?2 AND length(data)=?3 AND EXISTS (
+                    SELECT 1 FROM objects WHERE workspace=?1 AND hash=?2 AND size=?3 AND kind=?4)",
+                        params![
+                            workspace.to_string(),
+                            object.id.as_str(),
+                            crate::sqlite::db_integer(object.size)?,
+                            serde_json::to_string(&object.kind)?
+                        ],
+                    )
+                    .map_err(sql_error)?;
+                if changed != 1 {
+                    return Err(Error::integrity(
+                        "local metadata does not match the publication reference",
+                    ));
+                }
+                Ok(true)
             })
             .await
+    }
+
+    async fn upload(&self, workspace: WorkspaceId, source: ObjectStream) -> Result<()> {
+        if source.reference.kind != ObjectKind::File {
+            return Err(Error::invalid(
+                "the content backend accepts only file objects",
+            ));
+        }
+        self.files.upload(workspace, source).await
     }
     async fn download(&self, workspace: WorkspaceId, object: &ObjectRef) -> Result<ObjectStream> {
         if object.kind == ObjectKind::File {
@@ -345,8 +383,8 @@ impl RemoteRefStore for DatabaseStorage {
 }
 
 #[async_trait]
-impl FileManifestStore for LocalBackend {
-    async fn file_manifest(
+impl FilePlacementStore for LocalBackend {
+    async fn file_placement(
         &self,
         workspace: WorkspaceId,
         file: &ObjectId,
@@ -354,7 +392,7 @@ impl FileManifestStore for LocalBackend {
         let id = file.clone();
         self.db(move |db| {
             db.query_row(
-                "SELECT manifest FROM file_manifests WHERE workspace=?1 AND hash=?2",
+                "SELECT placement FROM file_placements WHERE workspace=?1 AND hash=?2",
                 params![workspace.to_string(), id.as_str()],
                 |row| row.get(0),
             )
@@ -364,27 +402,108 @@ impl FileManifestStore for LocalBackend {
         .await
     }
 
-    async fn save_file_manifest(
+    async fn save_file_placement(
         &self,
         workspace: WorkspaceId,
         file: &ObjectId,
-        manifest: Vec<u8>,
+        placement: Vec<u8>,
     ) -> Result<()> {
         let id = file.clone();
         self.db(move |db| {
             let changed = db
                 .execute(
-                    "INSERT INTO file_manifests(workspace,hash,manifest) VALUES(?1,?2,?3)
-                 ON CONFLICT(workspace,hash) DO UPDATE SET manifest=excluded.manifest
-                 WHERE manifest=excluded.manifest",
-                    params![workspace.to_string(), id.as_str(), manifest],
+                    "INSERT INTO file_placements(workspace,hash,placement) VALUES(?1,?2,?3)
+                 ON CONFLICT(workspace,hash) DO UPDATE SET placement=excluded.placement
+                 WHERE placement=excluded.placement",
+                    params![workspace.to_string(), id.as_str(), placement],
                 )
                 .map_err(sql_error)?;
             if changed != 1 {
-                return Err(Error::integrity(
-                    "file manifest differs from its stored value",
+                return Err(Error::new(
+                    ErrorCode::Conflict,
+                    "file already has a placement",
                 ));
             }
+            Ok(())
+        })
+        .await
+    }
+}
+
+#[async_trait]
+impl ObjectVerificationStore for LocalBackend {
+    async fn verification(
+        &self,
+        target: &str,
+        workspace: WorkspaceId,
+        object: &ObjectId,
+        digest_bytes: std::ops::Range<u64>,
+    ) -> Result<Option<ObjectVerification>> {
+        let key = (target.to_owned(), workspace.to_string(), object.to_string());
+        let offset = crate::sqlite::db_integer(digest_bytes.start)?
+            .checked_add(1)
+            .ok_or_else(|| Error::invalid("invalid digest offset"))?;
+        let count = crate::sqlite::db_integer(
+            digest_bytes
+                .end
+                .checked_sub(digest_bytes.start)
+                .ok_or_else(|| Error::invalid("invalid digest range"))?,
+        )?;
+        self.db(move |db| {
+            db.query_row(
+                "SELECT size,etag,version,substr(hashes,?4,?5)
+                 FROM object_verification WHERE target=?1 AND workspace=?2 AND hash=?3",
+                params![key.0, key.1, key.2, offset, count],
+                |row| {
+                    Ok((
+                        row.get::<_, i64>(0)?,
+                        row.get(1)?,
+                        row.get(2)?,
+                        row.get::<_, Option<Vec<u8>>>(3)?,
+                    ))
+                },
+            )
+            .optional()
+            .map_err(sql_error)?
+            .map(|(size, etag, version, hashes)| {
+                Ok(ObjectVerification {
+                    size: crate::sqlite::unsigned_integer(size)?,
+                    etag,
+                    version,
+                    hashes: hashes.unwrap_or_default().into(),
+                })
+            })
+            .transpose()
+        })
+        .await
+    }
+
+    async fn save_verification(
+        &self,
+        target: &str,
+        workspace: WorkspaceId,
+        object: &ObjectId,
+        proof: ObjectVerification,
+    ) -> Result<()> {
+        let key = (target.to_owned(), workspace.to_string(), object.to_string());
+        let size = crate::sqlite::db_integer(proof.size)?;
+        self.db(move |db| {
+            db.execute(
+                "INSERT INTO object_verification (target,workspace,hash,size,etag,version,hashes)
+                 VALUES (?1,?2,?3,?4,?5,?6,?7)
+                 ON CONFLICT(target,workspace,hash) DO UPDATE SET size=excluded.size,
+                     etag=excluded.etag,version=excluded.version,hashes=excluded.hashes",
+                params![
+                    key.0,
+                    key.1,
+                    key.2,
+                    size,
+                    proof.etag,
+                    proof.version,
+                    proof.hashes.as_ref()
+                ],
+            )
+            .map_err(sql_error)?;
             Ok(())
         })
         .await

@@ -225,8 +225,10 @@ impl Engine {
                     .put(workspace, ObjectKind::File, data)
                     .await?;
                 if let Some(remote) = trees.content.remote(workspace) {
-                    let stream = trees.content.local.open(workspace, &object).await?;
-                    remote.upload(workspace, stream).await?;
+                    trees
+                        .content
+                        .upload_object(remote.as_ref(), workspace, &object)
+                        .await?;
                     trees
                         .content
                         .local

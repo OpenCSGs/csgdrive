@@ -89,7 +89,9 @@ SQLite 保存工作区、分支、文件路径、版本，以及文件和内容�
 }
 ```
 
-令牌需要读写仓库文件的权限。`endpoint` 为 HTTP(S) 来源地址。测试环境使用 HTTP 时设置 `allow_http: true`。Git 存储分支默认为 `main`，存储目录默认为 `agentdrive/v1`。每个 AgentDrive 工作区分支的标识和历史均保存在 SQLite。普通文件按最大 4 MiB 分成内容块，逐块验证 SHA-256，仓库保存块内容，数据库保存块清单和排列顺序。
+令牌需要读写仓库文件的权限。`endpoint` 为 HTTP(S) 来源地址。测试环境使用 HTTP 时设置 `allow_http: true`。Git 存储分支默认为 `main`，存储目录默认为 `agentdrive/v1`。每个 AgentDrive 工作区分支的标识和历史均保存在 SQLite。SQLite 分别记录 Git 仓库的存储位置和当前的 XNet 写入设置。通过 `PUT /api/settings` 修改同一存储位置的 `xnet` 设置后，服务对新内容使用更新后的设置。`file_placements` 表记录每个已有内容的实际格式和固定的 Git 提交。
+
+采用 `git_chunks` 格式时，Git 保存原始二进制内容块，每块最多 4 MiB。一次 Git 提交请求可包含最多 8 MiB 不重复的内容块。Base64 只用于构造 JSON 请求中的文件内容字段。对于以 Git LFS 标记开头的内容块，服务写入一个可以还原的前置字节，保留用户文件里的指针原文。SQLite 保存块的排列顺序和 SHA-256 摘要。预览或读取指定字节范围时，服务从保存的 Git 提交读取并校验覆盖该范围的完整内容块。
 
 使用 XNet 时，请在 Codes 仓库开启 XNet，并在创建工作区时勾选 XNet。运行 AgentDrive 的机器需要安装传输依赖。
 
@@ -99,7 +101,9 @@ python3 -m venv /opt/agentdrive-xnet
 export AGENTDRIVE_XNET_PYTHON=/opt/agentdrive-xnet/bin/python
 ```
 
-使用该环境启动服务。Codes 的 preupload 接口为每个非空文件选择传输方式。分类为 LFS 的文件通过 XNet 上传，Git 仓库保存标准 LFS 指针。普通文件使用内容块存储。下载时 AgentDrive 校验文件大小和内容标识。
+使用该环境启动服务。开启 XNet 后，Codes 的 preupload 接口依据新内容的大小及其在 Git 内的路径 `<prefix>/<workspace UUID>/files/<content ID>` 选择传输方式。扩展名规则匹配这个内部路径。同一份内容在工作区拥有多个文件名时，共用同一个内容标识。
+
+采用 `git_lfs` 格式时，AgentDrive 通过 XNet 上传文件，向 Git 提交标准 LFS 指针，并在 SQLite 保存 Git 提交、指针路径和 LFS SHA-256 OID。下载时服务同时校验 LFS OID 和 AgentDrive 内容标识。文件尚未缓存时，指定范围读取会完成整份文件的校验。更改 XNet 写入设置后，两种格式的已有文件都可以继续读取。
 
 ## 多台机器共享一个分支
 

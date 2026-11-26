@@ -40,15 +40,17 @@ impl SnapshotService {
         for workspace in self.runtime.state.workspaces().await? {
             for branch in self.runtime.state.branches(workspace.id).await? {
                 let _gate = self.runtime.lock_branch(branch.id).await;
-                let tree = self.trees.tree(workspace.id, &branch.working_root).await?;
-                let nodes = tree
-                    .into_iter()
-                    .map(|(path, inode)| Node {
-                        path,
-                        inode,
-                        dirty: false,
-                    })
-                    .collect();
+                let changes = if branch.saved_seq == branch.mutation_seq
+                    && self.runtime.state.has_node_view(branch.id).await?
+                {
+                    Vec::new()
+                } else {
+                    vec![NodeChange::Share {
+                        branch: branch.id,
+                        workspace: workspace.id,
+                        root: branch.working_root.clone(),
+                    }]
+                };
                 let mut recovered = branch.clone();
                 recovered.mutation_seq = recovered.saved_seq;
                 let formal = self
@@ -71,10 +73,7 @@ impl SnapshotService {
                     .commit(LocalCommit {
                         guards: vec![BranchGuard::from(&branch)],
                         branches: vec![recovered],
-                        node_changes: vec![NodeChange::Replace {
-                            branch: branch.id,
-                            nodes,
-                        }],
+                        node_changes: changes,
                         ..Default::default()
                     })
                     .await?;

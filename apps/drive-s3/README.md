@@ -28,20 +28,27 @@ repositories. The workspace, branch tree, revisions and backend selection live
 in SQLite. A personal daemon started without the S3 listener uses the same
 database layout. The selected content backend receives file content.
 
-Use a unique S3 bucket alias for each CSI volume. A bind selects a workspace and
-branch by name. It creates a local workspace or forks the main branch if the
-requested name is absent. Create a workspace through the dashboard first to
-choose the content backend. To bind an existing branch by its immutable IDs, send
-`action: "bind_ids"` with `workspace_id`, `branch_id`, `bucket`, and
-`write_mode`. This also distinguishes workspaces with the same name. Give each static PV its own volume handle. Set the
-bucket to its alias and configure the path-style endpoint with the chosen region.
+Create the workspace and branch in the dashboard. In **Archive**, select the
+branch and copy the `workspace` and `branch` UUIDs from the URL. Bind each
+CSI volume to those IDs with a distinct bucket alias and static PV volume
+handle. Set the CSI bucket to that alias and configure the path-style endpoint
+and region. An unknown ID or a branch that belongs to another workspace
+causes the bind to fail.
 
 ### Edit the same branch from two desktops
 
+Set `WORKSPACE_ID` and `BRANCH_ID` to the UUIDs from the dashboard. These
+examples use `jq` to encode the management requests.
+
 ```sh
 manage() { curl -fsS --json "$1" http://127.0.0.1:19742/mounts; }
-manage '{"action":"bind","bucket":"desktop-a","workspace":"Documents","branch":"work","write_mode":"serialized"}'
-manage '{"action":"bind","bucket":"desktop-b","workspace":"Documents","branch":"work","write_mode":"serialized"}'
+bind_volume() {
+  manage "$(jq -nc --arg bucket "$1" --arg mode "$2" \
+    --arg w "$WORKSPACE_ID" --arg b "$BRANCH_ID" \
+    '{action:"bind_ids",bucket:$bucket,workspace_id:$w,branch_id:$b,write_mode:$mode}')"
+}
+bind_volume desktop-a serialized
+bind_volume desktop-b serialized
 ```
 
 Either mount can create, update or delete a file. The gateway reserves the destination branch throughout each publication,
@@ -57,8 +64,9 @@ The first binding sets the mode for the branch. A second alias must specify
 the same mode.
 
 ```sh
-manage '{"action":"bind","bucket":"owner-a","workspace":"Documents","branch":"release"}'
-manage '{"action":"bind","bucket":"owner-b","workspace":"Documents","branch":"release"}'
+# Set BRANCH_ID to the existing branch for exclusive writes.
+bind_volume owner-a exclusive
+bind_volume owner-b exclusive
 manage '{"action":"acquire","bucket":"owner-a"}'
 manage '{"action":"handoff","from":"owner-a","to":"owner-b"}'
 manage '{"action":"status","bucket":"owner-a"}'
@@ -84,9 +92,7 @@ to 64 MiB per uploaded object and eight unfinished multipart uploads. Uploads ex
 
 GET streams the requested byte range from one file version. Single and batch deletes check ETag and size under the branch reservation. Requests to delete a specific version or to match a deletion timestamp return an error. Source ETag and date conditions apply to both copy operations.
 
-For an isolated local test of the S3 endpoint, `drive-s3 --data-dir <directory>`
-serves local file content. It listens on ports 19731 (S3) and 19732 (admin)
-on loopback by default.
+For standalone use, create a local workspace and branch with `agentdrived`, record their IDs, and stop that daemon. Run `drive-s3 --data-dir <daemon-data-directory>` (the default is `<init-directory>/state`) to serve that local workspace. Its loopback ports are 19731 (S3) and 19732 (admin). Use `agentdrived` when the workspace uses remote file storage.
 
 ## Verification
 

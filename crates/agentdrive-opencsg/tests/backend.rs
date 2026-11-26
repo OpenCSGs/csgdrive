@@ -79,15 +79,13 @@ async fn invalid_uploads_do_not_publish_or_poison_object_identities() {
         .unwrap();
     {
         let mut data = server.data.lock().unwrap();
-        let mut files = data.files().clone();
         let id = format!("{:x}", sha2::Sha256::digest(b"expected"));
-        let chunk = files
-            .keys()
-            .find(|path| path.ends_with(&id))
-            .unwrap()
-            .clone();
-        files.insert(chunk, "invalid data".into());
-        data.publish(files);
+        let chunk = format!("agentdrive/v1/{workspace}/chunks/{id}");
+        for files in data.binary_snapshots.values_mut() {
+            if let Some(bytes) = files.get_mut(&chunk) {
+                *bytes = b"corrupt!".to_vec();
+            }
+        }
     }
     let mut output = Vec::new();
     assert!(
@@ -410,11 +408,11 @@ async fn native_pointer_reads_use_the_fixed_revision_and_keep_credentials_at_the
     let object = object_ref(ObjectKind::File, expected);
     let oid = format!("{:x}", sha2::Sha256::digest(expected));
     let file_path = format!("agentdrive/v1/{workspace}/files/{}", object.id);
-    {
+    let revision = {
         let mut data = server.data.lock().unwrap();
         let mut files = data.files().clone();
         files.insert(
-            file_path,
+            file_path.clone(),
             format!(
                 "version https://git-lfs.github.com/spec/v1\noid sha256:{oid}\nsize {}\n",
                 expected.len()
@@ -422,7 +420,21 @@ async fn native_pointer_reads_use_the_fixed_revision_and_keep_credentials_at_the
         );
         data.publish(files);
         data.xnet_download = Some(format!("http://{address}/object"));
-    }
+        data.head()
+    };
+    let directory = tempfile::tempdir().unwrap();
+    let db =
+        std::sync::Arc::new(agentdrive_local::LocalBackend::open_server(directory.path()).unwrap());
+    db.save_file_placement(
+        workspace,
+        &object.id,
+        serde_json::to_vec(&serde_json::json!({
+            "object": object, "revision": revision, "format":"git_lfs", "oid":oid, "path":file_path
+        }))
+        .unwrap(),
+    )
+    .await
+    .unwrap();
     let app = Router::new()
         .route(
             "/object",
@@ -433,7 +445,8 @@ async fn native_pointer_reads_use_the_fixed_revision_and_keep_credentials_at_the
         )
         .route("/corrupt", get(|| async { "invalid" }));
     let service = tokio::spawn(async move { axum::serve(storage, app).await.unwrap() });
-    let backend = server.backend();
+    let backend =
+        agentdrive_opencsg::OpenCsgBackend::file_store(server.config.clone(), db).unwrap();
     let mut restored = Vec::new();
     backend
         .download(workspace, &object)
@@ -475,10 +488,25 @@ async fn server_keeps_branch_refs_tree_pages_and_chunk_manifests_in_sql() {
         db.put(workspace, ObjectKind::Tree, Bytes::from_static(b"tree"))
             .await
             .unwrap();
-        backend
-            .upload(workspace, db.open(workspace, &tree).await.unwrap())
-            .await
-            .unwrap();
+        assert!(
+            backend
+                .publish_stored_metadata(workspace, &tree)
+                .await
+                .unwrap()
+        );
+        assert!(
+            backend
+                .publish_stored_metadata(workspace, &tree)
+                .await
+                .unwrap()
+        );
+        let missing = object_ref(ObjectKind::Tree, b"absent");
+        assert!(
+            backend
+                .publish_stored_metadata(workspace, &missing)
+                .await
+                .is_err()
+        );
         backend
             .upload(workspace, stream(payload.clone()))
             .await
@@ -537,5 +565,262 @@ async fn server_keeps_branch_refs_tree_pages_and_chunk_manifests_in_sql() {
             .await
             .unwrap();
         assert_eq!(result, expected);
+    }
+}
+
+#[tokio::test]
+async fn git_batches_recover_lost_replies_and_range_reads_verify_only_requested_chunks() {
+    use agentdrive_local::LocalBackend;
+    use agentdrive_opencsg::OpenCsgBackend;
+    use std::sync::Arc;
+
+    const CHUNK: usize = 4 * 1024 * 1024;
+    let server = Server::new().await;
+    let dir = tempfile::tempdir().unwrap();
+    let db = Arc::new(LocalBackend::open_server(dir.path()).unwrap());
+    let workspace = WorkspaceId::new();
+    let mut bytes = vec![0xFF; CHUNK];
+    bytes.extend(std::iter::repeat_n(0x82, CHUNK));
+    bytes.extend([0, 1, 0xFF, 0xFE]);
+    let object = object_ref(ObjectKind::File, &bytes);
+    let backend = OpenCsgBackend::file_store(server.config.clone(), db.clone()).unwrap();
+    {
+        let mut service = server.data.lock().unwrap();
+        service.fail_batch_before_commit = true;
+        service.lose_pointer_response = true;
+    }
+    backend
+        .upload(workspace, stream(bytes.clone()))
+        .await
+        .unwrap();
+    let placement: serde_json::Value = serde_json::from_slice(
+        &db.file_placement(workspace, &object.id)
+            .await
+            .unwrap()
+            .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(placement["format"], "git_chunks");
+    let revision = placement["revision"].as_str().unwrap();
+    {
+        let service = server.data.lock().unwrap();
+        assert_eq!(service.commit_sizes, [2, 2, 1]);
+        let snapshot = &service.binary_snapshots[revision];
+        for (index, digest) in placement["chunks"].as_array().unwrap().iter().enumerate() {
+            let path = format!(
+                "agentdrive/v1/{workspace}/chunks/{}",
+                digest.as_str().unwrap()
+            );
+            assert_eq!(
+                &snapshot[&path],
+                &bytes[index * CHUNK..((index + 1) * CHUNK).min(bytes.len())]
+            );
+        }
+    }
+    let new_policy = OpenCsgBackend::file_store(
+        agentdrive_config::OpenCsgConfig {
+            xnet: true,
+            ..server.config.clone()
+        },
+        db,
+    )
+    .unwrap();
+    new_policy
+        .upload(workspace, stream(bytes.clone()))
+        .await
+        .unwrap();
+    {
+        let mut service = server.data.lock().unwrap();
+        assert!(service.xnet_paths.is_empty());
+        assert_eq!(service.commit_sizes, [2, 2, 1]);
+        service.resolved_paths.clear();
+    }
+    let range = new_policy
+        .read_verified_range(workspace, &object, (CHUNK + 1) as u64, 3)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(range.as_ref(), &bytes[CHUNK + 1..CHUNK + 4]);
+    assert_eq!(server.data.lock().unwrap().resolved_paths.len(), 1);
+    let range = new_policy
+        .read_verified_range(workspace, &object, (CHUNK - 1) as u64, 2)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(range.as_ref(), &bytes[CHUNK - 1..CHUNK + 1]);
+    let digest = placement["chunks"][1].as_str().unwrap();
+    let path = format!("agentdrive/v1/{workspace}/chunks/{digest}");
+    server
+        .data
+        .lock()
+        .unwrap()
+        .binary_snapshots
+        .get_mut(revision)
+        .unwrap()
+        .get_mut(&path)
+        .unwrap()[0] = 0;
+    let error = new_policy
+        .read_verified_range(workspace, &object, (CHUNK + 1) as u64, 3)
+        .await
+        .unwrap_err();
+    assert_eq!(error.code, ErrorCode::Integrity);
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn sql_lfs_placement_survives_a_change_to_regular_git_writes() {
+    use agentdrive_local::LocalBackend;
+    use agentdrive_opencsg::OpenCsgBackend;
+    use axum::{Router, routing::get};
+    use std::{os::unix::fs::PermissionsExt, sync::Arc};
+
+    // Start an isolated test process so its Python transfer helper cannot affect other tests.
+    let Ok(test_file) = std::env::var("AGENTDRIVE_TEST_STORED_CAS_FILE") else {
+        let dir = tempfile::tempdir().unwrap();
+        let script = dir.path().join("xnet-helper");
+        std::fs::write(
+            &script,
+            r#"#!/usr/bin/env python3
+import json, os, shutil, sys
+request = json.load(sys.stdin)
+if request["action"] == "upload":
+    shutil.copyfile(request["path"], os.environ["AGENTDRIVE_TEST_STORED_CAS_FILE"])
+"#,
+        )
+        .unwrap();
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let result = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "sql_lfs_placement_survives_a_change_to_regular_git_writes",
+            ])
+            .env(
+                "AGENTDRIVE_TEST_STORED_CAS_FILE",
+                dir.path().join("cas-file"),
+            )
+            .env("AGENTDRIVE_XNET_PYTHON", script)
+            .output()
+            .unwrap();
+        assert!(
+            result.status.success(),
+            "{}",
+            String::from_utf8_lossy(&result.stdout)
+        );
+        return;
+    };
+
+    let dir = tempfile::tempdir().unwrap();
+    let db = Arc::new(LocalBackend::open_server(dir.path()).unwrap());
+    let server = Server::new().await;
+    let workspace = WorkspaceId::new();
+    let bytes = b"stored using a mocked XNet CAS\x00\xff";
+    let object = object_ref(ObjectKind::File, bytes);
+    let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+        .await
+        .unwrap();
+    let url = format!("http://{}/object", listener.local_addr().unwrap());
+    let service = tokio::spawn(async move {
+        let app = Router::new().route(
+            "/object",
+            get(move || async move { std::fs::read(test_file).unwrap() }),
+        );
+        axum::serve(listener, app).await.unwrap()
+    });
+    {
+        let mut data = server.data.lock().unwrap();
+        data.xnet_upload_mode = Some("lfs".into());
+        data.xnet_download = Some(url);
+        data.lose_pointer_response = true;
+    }
+    let writer = OpenCsgBackend::file_store(
+        agentdrive_config::OpenCsgConfig {
+            xnet: true,
+            ..server.config.clone()
+        },
+        db.clone(),
+    )
+    .unwrap();
+    writer
+        .upload(workspace, stream(bytes.to_vec()))
+        .await
+        .unwrap();
+    let record: serde_json::Value = serde_json::from_slice(
+        &db.file_placement(workspace, &object.id)
+            .await
+            .unwrap()
+            .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(record["format"], "git_lfs");
+    assert_eq!(record["oid"], format!("{:x}", sha2::Sha256::digest(bytes)));
+    assert_eq!(
+        record["path"],
+        format!("agentdrive/v1/{workspace}/files/{}", object.id)
+    );
+    assert_eq!(server.data.lock().unwrap().xnet_paths.len(), 1);
+    let reader = OpenCsgBackend::file_store(server.config.clone(), db).unwrap();
+    assert!(
+        reader
+            .read_verified_range(workspace, &object, 0, 3)
+            .await
+            .unwrap()
+            .is_none()
+    );
+    let mut actual = Vec::new();
+    reader
+        .download(workspace, &object)
+        .await
+        .unwrap()
+        .reader
+        .read_to_end(&mut actual)
+        .await
+        .unwrap();
+    assert_eq!(actual, bytes);
+    reader
+        .upload(workspace, stream(bytes.to_vec()))
+        .await
+        .unwrap();
+    assert_eq!(server.data.lock().unwrap().commit_sizes, [1]);
+    service.abort();
+}
+
+#[tokio::test]
+async fn git_chunks_preserve_literal_lfs_pointers_and_binary_prefixes() {
+    use agentdrive_local::LocalBackend;
+    use agentdrive_opencsg::OpenCsgBackend;
+    use std::sync::Arc;
+    let server = Server::new().await;
+    let dir = tempfile::tempdir().unwrap();
+    let db = Arc::new(LocalBackend::open_server(dir.path()).unwrap());
+    let workspace = WorkspaceId::new();
+    let backend = OpenCsgBackend::file_store(server.config.clone(), db).unwrap();
+    let pointer = format!(
+        "version https://git-lfs.github.com/spec/v1\noid sha256:{}\nsize 8\n",
+        "a".repeat(64)
+    )
+    .into_bytes();
+    for input in [pointer.clone(), [&[0][..], &pointer].concat()] {
+        let reference = object_ref(ObjectKind::File, &input);
+        server.data.lock().unwrap().lose_pointer_response = true;
+        backend
+            .upload(workspace, stream(input.clone()))
+            .await
+            .unwrap();
+        let mut data = Vec::new();
+        backend
+            .download(workspace, &reference)
+            .await
+            .unwrap()
+            .reader
+            .read_to_end(&mut data)
+            .await
+            .unwrap();
+        assert_eq!(data, input);
+        let range = backend
+            .read_verified_range(workspace, &reference, 1, 12)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(range.as_ref(), &input[1..13]);
     }
 }

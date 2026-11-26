@@ -1,4 +1,5 @@
 //! OpenCSG Codes HTTP storage for AgentDrive objects and conditional references.
+mod file_storage;
 mod http;
 mod objects;
 mod refs;
@@ -15,7 +16,7 @@ pub struct OpenCsgBackend {
     repository: Repository,
     xnet: xnet::Xnet,
     prefix: String,
-    manifests: Option<Arc<dyn agentdrive_ports::FileManifestStore>>,
+    placements: Option<Arc<dyn agentdrive_ports::FilePlacementStore>>,
     verified: OnceCell<()>,
     writes: Mutex<()>,
 }
@@ -33,24 +34,24 @@ impl OpenCsgBackend {
         Self::open(config, None)
     }
 
-    /// Store chunk manifests in the server database when using Codes as a file backend.
+    /// Store file locations in the server database when using Codes as a file backend.
     pub fn file_store(
         config: OpenCsgConfig,
-        manifests: Arc<dyn agentdrive_ports::FileManifestStore>,
+        placements: Arc<dyn agentdrive_ports::FilePlacementStore>,
     ) -> Result<Arc<Self>> {
-        Self::open(config, Some(manifests))
+        Self::open(config, Some(placements))
     }
 
     fn open(
         config: OpenCsgConfig,
-        manifests: Option<Arc<dyn agentdrive_ports::FileManifestStore>>,
+        placements: Option<Arc<dyn agentdrive_ports::FilePlacementStore>>,
     ) -> Result<Arc<Self>> {
         config.validate()?;
         Ok(Arc::new(Self {
             repository: Repository::new(&config)?,
             xnet: xnet::Xnet::new(&config)?,
             prefix: config.prefix,
-            manifests,
+            placements,
             verified: OnceCell::new(),
             writes: Mutex::new(()),
         }))
@@ -67,7 +68,7 @@ impl OpenCsgBackend {
         if self.xnet.enabled {
             self.xnet.check(self.repository.branch()).await?;
         }
-        if self.manifests.is_some() {
+        if self.placements.is_some() {
             self.repository.head().await?;
             return Ok(());
         }

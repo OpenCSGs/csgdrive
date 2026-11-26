@@ -1,19 +1,103 @@
 use agentdrive_local::LocalBackend;
-use agentdrive_model::{ObjectKind, Principal, WorkspacePath, object_ref};
+use agentdrive_model::{BranchId, ObjectKind, Principal, WorkspaceId, WorkspacePath, object_ref};
 use agentdrive_ports::{
-    CreateWorkspace, ListBranchFiles, LocalObjectStore, ReadBranchFile, RequestContext,
+    CreateWorkspace, ForkBranch, ListBranchFiles, LocalObjectStore, ReadBranchFile, RequestContext,
 };
 use bytes::Bytes;
-use drive_s3_store::{ErrorKind, Store};
+use drive_s3_store::{ErrorKind, Store, WriteMode};
 use tempfile::tempdir;
 use tokio::time::{Duration, timeout};
+
+fn request(id: &str) -> RequestContext {
+    RequestContext {
+        principal: "owner".to_owned().try_into().unwrap(),
+        request_id: id.into(),
+    }
+}
+
+async fn create_workspace(store: &Store, name: &str) -> (WorkspaceId, BranchId) {
+    let result = store
+        .engine()
+        .services
+        .workspace
+        .create(
+            request(&format!("create-{name}")),
+            CreateWorkspace {
+                name: name.into(),
+                grants: vec![],
+                max_file_bytes: None,
+                max_working_bytes: None,
+                max_inodes: None,
+            },
+        )
+        .await
+        .unwrap();
+    (result.workspace.unwrap(), result.branch.unwrap())
+}
+
+async fn fork(store: &Store, workspace: WorkspaceId, source: BranchId, name: &str) -> BranchId {
+    store
+        .engine()
+        .services
+        .revisions
+        .fork(
+            request(&format!("fork-{workspace}-{name}")),
+            ForkBranch {
+                workspace,
+                source_branch: Some(source),
+                source: None,
+                name: name.into(),
+            },
+        )
+        .await
+        .unwrap()
+        .branch
+        .unwrap()
+}
+
+#[tokio::test]
+async fn binding_requires_an_existing_branch_in_the_requested_workspace() {
+    let root = tempdir().unwrap();
+    let store = Store::open(root.path()).await.unwrap();
+    let (workspace, branch) = create_workspace(&store, "one").await;
+    let (other, _) = create_workspace(&store, "two").await;
+    for (id, branch_id, expected) in [
+        (WorkspaceId::new(), branch, ErrorKind::NoSuchKey),
+        (workspace, BranchId::new(), ErrorKind::NoSuchKey),
+        (other, branch, ErrorKind::AccessDenied),
+    ] {
+        assert_eq!(
+            store
+                .bind_ids("typo", id, branch_id, WriteMode::Serialized)
+                .await
+                .unwrap_err()
+                .kind,
+            expected
+        );
+        assert_eq!(
+            store.status("typo").await.unwrap_err().kind,
+            ErrorKind::NoSuchBucket
+        );
+    }
+    let state = &store.engine().runtime.state;
+    assert_eq!(state.workspaces().await.unwrap().len(), 2);
+    assert_eq!(state.branches(workspace).await.unwrap().len(), 1);
+    assert_eq!(state.branches(other).await.unwrap().len(), 1);
+}
 
 #[tokio::test]
 async fn two_sessions_share_agentdrive_tree_across_handoff_and_restart() {
     let root = tempdir().unwrap();
     let s = Store::open(root.path()).await.unwrap();
-    let a = s.bind("demo-a", "workspace", "main").await.unwrap();
-    let b = s.bind("demo-b", "workspace", "main").await.unwrap();
+    let (ws, main) = create_workspace(&s, "workspace").await;
+    let a = s
+        .bind_ids("demo-a", ws, main, WriteMode::Exclusive)
+        .await
+        .unwrap();
+    let b = s
+        .bind_ids("demo-b", ws, main, WriteMode::Exclusive)
+        .await
+        .unwrap();
     assert_eq!(a.branch_id, b.branch_id);
     assert_eq!(s.acquire("demo-a").await.unwrap().epoch, 1);
     assert_eq!(
@@ -113,7 +197,12 @@ async fn two_sessions_share_agentdrive_tree_across_handoff_and_restart() {
     let s = Store::open(root.path()).await.unwrap();
     assert_eq!(s.get("demo-a", "d/sub/file").await.unwrap(), "second");
     assert!(s.status("demo-b").await.unwrap().writable);
-    assert!(s.bind("demo-a", "workspace", "main").await.unwrap().retired);
+    assert!(
+        s.bind_ids("demo-a", ws, main, WriteMode::Exclusive)
+            .await
+            .unwrap()
+            .retired
+    );
     assert_eq!(
         s.acquire("demo-a").await.unwrap_err().kind,
         ErrorKind::AccessDenied
@@ -128,7 +217,9 @@ async fn two_sessions_share_agentdrive_tree_across_handoff_and_restart() {
         s.acquire("demo-b").await.unwrap_err().kind,
         ErrorKind::AccessDenied
     );
-    s.bind("demo-c", "workspace", "main").await.unwrap();
+    s.bind_ids("demo-c", ws, main, WriteMode::Exclusive)
+        .await
+        .unwrap();
     assert_eq!(s.acquire("demo-c").await.unwrap().epoch, 4);
 }
 
@@ -136,9 +227,13 @@ async fn two_sessions_share_agentdrive_tree_across_handoff_and_restart() {
 async fn different_branches_can_have_independent_writers() {
     let root = tempdir().unwrap();
     let s = Store::open(root.path()).await.unwrap();
-    s.bind("main-session", "workspace", "main").await.unwrap();
+    let (ws, main) = create_workspace(&s, "workspace").await;
+    let another = fork(&s, ws, main, "another").await;
+    s.bind_ids("main-session", ws, main, WriteMode::Exclusive)
+        .await
+        .unwrap();
     let named = s
-        .bind("named-session", "workspace", "another")
+        .bind_ids("named-session", ws, another, WriteMode::Exclusive)
         .await
         .unwrap();
     assert_eq!(named.branch, "another");
@@ -160,7 +255,7 @@ async fn different_branches_can_have_independent_writers() {
         ErrorKind::Conflict
     );
     assert_eq!(
-        s.bind("main-session", "workspace", "another")
+        s.bind_ids("main-session", ws, another, WriteMode::Exclusive)
             .await
             .unwrap_err()
             .kind,
@@ -176,17 +271,19 @@ async fn different_branches_can_have_independent_writers() {
 async fn disconnect_does_not_release_fence_while_publication_is_in_flight() {
     let root = tempdir().unwrap();
     let s = Store::open(root.path()).await.unwrap();
-    let a = s.bind("a", "workspace", "main").await.unwrap();
-    s.bind("b", "workspace", "main").await.unwrap();
+    let (ws, main) = create_workspace(&s, "workspace").await;
+    let (other, independent) = create_workspace(&s, "independent").await;
+    let a = s
+        .bind_ids("a", ws, main, WriteMode::Exclusive)
+        .await
+        .unwrap();
+    s.bind_ids("b", ws, main, WriteMode::Exclusive)
+        .await
+        .unwrap();
     s.acquire("a").await.unwrap();
-    s.bind_with_mode(
-        "other",
-        "independent",
-        "main",
-        drive_s3_store::WriteMode::Serialized,
-    )
-    .await
-    .unwrap();
+    s.bind_ids("other", other, independent, WriteMode::Serialized)
+        .await
+        .unwrap();
     let branch_gate = s.engine().runtime.lock_branch(a.branch_id).await;
     let writer = s.clone();
     let request = tokio::spawn(async move { writer.put("a", "k", Bytes::from_static(b"A")).await });
@@ -238,7 +335,7 @@ async fn disconnect_does_not_release_fence_while_publication_is_in_flight() {
 async fn bound_workspace_capacity_is_checked_before_storing_s3_objects() {
     let root = tempdir().unwrap();
     let store = Store::open(root.path()).await.unwrap();
-    let workspace = store
+    let created = store
         .engine()
         .services
         .workspace
@@ -256,10 +353,17 @@ async fn bound_workspace_capacity_is_checked_before_storing_s3_objects() {
             },
         )
         .await
-        .unwrap()
-        .workspace
         .unwrap();
-    let session = store.bind("bucket", "limited", "main").await.unwrap();
+    let workspace = created.workspace.unwrap();
+    let session = store
+        .bind_ids(
+            "bucket",
+            workspace,
+            created.branch.unwrap(),
+            WriteMode::Exclusive,
+        )
+        .await
+        .unwrap();
     assert_eq!(session.workspace_id, workspace);
     store.acquire("bucket").await.unwrap();
 
@@ -329,12 +433,13 @@ async fn bound_workspace_capacity_is_checked_before_storing_s3_objects() {
 
 #[tokio::test]
 async fn serialized_sessions_publish_each_request_and_keep_policy_after_restart() {
-    use drive_s3_store::WriteMode;
     let root = tempdir().unwrap();
     let store = Store::open(root.path()).await.unwrap();
+    let (ws, main) = create_workspace(&store, "documents").await;
+    let work = fork(&store, ws, main, "work").await;
     for bucket in ["vm-a", "vm-b"] {
         let session = store
-            .bind_with_mode(bucket, "documents", "work", WriteMode::Serialized)
+            .bind_ids(bucket, ws, work, WriteMode::Serialized)
             .await
             .unwrap();
         assert!(session.writable);
@@ -342,7 +447,7 @@ async fn serialized_sessions_publish_each_request_and_keep_policy_after_restart(
     }
     assert_eq!(
         store
-            .bind("vm-a", "documents", "work")
+            .bind_ids("vm-a", ws, work, WriteMode::Exclusive)
             .await
             .unwrap_err()
             .kind,
@@ -350,7 +455,7 @@ async fn serialized_sessions_publish_each_request_and_keep_policy_after_restart(
     );
     assert_eq!(
         store
-            .bind("vm-c", "documents", "work")
+            .bind_ids("vm-c", ws, work, WriteMode::Exclusive)
             .await
             .unwrap_err()
             .kind,
@@ -412,14 +517,10 @@ async fn serialized_sessions_publish_each_request_and_keep_policy_after_restart(
 async fn range_reader_keeps_its_content_across_sibling_and_same_key_writes() {
     let root = tempdir().unwrap();
     let store = Store::open(root.path()).await.unwrap();
+    let (ws, main) = create_workspace(&store, "team").await;
     for bucket in ["east", "west"] {
         store
-            .bind_with_mode(
-                bucket,
-                "team",
-                "main",
-                drive_s3_store::WriteMode::Serialized,
-            )
+            .bind_ids(bucket, ws, main, WriteMode::Serialized)
             .await
             .unwrap();
     }
@@ -458,7 +559,11 @@ async fn updating_one_key_does_not_read_an_unrelated_directory_index_page() {
     use agentdrive_model::{DirectoryEntry, INDEX_PAGE_ENTRIES, IndexPage, TreeRoot, decode};
     let root = tempdir().unwrap();
     let store = Store::open(root.path()).await.unwrap();
-    let binding = store.bind("east", "tree", "main").await.unwrap();
+    let (ws, main) = create_workspace(&store, "tree").await;
+    let binding = store
+        .bind_ids("east", ws, main, WriteMode::Exclusive)
+        .await
+        .unwrap();
     store.acquire("east").await.unwrap();
     for index in 0..=INDEX_PAGE_ENTRIES {
         store

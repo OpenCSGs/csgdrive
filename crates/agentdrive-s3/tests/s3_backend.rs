@@ -133,6 +133,16 @@ async fn s3_conditional_refs_and_streaming_objects() {
             )
             .await
             .unwrap();
+        assert!(backend.contains(workspace, &reference).await.unwrap());
+        let start = (bytes.len() / 2) as u64;
+        assert_eq!(
+            backend
+                .read_verified_range(workspace, &reference, start, 73)
+                .await
+                .unwrap()
+                .unwrap(),
+            bytes.slice(start as usize..(start as usize + 73).min(bytes.len()))
+        );
         let mut downloaded = backend.download(workspace, &reference).await.unwrap();
         let mut actual = Vec::new();
         downloaded.reader.read_to_end(&mut actual).await.unwrap();

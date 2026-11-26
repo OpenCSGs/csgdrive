@@ -12,14 +12,13 @@ agentdrive-engine.workspace = true
 agentdrive-local.workspace = true
 agentdrive-model.workspace = true
 agentdrive-platform.workspace = true
-agentdrive-ports.workspace = true
 bytes.workspace = true
 rusqlite.workspace = true
 serde.workspace = true
 tokio.workspace = true
-uuid.workspace = true
 
 [dev-dependencies]
+agentdrive-ports.workspace = true
 tempfile.workspace = true
 
 [lints]

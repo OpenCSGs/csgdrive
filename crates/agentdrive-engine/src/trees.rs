@@ -15,6 +15,43 @@ pub struct TreeService {
 }
 
 impl TreeService {
+    /// Inodes sort by zero-padded numeric ID. Only the right edge of the index is needed.
+    pub(crate) async fn next_inode(&self, workspace: WorkspaceId, root: &ObjectRef) -> Result<u64> {
+        if root.kind != ObjectKind::Tree {
+            return Err(Error::integrity("expected a tree object"));
+        }
+        let tree: TreeRoot = decode(&self.content.metadata(workspace, root).await?)?;
+        if tree.format_version != FORMAT_VERSION
+            || tree.directories.kind != ObjectKind::DirectoryIndex
+        {
+            return Err(Error::integrity("unsupported tree format"));
+        }
+        let mut page = tree.inodes;
+        for _ in 0..=32 {
+            if page.kind != ObjectKind::InodeIndex {
+                return Err(Error::integrity("invalid inode index"));
+            }
+            match decode::<IndexPage<Inode>>(&self.content.metadata(workspace, &page).await?)? {
+                IndexPage::Leaf { entries } => {
+                    let entry = entries
+                        .last()
+                        .ok_or_else(|| Error::integrity("empty inode index"))?;
+                    if entry.key != inode_key(entry.value.id) {
+                        return Err(Error::integrity("invalid inode index key"));
+                    }
+                    return crate::runtime::increment(entry.value.id.0);
+                }
+                IndexPage::Branch { mut children } => {
+                    page = children
+                        .pop()
+                        .ok_or_else(|| Error::integrity("empty inode index branch"))?
+                        .object
+                }
+            }
+        }
+        Err(Error::integrity("inode index is too deep"))
+    }
+
     /// Retain index pages without retaining the revision trees stored in their leaves.
     pub(crate) async fn index_pages(
         &self,
