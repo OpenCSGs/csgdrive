@@ -130,6 +130,11 @@ impl FileService {
                 Permission::Read
             },
         )?;
+        if let Some(id) = mount.revision {
+            self.trees
+                .readable_revision(&mount.principal, &view.workspace, id)
+                .await?;
+        }
         if mount.revision.is_none()
             && branch.generation != mount.branch_generation.unwrap_or(mount.generation)
         {

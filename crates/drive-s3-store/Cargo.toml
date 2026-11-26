@@ -6,7 +6,6 @@ rust-version.workspace = true
 license.workspace = true
 
 [dependencies]
-async-trait.workspace = true
 agentdrive-engine.workspace = true
 agentdrive-model.workspace = true
 bytes.workspace = true

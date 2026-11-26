@@ -150,6 +150,13 @@ impl Runtime {
         Ok(())
     }
 
+    async fn workspace(&self, id: WorkspaceId) -> Result<Workspace> {
+        self.state
+            .workspace(id)
+            .await?
+            .ok_or_else(|| Error::new(ErrorCode::NotFound, "workspace does not exist"))
+    }
+
     pub async fn authorize(
         &self,
         actor: &Principal,
@@ -157,21 +164,34 @@ impl Runtime {
         branch: Option<BranchId>,
         permission: Permission,
     ) -> Result<Workspace> {
-        let value = self
-            .state
-            .workspace(workspace)
-            .await?
-            .ok_or_else(|| Error::new(ErrorCode::NotFound, "workspace does not exist"))?;
-        if let Some(branch) = branch
-            && self.branch(branch).await?.workspace != workspace
-        {
+        if let Some(branch) = branch {
+            return Ok(self
+                .authorize_branch(actor, workspace, branch, permission)
+                .await?
+                .0);
+        }
+        let record = self.workspace(workspace).await?;
+        record.authorize(actor, None, permission)?;
+        Ok(record)
+    }
+
+    pub async fn authorize_branch(
+        &self,
+        actor: &Principal,
+        workspace: WorkspaceId,
+        id: BranchId,
+        permission: Permission,
+    ) -> Result<(Workspace, Branch)> {
+        let record = self.workspace(workspace).await?;
+        let branch = self.branch(id).await?;
+        if branch.workspace != workspace {
             return Err(Error::new(
                 ErrorCode::PermissionDenied,
                 "branch belongs to another workspace",
             ));
         }
-        value.authorize(actor, branch, permission)?;
-        Ok(value)
+        record.authorize(actor, Some(id), permission)?;
+        Ok((record, branch))
     }
 
     pub(crate) fn mark_dirty(&self, branch: &Branch) {

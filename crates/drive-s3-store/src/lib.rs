@@ -2,7 +2,7 @@
 mod leases;
 mod objects;
 mod session;
-pub use session::{MountSession, SessionChange, SessionRepository, WriteReservation};
+use session::{MountSession, SessionChange};
 
 use agentdrive_engine::Engine;
 pub use agentdrive_engine::ObjectConditions;
@@ -93,7 +93,7 @@ pub struct SessionStatus {
 pub struct Store {
     engine: Arc<Engine>,
     principal: Principal,
-    leases: Arc<dyn SessionRepository>,
+    leases: leases::Database,
 }
 
 impl Store {
@@ -102,20 +102,11 @@ impl Store {
         session_database: &Path,
         principal: Principal,
     ) -> Result<Self> {
-        let leases = Arc::new(leases::Database::open(session_database).await?);
-        Ok(Self::with_repository(engine, principal, leases))
-    }
-
-    pub fn with_repository(
-        engine: Arc<Engine>,
-        principal: Principal,
-        leases: Arc<dyn SessionRepository>,
-    ) -> Self {
-        Self {
+        Ok(Self {
             engine,
             principal,
-            leases,
-        }
+            leases: leases::Database::open(session_database).await?,
+        })
     }
 
     pub fn engine(&self) -> Arc<Engine> {
@@ -145,11 +136,15 @@ impl Store {
         if bucket.is_empty() || bucket.len() > 255 || bucket.chars().any(char::is_control) {
             return Err(Error::new(ErrorKind::Invalid, "invalid bucket name"));
         }
-        let (workspace, branch) = self.entities(workspace, branch).await?;
-        workspace.authorize(&self.principal, Some(branch.id), Permission::Read)?;
-        if branch.state == BranchState::Deleted {
-            return Err(Error::new(ErrorKind::NoSuchKey, "branch has been deleted"));
-        }
+        let read_only = read_only || revision.is_some();
+        let permission = if read_only {
+            Permission::Read
+        } else {
+            Permission::Write
+        };
+        let (workspace, branch) = self
+            .authorized_branch(workspace, branch, permission)
+            .await?;
         if let Some(id) = revision {
             self.engine
                 .open_revision_file(
@@ -163,36 +158,24 @@ impl Store {
         }
         let session = self
             .leases
-            .bind(
-                bucket,
-                workspace.id,
-                branch.id,
-                mode,
-                revision,
-                read_only || revision.is_some(),
-            )
+            .bind(bucket, workspace.id, branch.id, mode, revision, read_only)
             .await?;
         Ok(session.with_names(workspace.name, branch.name))
     }
 
-    async fn entities(
+    async fn authorized_branch(
         &self,
         workspace_id: WorkspaceId,
         branch_id: BranchId,
+        permission: Permission,
     ) -> Result<(Workspace, Branch)> {
-        let workspace = self
+        let (workspace, branch) = self
             .engine
             .runtime
-            .state
-            .workspace(workspace_id)
-            .await?
-            .ok_or_else(|| Error::new(ErrorKind::NoSuchKey, "workspace does not exist"))?;
-        let branch = self.engine.runtime.branch(branch_id).await?;
-        if branch.workspace != workspace_id {
-            return Err(Error::new(
-                ErrorKind::AccessDenied,
-                "branch belongs to another workspace",
-            ));
+            .authorize_branch(&self.principal, workspace_id, branch_id, permission)
+            .await?;
+        if branch.state == BranchState::Deleted {
+            return Err(Error::new(ErrorKind::NoSuchBucket, "branch was deleted"));
         }
         Ok((workspace, branch))
     }
@@ -202,8 +185,9 @@ impl Store {
         workspace: WorkspaceId,
         branch: BranchId,
     ) -> Result<Vec<SessionStatus>> {
-        let (workspace, branch) = self.entities(workspace, branch).await?;
-        workspace.authorize(&self.principal, Some(branch.id), Permission::Read)?;
+        let (workspace, branch) = self
+            .authorized_branch(workspace, branch, Permission::Read)
+            .await?;
         Ok(self
             .leases
             .branch_mounts(workspace.id, branch.id)
@@ -213,36 +197,51 @@ impl Store {
             .collect())
     }
 
-    async fn describe(&self, session: MountSession) -> Result<SessionStatus> {
+    pub async fn status(&self, bucket: &str) -> Result<SessionStatus> {
+        let session = self.leases.status(bucket).await?;
         let (workspace, branch) = self
-            .entities(session.workspace_id, session.branch_id)
+            .authorized_branch(session.workspace_id, session.branch_id, Permission::Read)
             .await?;
         Ok(session.with_names(workspace.name, branch.name))
     }
 
-    pub async fn status(&self, bucket: &str) -> Result<SessionStatus> {
-        self.describe(self.leases.status(bucket).await?).await
-    }
     pub async fn check_bucket(&self, bucket: &str) -> Result<()> {
-        self.leases.status(bucket).await.map(|_| ())
+        self.status(bucket).await.map(|_| ())
     }
+
     pub async fn check_writer(&self, bucket: &str) -> Result<()> {
-        self.leases.status(bucket).await?.require_writer()
+        self.writable_branch_session(bucket).await?.require_writer()
     }
+
+    /// An upload can still be discarded after its alias hands off the writer role.
+    pub async fn authorize_upload_abort(&self, bucket: &str) -> Result<()> {
+        self.writable_branch_session(bucket).await.map(|_| ())
+    }
+
+    async fn writable_branch_session(&self, bucket: &str) -> Result<MountSession> {
+        let session = self.leases.status(bucket).await?;
+        self.authorized_branch(session.workspace_id, session.branch_id, Permission::Write)
+            .await?;
+        Ok(session)
+    }
+
+    async fn change_writer(&self, bucket: &str, change: SessionChange) -> Result<SessionStatus> {
+        let session = self.leases.status(bucket).await?;
+        let (workspace, branch) = self
+            .authorized_branch(session.workspace_id, session.branch_id, Permission::Write)
+            .await?;
+        let session = self.leases.change(bucket, branch.id, change).await?;
+        Ok(session.with_names(workspace.name, branch.name))
+    }
+
     pub async fn acquire(&self, bucket: &str) -> Result<SessionStatus> {
-        self.describe(self.leases.change(bucket, SessionChange::Acquire).await?)
-            .await
+        self.change_writer(bucket, SessionChange::Acquire).await
     }
     pub async fn release(&self, bucket: &str) -> Result<SessionStatus> {
-        self.describe(self.leases.change(bucket, SessionChange::Release).await?)
-            .await
+        self.change_writer(bucket, SessionChange::Release).await
     }
     pub async fn handoff(&self, from: &str, to: &str) -> Result<SessionStatus> {
-        self.describe(
-            self.leases
-                .change(from, SessionChange::Handoff(to.into()))
-                .await?,
-        )
-        .await
+        self.change_writer(from, SessionChange::Handoff(to.into()))
+            .await
     }
 }

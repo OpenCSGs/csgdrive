@@ -43,13 +43,7 @@ impl BranchFileService {
         branch: BranchId,
         expected: Option<&str>,
     ) -> Result<String> {
-        self.runtime
-            .authorize(actor, workspace, Some(branch), Permission::Read)
-            .await?;
-        let branch = self.runtime.branch(branch).await?;
-        if branch.state == BranchState::Deleted {
-            return Err(Error::new(ErrorCode::NotFound, "branch has been deleted"));
-        }
+        let (_, branch) = self.readable_branch(actor, workspace, branch).await?;
         let version = format!(
             "{}:{}:{}:{}",
             branch.id, branch.authority_epoch, branch.generation, branch.mutation_seq
@@ -61,6 +55,22 @@ impl BranchFileService {
             ));
         }
         Ok(version)
+    }
+
+    async fn readable_branch(
+        &self,
+        actor: &Principal,
+        workspace: WorkspaceId,
+        branch: BranchId,
+    ) -> Result<(Workspace, Branch)> {
+        let (record, branch) = self
+            .runtime
+            .authorize_branch(actor, workspace, branch, Permission::Read)
+            .await?;
+        if branch.state == BranchState::Deleted {
+            return Err(Error::new(ErrorCode::NotFound, "branch has been deleted"));
+        }
+        Ok((record, branch))
     }
 
     async fn node(&self, branch: BranchId, path: &WorkspacePath) -> Result<Node> {
@@ -212,12 +222,13 @@ impl crate::Engine {
         branch: BranchId,
         revision: RevisionId,
     ) -> Result<FileTree> {
-        self.runtime
-            .authorize(actor, workspace, Some(branch), Permission::Read)
+        let (record, _) = self
+            .branch_files
+            .readable_branch(actor, workspace, branch)
             .await?;
         let _retention = self.runtime.objects.read().await;
         let trees = &self.revisions.trees;
-        let revision = trees.revision(workspace, revision).await?;
+        let revision = trees.readable_revision(actor, &record, revision).await?;
         trees.tree(workspace, &revision.root).await
     }
 
@@ -229,25 +240,27 @@ impl crate::Engine {
         revision: RevisionId,
         path: &WorkspacePath,
     ) -> Result<BranchFileReader> {
-        self.runtime
-            .authorize(actor, workspace, Some(branch), Permission::Read)
+        let (record, _) = self
+            .branch_files
+            .readable_branch(actor, workspace, branch)
             .await?;
         let retention = self.runtime.objects.clone().read_owned().await;
         let trees = &self.revisions.trees;
-        let revision = trees.revision(workspace, revision).await?;
-        let inode = self
+        let revision = trees.readable_revision(actor, &record, revision).await?;
+        let node = self
             .branch_files
             .queries
-            .lookup(workspace, &revision.root, path)
+            .lookup_node(workspace, &revision.root, path)
             .await?
             .ok_or_else(|| Error::new(ErrorCode::NotFound, "path does not exist in revision"))?;
-        let source = if inode.kind == FileKind::Directory {
+        let source = if node.inode.kind == FileKind::Directory {
             FileSource::Empty
         } else {
             FileSource::Stored {
                 content: self.branch_files.content.clone(),
                 workspace,
-                object: inode
+                object: node
+                    .inode
                     .content
                     .clone()
                     .ok_or_else(|| Error::integrity("file content is missing"))?,
@@ -255,11 +268,7 @@ impl crate::Engine {
             }
         };
         Ok(BranchFileReader {
-            node: Node {
-                path: path.clone(),
-                inode,
-                dirty: false,
-            },
+            node,
             version: revision.id.to_string(),
             source,
         })

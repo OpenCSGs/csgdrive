@@ -908,7 +908,6 @@ dependencies = [
  "agentdrive-model",
  "agentdrive-platform",
  "agentdrive-ports",
- "async-trait",
  "bytes",
  "rusqlite",
  "serde",
