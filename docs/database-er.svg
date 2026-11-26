@@ -1,0 +1,183 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1600" height="1380" viewBox="0 0 1600 1380" role="img" aria-labelledby="title description">
+<title id="title">AgentDrive entity relationships</title><desc id="description">Core catalog, ordered revision parents, shared file index, S3 gateway sessions and content storage. Solid arrows mark SQLite foreign keys. Dashed arrows mark application references, including cross-database IDs and remote ancestry. Table cards list selected columns.</desc>
+<defs><marker id="fk" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="6" markerHeight="6" orient="auto"><path d="M0 0L8 4L0 8Z" fill="#166c65"/></marker><marker id="ref" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="6" markerHeight="6" orient="auto"><path d="M0 0L8 4L0 8Z" fill="#875329"/></marker></defs>
+<style>text{font-family:"Segoe UI",Arial,sans-serif;fill:#142b46}.title{font-size:32px;font-weight:700}.subtitle{font-size:15px;fill:#36516b}.section{font-size:20px;font-weight:700}.db{font:600 13px "Segoe UI",Arial,sans-serif;fill:#475f75}.entity{font:700 15px "DejaVu Sans Mono",monospace}.field{font:13px "DejaVu Sans Mono",monospace;fill:#254157}.edge{font:600 12px "Segoe UI",Arial,sans-serif;fill:#32516a;paint-order:stroke;stroke:#fff;stroke-width:5px;stroke-linejoin:round}.note{font:14px "Segoe UI",Arial,sans-serif;fill:#334e64}.fk{fill:none;stroke:#166c65;stroke-width:2;marker-end:url(#fk)}.ref{fill:none;stroke:#875329;stroke-width:1.8;stroke-dasharray:6 4;marker-end:url(#ref)}</style>
+<rect x="0" y="0" width="1600" height="1380" rx="0" fill="#f4f7f9" stroke="none"/>
+<text x="35" y="52" class="title" text-anchor="start">AgentDrive  /  Entity relationships</text>
+<text x="36" y="83" class="subtitle" text-anchor="start">Workspace catalog, file indexes and the two SQLite databases. Arrows point to the referenced identity. Selected columns are shown.</text>
+<path d="M975 43H1027" class="fk"/>
+<text x="1040" y="48" class="subtitle" text-anchor="start">SQLite foreign key</text>
+<path d="M1242 43H1294" class="ref"/>
+<text x="1307" y="48" class="subtitle" text-anchor="start">Application reference</text>
+<text x="975" y="80" class="subtitle" text-anchor="start">PK  primary key     ·     1:N  one to many     ·     0..1  optional</text>
+<rect x="28" y="108" width="755" height="388" rx="10" fill="#ffffff" stroke="#c5d0d8"/>
+<text x="48" y="141" class="section" text-anchor="start">Catalog and revision ancestry</text>
+<text x="765" y="140" class="db" text-anchor="end">meta.db</text>
+<rect x="798" y="108" width="774" height="388" rx="10" fill="#ffffff" stroke="#c5d0d8"/>
+<text x="818" y="141" class="section" text-anchor="start">File paths and shared directory layers</text>
+<text x="1554" y="140" class="db" text-anchor="end">meta.db</text>
+<rect x="48" y="179" width="237" height="99" rx="5" fill="#ffffff" stroke="#aebec9"/>
+<rect x="49" y="180" width="235" height="28" rx="4" fill="#e3f0ed" stroke="none"/>
+<text x="59" y="199" class="entity" text-anchor="start">workspaces</text>
+<text x="59" y="227" class="field" text-anchor="start">PK workspace_id</text>
+<text x="59" y="247" class="field" text-anchor="start">name</text>
+<text x="59" y="267" class="field" text-anchor="start">initial_revision_id</text>
+<rect x="462" y="179" width="294" height="119" rx="5" fill="#ffffff" stroke="#aebec9"/>
+<rect x="463" y="180" width="292" height="28" rx="4" fill="#e3f0ed" stroke="none"/>
+<text x="473" y="199" class="entity" text-anchor="start">branches</text>
+<text x="473" y="227" class="field" text-anchor="start">PK branch_id</text>
+<text x="473" y="247" class="field" text-anchor="start">workspace_id · name</text>
+<text x="473" y="267" class="field" text-anchor="start">formal_head_revision_id</text>
+<text x="473" y="287" class="field" text-anchor="start">source_branch_id · base_revision_id</text>
+<rect x="48" y="363" width="237" height="99" rx="5" fill="#ffffff" stroke="#aebec9"/>
+<rect x="49" y="364" width="235" height="28" rx="4" fill="#e3f0ed" stroke="none"/>
+<text x="59" y="383" class="entity" text-anchor="start">revisions</text>
+<text x="59" y="411" class="field" text-anchor="start">PK revision_id</text>
+<text x="59" y="431" class="field" text-anchor="start">workspace_id · branch_id</text>
+<text x="59" y="451" class="field" text-anchor="start">root_object_id · created_ns</text>
+<rect x="462" y="363" width="294" height="79" rx="5" fill="#ffffff" stroke="#aebec9"/>
+<rect x="463" y="364" width="292" height="28" rx="4" fill="#e3f0ed" stroke="none"/>
+<text x="473" y="383" class="entity" text-anchor="start">revision_parents</text>
+<text x="473" y="411" class="field" text-anchor="start">PK revision_id + parent_order</text>
+<text x="473" y="431" class="field" text-anchor="start">parent_revision_id</text>
+<path d="M462 209H285" class="fk"/>
+<text x="321" y="200" class="edge" text-anchor="start">N:1 membership</text>
+<path d="M114 278V363" class="fk"/>
+<text x="124" y="322" class="edge" text-anchor="start">initial revision</text>
+<path d="M70 363V278" class="fk"/>
+<text x="52" y="340" class="edge" text-anchor="start">N:1</text>
+<path d="M586 298V323H257V363" class="fk"/>
+<text x="319" y="315" class="edge" text-anchor="start">formal head, same workspace</text>
+<path d="M462 398H285" class="fk"/>
+<text x="326" y="388" class="edge" text-anchor="start">N:1 child</text>
+<path d="M462 423H285" class="ref"/>
+<text x="308" y="449" class="edge" text-anchor="start">ordered parents 0..N</text>
+<rect x="818" y="177" width="237" height="79" rx="5" fill="#ffffff" stroke="#aebec9"/>
+<rect x="819" y="178" width="235" height="28" rx="4" fill="#e3f0ed" stroke="none"/>
+<text x="829" y="197" class="entity" text-anchor="start">branch_node_views</text>
+<text x="829" y="225" class="field" text-anchor="start">PK branch_id</text>
+<text x="829" y="245" class="field" text-anchor="start">layer · inodes · bytes</text>
+<rect x="1286" y="177" width="265" height="99" rx="5" fill="#ffffff" stroke="#aebec9"/>
+<rect x="1287" y="178" width="263" height="28" rx="4" fill="#e3f0ed" stroke="none"/>
+<text x="1297" y="197" class="entity" text-anchor="start">node_layers</text>
+<text x="1297" y="225" class="field" text-anchor="start">PK id</text>
+<text x="1297" y="245" class="field" text-anchor="start">parent · parent_version</text>
+<text x="1297" y="265" class="field" text-anchor="start">version</text>
+<rect x="818" y="363" width="250" height="79" rx="5" fill="#ffffff" stroke="#aebec9"/>
+<rect x="819" y="364" width="248" height="28" rx="4" fill="#e3f0ed" stroke="none"/>
+<text x="829" y="383" class="entity" text-anchor="start">saved_node_views</text>
+<text x="829" y="411" class="field" text-anchor="start">PK workspace_id + hash</text>
+<text x="829" y="431" class="field" text-anchor="start">layer · version · root</text>
+<rect x="1286" y="363" width="265" height="99" rx="5" fill="#ffffff" stroke="#aebec9"/>
+<rect x="1287" y="364" width="263" height="28" rx="4" fill="#e3f0ed" stroke="none"/>
+<text x="1297" y="383" class="entity" text-anchor="start">node_versions</text>
+<text x="1297" y="411" class="field" text-anchor="start">PK layer + path + since</text>
+<text x="1297" y="431" class="field" text-anchor="start">until · inode</text>
+<text x="1297" y="451" class="field" text-anchor="start">content_object_id</text>
+<path d="M1055 214H1286" class="fk"/>
+<text x="1090" y="204" class="edge" text-anchor="start">current layer N:1</text>
+<path d="M1068 395H1184V245H1286" class="fk"/>
+<text x="1078" y="383" class="edge" text-anchor="start">saved layer</text>
+<path d="M1411 363V276" class="fk"/>
+<text x="1420" y="325" class="edge" text-anchor="start">paths N:1</text>
+<path d="M1518 177V157H1314V177" class="fk"/>
+<text x="1350" y="153" class="edge" text-anchor="start">parent layer 0..1</text>
+<text x="820" y="476" class="db" text-anchor="start">branch_node_views.branch_id → branches.branch_id     ·     saved_node_views.workspace_id → workspaces.workspace_id</text>
+<rect x="28" y="515" width="755" height="385" rx="10" fill="#ffffff" stroke="#c5d0d8"/>
+<text x="48" y="548" class="section" text-anchor="start">CSI bucket aliases and write ownership</text>
+<text x="765" y="547" class="db" text-anchor="end">s3-sessions.sqlite3</text>
+<rect x="798" y="515" width="774" height="385" rx="10" fill="#ffffff" stroke="#c5d0d8"/>
+<text x="818" y="548" class="section" text-anchor="start">File objects and backend placement</text>
+<text x="1554" y="547" class="db" text-anchor="end">meta.db / content store</text>
+<rect x="49" y="593" width="253" height="99" rx="5" fill="#ffffff" stroke="#aebec9"/>
+<rect x="50" y="594" width="251" height="28" rx="4" fill="#e9eafb" stroke="none"/>
+<text x="60" y="613" class="entity" text-anchor="start">drive_sessions</text>
+<text x="60" y="641" class="field" text-anchor="start">PK bucket</text>
+<text x="60" y="661" class="field" text-anchor="start">branch_id · retired</text>
+<text x="60" y="681" class="field" text-anchor="start">successor</text>
+<rect x="467" y="593" width="287" height="99" rx="5" fill="#ffffff" stroke="#aebec9"/>
+<rect x="468" y="594" width="285" height="28" rx="4" fill="#e9eafb" stroke="none"/>
+<text x="478" y="613" class="entity" text-anchor="start">drive_branches</text>
+<text x="478" y="641" class="field" text-anchor="start">PK branch_id</text>
+<text x="478" y="661" class="field" text-anchor="start">workspace_id · serialized</text>
+<text x="478" y="681" class="field" text-anchor="start">holder · epoch</text>
+<rect x="467" y="776" width="287" height="79" rx="5" fill="#ffffff" stroke="#aebec9"/>
+<rect x="468" y="777" width="285" height="28" rx="4" fill="#e3f0ed" stroke="none"/>
+<text x="478" y="796" class="entity" text-anchor="start">branches  ·  meta.db</text>
+<text x="478" y="824" class="field" text-anchor="start">PK branch_id</text>
+<text x="478" y="844" class="field" text-anchor="start">workspace_id</text>
+<path d="M302 622H467" class="fk"/>
+<text x="324" y="613" class="edge" text-anchor="start">N:1 binding</text>
+<path d="M467 664H302" class="fk"/>
+<text x="318" y="689" class="edge" text-anchor="start">holder 0..1</text>
+<path d="M79 593V567H266V593" class="fk"/>
+<text x="108" y="563" class="edge" text-anchor="start">successor 0..1</text>
+<path d="M612 692V776" class="ref"/>
+<text x="624" y="740" class="edge" text-anchor="start">IDs validated by Core</text>
+<text x="52" y="812" class="note" text-anchor="start">Each CSI alias has its own row.</text>
+<text x="52" y="839" class="note" text-anchor="start">Both VM aliases share one branch policy.</text>
+<rect x="818" y="592" width="252" height="59" rx="5" fill="#ffffff" stroke="#aebec9"/>
+<rect x="819" y="593" width="250" height="28" rx="4" fill="#e3f0ed" stroke="none"/>
+<text x="829" y="612" class="entity" text-anchor="start">node_versions</text>
+<text x="829" y="640" class="field" text-anchor="start">path · content_object_id</text>
+<rect x="1285" y="592" width="265" height="79" rx="5" fill="#ffffff" stroke="#aebec9"/>
+<rect x="1286" y="593" width="263" height="28" rx="4" fill="#fff0d9" stroke="none"/>
+<text x="1296" y="612" class="entity" text-anchor="start">workspace_storage</text>
+<text x="1296" y="640" class="field" text-anchor="start">PK workspace_id</text>
+<text x="1296" y="660" class="field" text-anchor="start">config</text>
+<rect x="818" y="759" width="252" height="99" rx="5" fill="#ffffff" stroke="#aebec9"/>
+<rect x="819" y="760" width="250" height="28" rx="4" fill="#fff0d9" stroke="none"/>
+<text x="829" y="779" class="entity" text-anchor="start">object_verification</text>
+<text x="829" y="807" class="field" text-anchor="start">PK target + workspace_id</text>
+<text x="829" y="827" class="field" text-anchor="start">   + hash</text>
+<text x="829" y="847" class="field" text-anchor="start">etag · version · hashes</text>
+<rect x="1285" y="759" width="265" height="99" rx="5" fill="#ffffff" stroke="#aebec9"/>
+<rect x="1286" y="760" width="263" height="28" rx="4" fill="#fff0d9" stroke="none"/>
+<text x="1296" y="779" class="entity" text-anchor="start">codes_file_placements</text>
+<text x="1296" y="807" class="field" text-anchor="start">PK workspace_id + hash</text>
+<text x="1296" y="827" class="field" text-anchor="start">format · git_revision</text>
+<text x="1296" y="847" class="field" text-anchor="start">placement</text>
+<path d="M946 651V759" class="ref"/>
+<text x="957" y="720" class="edge" text-anchor="start">S3 block digests</text>
+<path d="M1070 626H1152V733H1328V759" class="ref"/>
+<text x="1141" y="754" class="edge" text-anchor="start">Codes file layout</text>
+<path d="M1418 671V759" class="ref"/>
+<text x="1426" y="716" class="edge" text-anchor="start">Codes route</text>
+<text x="819" y="879" class="db" text-anchor="start">S3 key = prefix / workspace_id / objects / content_object_id.  The branch path is resolved by Core.</text>
+<rect x="28" y="917" width="1544" height="432" rx="10" fill="#ffffff" stroke="#c5d0d8"/>
+<text x="48" y="950" class="section" text-anchor="start">Additional catalog and service entities</text>
+<text x="1554" y="949" class="db" text-anchor="end">meta.db</text>
+<text x="51" y="985" class="section" text-anchor="start">Directory, collaboration and history</text>
+<text x="572" y="985" class="section" text-anchor="start">Publication and housekeeping</text>
+<text x="1080" y="985" class="section" text-anchor="start">Operations and storage state</text>
+<text x="52" y="1023" class="entity" text-anchor="start">workspace_selections</text>
+<text x="52" y="1044" class="note" text-anchor="start">Current branch per workspace; FK to branches.</text>
+<text x="52" y="1078" class="entity" text-anchor="start">mounts  ·  merges  ·  sync_jobs</text>
+<text x="52" y="1099" class="note" text-anchor="start">Local mount, merge target and queued job reference a branch.</text>
+<text x="52" y="1133" class="entity" text-anchor="start">collaborations  ·  remote_refs</text>
+<text x="52" y="1154" class="note" text-anchor="start">Per-workspace collaboration and observed branch references.</text>
+<text x="52" y="1188" class="entity" text-anchor="start">node_deltas  ·  branch_history</text>
+<text x="52" y="1209" class="note" text-anchor="start">Changed paths and retained branch history roots.</text>
+<text x="52" y="1243" class="entity" text-anchor="start">cache_pins</text>
+<text x="52" y="1264" class="note" text-anchor="start">Preserves selected revision paths in a workspace.</text>
+<text x="573" y="1023" class="entity" text-anchor="start">objects</text>
+<text x="573" y="1044" class="note" text-anchor="start">PK (workspace_id, hash); catalog of cached objects.</text>
+<text x="573" y="1078" class="entity" text-anchor="start">metadata_objects</text>
+<text x="573" y="1099" class="note" text-anchor="start">FK (workspace_id, hash) → objects; stores tree and index bytes.</text>
+<text x="573" y="1133" class="entity" text-anchor="start">object_usage</text>
+<text x="573" y="1154" class="note" text-anchor="start">Tracks cached bytes and bytes protected from collection.</text>
+<text x="573" y="1188" class="entity" text-anchor="start">published_refs</text>
+<text x="573" y="1209" class="note" text-anchor="start">Scoped by target and workspace_id; branch_id can be NULL.</text>
+<text x="573" y="1243" class="entity" text-anchor="start">metadata  ·  server_settings</text>
+<text x="573" y="1264" class="note" text-anchor="start">Database identity, schema version and daemon settings.</text>
+<text x="1080" y="1023" class="entity" text-anchor="start">operations</text>
+<text x="1080" y="1044" class="note" text-anchor="start">Local operation identified by principal and request_id.</text>
+<text x="1080" y="1078" class="entity" text-anchor="start">replicated_operations</text>
+<text x="1080" y="1099" class="note" text-anchor="start">Published operation receipts observed from another location.</text>
+<text x="1080" y="1133" class="entity" text-anchor="start">merge_history_publications</text>
+<text x="1080" y="1154" class="note" text-anchor="start">FK operation → operations.id; records the published sequence.</text>
+<text x="1080" y="1188" class="entity" text-anchor="start">Catalog read views</text>
+<text x="1080" y="1209" class="note" text-anchor="start">Restore workspace, branch and revision records, including ordered parents.</text>
+<text x="1080" y="1243" class="entity" text-anchor="start">Content storage</text>
+<text x="1080" y="1264" class="note" text-anchor="start">RustFS/S3 stores file bytes. Codes stores Git chunks or LFS pointers.</text>
+</svg>

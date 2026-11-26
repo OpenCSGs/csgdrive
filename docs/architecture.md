@@ -126,6 +126,12 @@ The startup JSON supplies the listener, principal and state directory. SQLite st
 
 ## Local persistence
 
+![AgentDrive entity relationships](database-er.svg)
+
+A fresh database records its schema version separately from the content format. Workspace, branch and revision read views reconstruct the API records from SQL columns and their remaining attributes. The catalog uses `workspace_id` and `branch_id` throughout both SQLite databases. A branch belongs to one workspace. Deferred foreign keys check the workspace's initial revision and the branch's formal head in the same workspace when the transaction commits. The `revision_parents` table records one row per parent, in merge order. The parent revision and source branch can be fetched later when importing remote history.
+
+The S3 gateway keeps one `drive_branches` row per bound branch and one `drive_sessions` row per bucket alias. Core resolves the cross-database IDs before binding the alias and supplies current names for the dashboard. Directory rows expose `content_object_id`; S3 derives its key from the workspace ID and this object ID. Codes looks up the fixed Git revision and file layout in `codes_file_placements`. A content cache entry can be evicted while a Codes placement or S3 verification record still applies.
+
 Each daemon state directory contains `engine.lock`, `meta.db`, SQLite WAL files, `objects/`, `staging/`, and `working/`. A process lock permits one writer. SQLite uses WAL and `synchronous=FULL`. Persisted format versions are checked before schema changes. Storage errors propagate as typed errors.
 
 Object IDs hash a domain separator, format version, object kind, and bytes with SHA-256. Publication verifies the digest and size, flushes the temporary file, publishes its immutable name, and registers it. Unix directories are flushed after publication; Windows uses a write-through file move. A metadata transaction references installed immutable objects. Reader leases protect open content from cache eviction.
@@ -162,7 +168,7 @@ In `meta.db`, `branch_node_views` selects the directory layer for a branch, `nod
 
 S3 stores one object per content ID within a workspace. SQLite records the verified object validator and block digests. An unchanged validator allows reuse on a duplicate write. A cold byte-range request can fetch and verify the covering blocks. The local file cache handles warm reads.
 
-OpenCSG Codes uses a configured Git branch for physical storage. SQLite records each file's physical layout and Git revision in `file_placements`. Regular files use batches of content-addressed binary chunks. With XNet enabled, Codes can select Git LFS for a new file. Changing the upload policy keeps existing files readable through their recorded layout. User-facing paths, workspace branches and named revisions are resolved by AgentDrive.
+OpenCSG Codes uses a configured Git branch for physical storage. SQLite records each file's physical layout and Git revision in `codes_file_placements`. Regular files use batches of content-addressed binary chunks. With XNet enabled, Codes can select Git LFS for a new file. Changing the upload policy keeps existing files readable through their recorded layout. User-facing paths, workspace branches and named revisions are resolved by AgentDrive.
 
 ## Merge
 

@@ -80,7 +80,7 @@ Retries from the previous mount keep their old alias and cannot publish.
 ## Storage and protocol
 
 `meta.db` stores the engine metadata. `s3-sessions.sqlite3` stores CSI mount
-bindings, write modes, holders and epochs. A per-branch file lock orders ownership changes with S3 publications.
+bindings, write modes, holders and epochs. Each bound branch stores its workspace ID once. The dashboard and management API read current workspace and branch names from the engine. A per-branch file lock orders ownership changes with S3 publications.
 Back up both databases while the service is stopped and retain the corresponding
 file content (the local `objects/` directory for local workspaces or the selected
 remote content backend). The server currently

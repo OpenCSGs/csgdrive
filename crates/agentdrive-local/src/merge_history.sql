@@ -1,10 +1,10 @@
 WITH operation_rows AS (
     SELECT id, CAST(data AS TEXT) data FROM operations
-    WHERE workspace=?1 AND (json_extract(CAST(data AS TEXT),'$.name') IN ('merge_prepare','merge_resolve','merge_apply')
+    WHERE workspace_id=?1 AND (json_extract(CAST(data AS TEXT),'$.name') IN ('merge_prepare','merge_resolve','merge_apply')
         OR (json_extract(CAST(data AS TEXT),'$.name')='mount_release' AND json_extract(CAST(data AS TEXT),'$.merge_history') IS NOT NULL))
     UNION ALL
     SELECT id, CAST(data AS TEXT) data FROM replicated_operations
-    WHERE workspace=?1 AND (json_extract(CAST(data AS TEXT),'$.name') IN ('merge_prepare','merge_resolve','merge_apply')
+    WHERE workspace_id=?1 AND (json_extract(CAST(data AS TEXT),'$.name') IN ('merge_prepare','merge_resolve','merge_apply')
         OR (json_extract(CAST(data AS TEXT),'$.name')='mount_release' AND json_extract(CAST(data AS TEXT),'$.merge_history') IS NOT NULL))
       AND id NOT IN (SELECT id FROM operations)
 ), linked AS (
@@ -13,8 +13,8 @@ WITH operation_rows AS (
         json_extract(data,'$.result.candidate.id'),
         json_extract(data,'$.pending.merge'),
         CASE WHEN json_extract(data,'$.name')='merge_apply' THEN (
-            SELECT m.id FROM merges m WHERE m.workspace=?1
-              AND json_extract(CAST(m.data AS TEXT),'$.applied_revision')=json_extract(operation_rows.data,'$.result.revision')
+            SELECT m.id FROM merges m WHERE m.workspace_id=?1
+              AND m.applied_revision_id=json_extract(operation_rows.data,'$.result.revision')
             LIMIT 1
         ) END
     ) merge_id FROM operation_rows
@@ -45,27 +45,27 @@ WITH operation_rows AS (
     WHERE json_extract(r.data,'$.result.kind')='merge'
 ), applications AS MATERIALIZED (
     SELECT r.record_id,r.data,row_number() OVER (PARTITION BY r.record_id ORDER BY
-        CASE WHEN r.id=json_extract(CAST(v.data AS TEXT),'$.operation') THEN 0 ELSE 1 END,r.created_ns,r.id) rank
-    FROM receipts r LEFT JOIN revisions v ON v.workspace=?1 AND v.id=json_extract(r.data,'$.result.revision')
+        CASE WHEN r.id=v.operation_id THEN 0 ELSE 1 END,r.created_ns,r.id) rank
+    FROM receipts r LEFT JOIN revisions v ON v.workspace_id=?1 AND v.revision_id=json_extract(r.data,'$.result.revision')
     WHERE json_extract(r.data,'$.name')='merge_apply' AND json_extract(r.data,'$.local_saved')=1
         AND json_extract(r.data,'$.result.kind')='revision'
 ), heads AS MATERIALIZED (
     SELECT g.*,coalesce(c.data,CAST(m.data AS TEXT)) candidate_data,a.data applied_data
     FROM groups g LEFT JOIN candidates c ON c.record_id=g.id AND c.rank=1
     LEFT JOIN applications a ON a.record_id=g.id AND a.rank=1
-    LEFT JOIN merges m ON m.workspace=?1 AND m.id=g.id
+    LEFT JOIN merges m ON m.workspace_id=?1 AND m.id=g.id
 ), versions AS MATERIALIZED (
     SELECT *,
         coalesce(json_extract(first_data,'$.merge_history.merge'),json_extract(candidate_data,'$.id'),
                  json_extract(latest_data,'$.merge_history.merge')) merge_id,
         coalesce(json_extract(first_data,'$.merge_history.source'),json_extract(candidate_data,'$.source'),
-                 (SELECT json_extract(CAST(v.data AS TEXT),'$.parents[1]') FROM revisions v WHERE v.workspace=?1
-                   AND v.id=json_extract(applied_data,'$.result.revision'))) source_revision,
+                 (SELECT p.parent_revision_id FROM revisions v JOIN revision_parents p ON p.revision_id=v.revision_id AND p.parent_order=1 WHERE v.workspace_id=?1
+                   AND v.revision_id=json_extract(applied_data,'$.result.revision'))) source_revision,
         coalesce(json_extract(first_data,'$.merge_history.target.branch'),json_extract(candidate_data,'$.target.branch'),
-                 json_extract(first_data,'$.branch')) target_branch,
+                 json_extract(first_data,'$.branch')) target_branch_id,
         coalesce(json_extract(first_data,'$.merge_history.target.expected_head'),json_extract(candidate_data,'$.target.expected_head'),
-                 (SELECT json_extract(CAST(v.data AS TEXT),'$.parents[0]') FROM revisions v WHERE v.workspace=?1
-                   AND v.id=json_extract(applied_data,'$.result.revision'))) target_revision,
+                 (SELECT p.parent_revision_id FROM revisions v JOIN revision_parents p ON p.revision_id=v.revision_id AND p.parent_order=0 WHERE v.workspace_id=?1
+                   AND v.revision_id=json_extract(applied_data,'$.result.revision'))) target_revision,
         coalesce(json_extract(candidate_data,'$.base'),json_extract(first_data,'$.merge_history.base')) base_revision,
         json_extract(candidate_data,'$.revision') candidate_revision,
         coalesce(json_extract(candidate_data,'$.applied_revision'),json_extract(applied_data,'$.result.revision')) applied_revision,
@@ -74,7 +74,7 @@ WITH operation_rows AS (
 ), records AS (
     SELECT *,
         coalesce(json_extract(first_data,'$.merge_history.source_branch'),
-                 (SELECT json_extract(CAST(v.data AS TEXT),'$.branch') FROM revisions v WHERE v.workspace=?1 AND v.id=versions.source_revision)) source_branch,
+                 (SELECT v.branch_id FROM revisions v WHERE v.workspace_id=?1 AND v.revision_id=versions.source_revision)) source_branch_id,
         json_extract(first_data,'$.merge_history.location') origin_location,
         CASE
             WHEN applied_revision IS NOT NULL THEN 'applied'

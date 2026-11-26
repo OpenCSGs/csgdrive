@@ -11,9 +11,7 @@ mod queries;
 mod sqlite;
 mod working;
 
-use agentdrive_model::{
-    Error, ErrorCode, FORMAT_VERSION, LocationId, ObjectId, Result, WorkspaceId,
-};
+use agentdrive_model::{Error, ErrorCode, LocationId, ObjectId, Result, WorkspaceId};
 use parking_lot::Mutex;
 use rusqlite::Connection;
 use std::{
@@ -88,7 +86,7 @@ impl LocalBackend {
             ));
         }
         let mut connection = Connection::open(database).map_err(sqlite::sql_error)?;
-        sqlite::validate_format(&connection, FORMAT_VERSION)?;
+        sqlite::validate_format(&connection)?;
         connection.set_prepared_statement_cache_capacity(64);
         connection
             .busy_timeout(std::time::Duration::from_secs(5))
@@ -102,7 +100,7 @@ impl LocalBackend {
         connection
             .pragma_update(None, "foreign_keys", "ON")
             .map_err(sqlite::sql_error)?;
-        let location = sqlite::initialize(&mut connection, FORMAT_VERSION)?;
+        let location = sqlite::initialize(&mut connection)?;
         server::configure_layout(&mut connection, database_metadata)?;
         sync_directory(&root)?;
         Ok(Self {

@@ -238,10 +238,8 @@ impl S3Backend {
         if data.len() as u64 != stop - start {
             return Err(Error::integrity("incomplete S3 range"));
         }
-        for (block, hash) in data
-            .chunks(BLOCK_BYTES)
-            .zip(proof.hashes.chunks_exact(DIGEST_BYTES as usize))
-        {
+        let (hashes, _) = proof.hashes.as_chunks::<{ DIGEST_BYTES as usize }>();
+        for (block, hash) in data.chunks(BLOCK_BYTES).zip(hashes) {
             if sha2::Sha256::digest(block).as_slice() != hash {
                 return Err(Error::integrity(
                     "S3 range block failed digest verification",

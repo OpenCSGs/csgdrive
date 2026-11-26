@@ -32,6 +32,7 @@ async fn create_workspace(store: &Store, name: &str) -> (WorkspaceId, BranchId) 
         )
         .await
         .unwrap();
+    assert!(result.error.is_none(), "{:?}", result.error);
     (result.workspace.unwrap(), result.branch.unwrap())
 }
 
@@ -79,10 +80,183 @@ async fn binding_requires_an_existing_branch_in_the_requested_workspace() {
             ErrorKind::NoSuchBucket
         );
     }
+    let visitor = Store::from_engine(
+        store.engine(),
+        &root.path().join("s3-sessions.sqlite3"),
+        "visitor".to_owned().try_into().unwrap(),
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        visitor
+            .bind_ids("visitor", workspace, branch, WriteMode::Serialized)
+            .await
+            .unwrap_err()
+            .kind,
+        ErrorKind::AccessDenied
+    );
+    assert_eq!(
+        visitor
+            .branch_mounts(workspace, branch)
+            .await
+            .unwrap_err()
+            .kind,
+        ErrorKind::AccessDenied
+    );
+    assert_eq!(
+        store.check_bucket("visitor").await.unwrap_err().kind,
+        ErrorKind::NoSuchBucket
+    );
     let state = &store.engine().runtime.state;
     assert_eq!(state.workspaces().await.unwrap().len(), 2);
     assert_eq!(state.branches(workspace).await.unwrap().len(), 1);
     assert_eq!(state.branches(other).await.unwrap().len(), 1);
+}
+
+#[tokio::test]
+async fn both_server_entry_points_reject_unsupported_session_files_without_changes() {
+    let current_dir = tempdir().unwrap();
+    let current = Store::open(current_dir.path()).await.unwrap();
+    let owner: Principal = "owner".to_owned().try_into().unwrap();
+    let file = "s3-sessions.sqlite3";
+
+    for version in [0, 1, 37] {
+        let directory = tempdir().unwrap();
+        let path = directory.path().join(file);
+        let db = rusqlite::Connection::open(&path).unwrap();
+        db.execute_batch(
+            "CREATE TABLE drive_sessions(bucket TEXT PRIMARY KEY,workspace TEXT,branch TEXT);
+            INSERT INTO drive_sessions VALUES('retired-alias','workspace','branch');",
+        )
+        .unwrap();
+        db.pragma_update(None, "user_version", version).unwrap();
+        drop(db);
+        let before = std::fs::read(&path).unwrap();
+        for error in [
+            Store::open(directory.path()).await.unwrap_err(),
+            Store::from_engine(current.engine(), &path, owner.clone())
+                .await
+                .unwrap_err(),
+        ] {
+            assert_eq!(error.kind, ErrorKind::Invalid);
+            assert!(
+                error.message.contains("unsupported S3 session database"),
+                "{error}"
+            );
+            assert!(error.message.contains(&version.to_string()), "{error}");
+        }
+        // Includes the application row, catalog SQL and SQLite journal/version header bytes.
+        assert_eq!(std::fs::read(&path).unwrap(), before);
+        assert!(!directory.path().join(format!("{file}-wal")).exists());
+        let db = rusqlite::Connection::open(&path).unwrap();
+        let journal_mode: String = db
+            .pragma_query_value(None, "journal_mode", |row| row.get(0))
+            .unwrap();
+        assert_eq!(journal_mode, "delete");
+        let bucket: String = db
+            .query_row("SELECT bucket FROM drive_sessions", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(bucket, "retired-alias");
+    }
+
+    let already_empty = current_dir.path().join("empty.sqlite");
+    std::fs::File::create(&already_empty).unwrap();
+    Store::from_engine(current.engine(), &already_empty, owner)
+        .await
+        .unwrap();
+    for path in [current_dir.path().join(file), already_empty] {
+        let db = rusqlite::Connection::open(path).unwrap();
+        let version: i32 = db
+            .pragma_query_value(None, "user_version", |row| row.get(0))
+            .unwrap();
+        assert_eq!(version, 1);
+    }
+}
+
+#[tokio::test]
+async fn mount_names_follow_core_records_and_retired_aliases_remain_fenced() {
+    let root = tempdir().unwrap();
+    let store = Store::open(root.path()).await.unwrap();
+    let (workspace_id, branch_id) = create_workspace(&store, "original workspace").await;
+    for bucket in ["vm-one", "vm-two"] {
+        store
+            .bind_ids(bucket, workspace_id, branch_id, WriteMode::Exclusive)
+            .await
+            .unwrap();
+    }
+    store.acquire("vm-one").await.unwrap();
+    let epoch = store.handoff("vm-one", "vm-two").await.unwrap().epoch;
+
+    let db = rusqlite::Connection::open(root.path().join("s3-sessions.sqlite3")).unwrap();
+    let columns = |table: &str| -> Vec<String> {
+        let mut query = db
+            .prepare("SELECT name FROM pragma_table_info(?1) ORDER BY cid")
+            .unwrap();
+        query
+            .query_map([table], |row| row.get(0))
+            .unwrap()
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .unwrap()
+    };
+    assert_eq!(
+        columns("drive_sessions"),
+        ["bucket", "branch_id", "retired", "successor"]
+    );
+    assert_eq!(
+        columns("drive_branches"),
+        ["branch_id", "workspace_id", "epoch", "serialized", "holder"]
+    );
+    let associations: i64 = db
+        .query_row("SELECT count(*) FROM drive_branches", [], |row| row.get(0))
+        .unwrap();
+    assert_eq!(associations, 1);
+
+    let engine = store.engine();
+    let state = &engine.runtime.state;
+    let mut workspace = state.workspace(workspace_id).await.unwrap().unwrap();
+    let mut branch = state.branch(branch_id).await.unwrap().unwrap();
+    workspace.name = "current workspace".into();
+    branch.name = "current branch".into();
+    state
+        .commit(agentdrive_ports::LocalCommit {
+            workspaces: vec![workspace],
+            branches: vec![branch],
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    let listed = store.branch_mounts(workspace_id, branch_id).await.unwrap();
+    assert_eq!(listed.len(), 2);
+    assert!(listed[0].retired);
+    assert!(listed[1].writable);
+    for session in listed {
+        assert_eq!(session.workspace, "current workspace");
+        assert_eq!(session.branch, "current branch");
+        assert_eq!(session.epoch, epoch);
+        assert_eq!(session.holder.as_deref(), Some("vm-two"));
+    }
+    drop(engine);
+    drop(store);
+    let store = Store::open(root.path()).await.unwrap();
+    let retired = store
+        .bind_ids("vm-one", workspace_id, branch_id, WriteMode::Exclusive)
+        .await
+        .unwrap();
+    assert!(retired.retired);
+    assert_eq!(retired.branch, "current branch");
+    assert_eq!(
+        store.status("vm-one").await.unwrap().workspace,
+        "current workspace"
+    );
+    assert_eq!(
+        store.handoff("vm-one", "vm-two").await.unwrap().epoch,
+        epoch
+    );
+    assert_eq!(
+        store.check_writer("vm-one").await.unwrap_err().kind,
+        ErrorKind::AccessDenied
+    );
+    store.check_writer("vm-two").await.unwrap();
 }
 
 #[tokio::test]
@@ -574,7 +748,7 @@ async fn updating_one_key_does_not_read_an_unrelated_directory_index_page() {
     let db = rusqlite::Connection::open(root.path().join("meta.db")).unwrap();
     let read = |hash: &str| -> Vec<u8> {
         db.query_row(
-            "SELECT data FROM metadata_objects WHERE workspace=?1 AND hash=?2",
+            "SELECT data FROM metadata_objects WHERE workspace_id=?1 AND hash=?2",
             rusqlite::params![binding.workspace_id.to_string(), hash],
             |row| row.get(0),
         )
@@ -597,7 +771,7 @@ async fn updating_one_key_does_not_read_an_unrelated_directory_index_page() {
     let saved = read(last);
     let update = |value: &[u8]| {
         db.execute(
-            "UPDATE metadata_objects SET data=?1 WHERE workspace=?2 AND hash=?3",
+            "UPDATE metadata_objects SET data=?1 WHERE workspace_id=?2 AND hash=?3",
             rusqlite::params![value, binding.workspace_id.to_string(), last],
         )
         .unwrap()

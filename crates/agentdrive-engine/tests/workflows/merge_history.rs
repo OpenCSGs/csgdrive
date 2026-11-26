@@ -480,7 +480,7 @@ async fn merge_history_pagination_is_bounded_and_bound_to_filters_and_actor() {
         ErrorCode::InvalidArgument
     );
     let connection = rusqlite::Connection::open(h.directory.path().join("meta.db")).unwrap();
-    let mut statement=connection.prepare("EXPLAIN QUERY PLAN SELECT id FROM operations WHERE workspace=?1 AND json_extract(CAST(data AS TEXT),'$.name') IN ('merge_prepare','merge_resolve','merge_apply')").unwrap();
+    let mut statement=connection.prepare("EXPLAIN QUERY PLAN SELECT id FROM operations WHERE workspace_id=?1 AND json_extract(CAST(data AS TEXT),'$.name') IN ('merge_prepare','merge_resolve','merge_apply')").unwrap();
     let plan = statement
         .query_map([f.workspace.id.to_string()], |row| row.get::<_, String>(3))
         .unwrap()

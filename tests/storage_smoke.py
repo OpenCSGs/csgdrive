@@ -137,7 +137,7 @@ with tempfile.TemporaryDirectory(prefix='agentdrive-storage-') as temporary:
         assert 'workspace_remotes' not in json.loads(before)
         with sqlite3.connect(root / 'state' / 'meta.db') as db:
             routes = {key: json.loads(value) for key, value in
-                      db.execute('SELECT workspace,config FROM workspace_storage')}
+                      db.execute('SELECT workspace_id,config FROM workspace_storage')}
             assert routes[shared]['prefix'] == own_store['prefix']
             assert routes[workspace]['bucket'] == profile['bucket']
             assert db.execute('SELECT count(*) FROM metadata_objects').fetchone()[0] > 0
@@ -164,7 +164,7 @@ with tempfile.TemporaryDirectory(prefix='agentdrive-storage-') as temporary:
             assert saved['runtime']['workspace_remotes'][codes]['xnet']
             with sqlite3.connect(root / 'state' / 'meta.db') as db:
                 [(file_id, placement)] = db.execute(
-                    'SELECT hash,format FROM file_placements WHERE workspace=?', (codes,)).fetchall()
+                    'SELECT hash,format FROM codes_file_placements WHERE workspace_id=?', (codes,)).fetchall()
                 assert placement == 'git_chunks'
             (root / 'state' / 'objects' / codes / file_id).unlink()
             destination = root / 'exchange' / 'after-policy-change'

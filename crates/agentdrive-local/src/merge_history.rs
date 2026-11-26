@@ -7,12 +7,12 @@ use serde::Deserialize;
 const RECORDS: &str = include_str!("merge_history.sql");
 
 const ENTRY: &str = r#"json_object(
-    'id',id,'merge_id',merge_id,'source_branch',source_branch,
-    'source_name',coalesce((SELECT json_extract(CAST(b.data AS TEXT),'$.name') FROM branches b WHERE b.workspace=?1 AND b.id=records.source_branch),
-                         (SELECT json_extract(CAST(r.data AS TEXT),'$.metadata.name') FROM remote_refs r WHERE r.workspace=?1 AND r.id=records.source_branch)),
-    'source_revision',source_revision,'target_branch',target_branch,
-    'target_name',coalesce((SELECT json_extract(CAST(b.data AS TEXT),'$.name') FROM branches b WHERE b.workspace=?1 AND b.id=records.target_branch),
-                         (SELECT json_extract(CAST(r.data AS TEXT),'$.metadata.name') FROM remote_refs r WHERE r.workspace=?1 AND r.id=records.target_branch)),
+    'id',id,'merge_id',merge_id,'source_branch',source_branch_id,
+    'source_name',coalesce((SELECT b.name FROM branches b WHERE b.workspace_id=?1 AND b.branch_id=records.source_branch_id),
+                         (SELECT r.name FROM remote_refs r WHERE r.workspace_id=?1 AND r.branch_id=records.source_branch_id)),
+    'source_revision',source_revision,'target_branch',target_branch_id,
+    'target_name',coalesce((SELECT b.name FROM branches b WHERE b.workspace_id=?1 AND b.branch_id=records.target_branch_id),
+                         (SELECT r.name FROM remote_refs r WHERE r.workspace_id=?1 AND r.branch_id=records.target_branch_id)),
     'target_revision',target_revision,'base_revision',base_revision,'candidate_revision',candidate_revision,
     'applied_revision',applied_revision,'principal',json_extract(first_data,'$.principal'),
     'origin_location',origin_location,'created_ns',created_ns,'updated_ns',updated_ns,'status',status,
@@ -122,11 +122,11 @@ fn filters(query: &MergeHistoryScan, args: &mut Vec<Value>) -> Result<Vec<String
     let mut conditions = vec!["1".to_owned()];
     for (column, value) in [
         (
-            "source_branch",
+            "source_branch_id",
             query.filter.source_branch.map(|id| id.to_string()),
         ),
         (
-            "target_branch",
+            "target_branch_id",
             query.filter.target_branch.map(|id| id.to_string()),
         ),
         (
@@ -142,7 +142,7 @@ fn filters(query: &MergeHistoryScan, args: &mut Vec<Value>) -> Result<Vec<String
     if let Some(branch) = query.filter.branch {
         let parameter = bind(args, Value::Text(branch.to_string()));
         conditions.push(format!(
-            "(source_branch={parameter} OR target_branch={parameter})"
+            "(source_branch_id={parameter} OR target_branch_id={parameter})"
         ));
     }
     if let Some(status) = query.filter.status {
@@ -174,7 +174,7 @@ fn filters(query: &MergeHistoryScan, args: &mut Vec<Value>) -> Result<Vec<String
                 .collect();
             let parameters = parameters.join(",");
             conditions.push(format!(
-                "(target_branch IN ({parameters}) AND source_branch IN ({parameters}))"
+                "(target_branch_id IN ({parameters}) AND source_branch_id IN ({parameters}))"
             ));
         }
     }

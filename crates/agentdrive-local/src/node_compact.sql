@@ -1,10 +1,10 @@
 -- Rebuildable views can be dropped when no live branch or revision points at the root.
-CREATE TEMP TABLE IF NOT EXISTS retained_node_roots(workspace TEXT, hash TEXT, PRIMARY KEY(workspace,hash));
+CREATE TEMP TABLE IF NOT EXISTS retained_node_roots(workspace_id TEXT, hash TEXT, PRIMARY KEY(workspace_id,hash));
 DELETE FROM retained_node_roots;
-INSERT OR IGNORE INTO retained_node_roots SELECT workspace,json_extract(CAST(data AS TEXT),'$.working_root.id') FROM branches;
-INSERT OR IGNORE INTO retained_node_roots SELECT workspace,json_extract(CAST(data AS TEXT),'$.root.id') FROM revisions;
+INSERT OR IGNORE INTO retained_node_roots SELECT workspace_id,working_root_object_id FROM branches;
+INSERT OR IGNORE INTO retained_node_roots SELECT workspace_id,root_object_id FROM revisions;
 DELETE FROM saved_node_views AS s WHERE NOT EXISTS (
-    SELECT 1 FROM retained_node_roots r WHERE r.workspace=s.workspace AND r.hash=s.hash
+    SELECT 1 FROM retained_node_roots r WHERE r.workspace_id=s.workspace_id AND r.hash=s.hash
 ) AND (s.inodes IS NOT NULL OR NOT EXISTS (
     SELECT 1 FROM node_layers l WHERE l.parent=s.layer AND l.parent_version=s.version
 ));

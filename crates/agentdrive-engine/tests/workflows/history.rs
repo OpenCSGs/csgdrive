@@ -130,7 +130,7 @@ async fn revision_history_pages_are_ordered_bounded_and_query_scoped() {
         .unwrap();
     assert_eq!(described, vec![initial]);
     let connection = rusqlite::Connection::open(h.directory.path().join("meta.db")).unwrap();
-    let mut statement = connection.prepare("EXPLAIN QUERY PLAN SELECT data FROM revisions WHERE workspace=?1 AND json_extract(CAST(data AS TEXT),'$.branch')=?2 ORDER BY json_extract(CAST(data AS TEXT),'$.created_ns') DESC,id ASC LIMIT 50").unwrap();
+    let mut statement = connection.prepare("EXPLAIN QUERY PLAN SELECT data FROM revision_records WHERE workspace_id=?1 AND branch_id=?2 ORDER BY created_ns DESC,revision_id ASC LIMIT 50").unwrap();
     let plan = statement
         .query_map(
             rusqlite::params![workspace.id.to_string(), branch.to_string()],

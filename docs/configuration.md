@@ -89,7 +89,7 @@ Create a Codes repository with an initialized Git branch. In the creation reques
 }
 ```
 
-The token must permit reading and writing repository files. The endpoint is an HTTP(S) origin. HTTP requires `allow_http: true`. The Git storage branch defaults to `main` and the prefix to `agentdrive/v1`. Each AgentDrive workspace branch keeps its identity and history in SQLite. SQLite records the repository destination separately from the current XNet setting. You can update `xnet` for this destination through `PUT /api/settings`. The selection applies to new content. Each existing file has a `file_placements` row with its actual format and a fixed Git commit.
+The token must permit reading and writing repository files. The endpoint is an HTTP(S) origin. HTTP requires `allow_http: true`. The Git storage branch defaults to `main` and the prefix to `agentdrive/v1`. Each AgentDrive workspace branch keeps its identity and history in SQLite. SQLite records the repository destination separately from the current XNet setting. You can update `xnet` for this destination through `PUT /api/settings`. The selection applies to new content. Each existing file has a `codes_file_placements` row with its actual format and a fixed Git commit.
 
 For `git_chunks`, Git stores the original binary chunks, up to 4 MiB each. The daemon batches up to 8 MiB of unique content per commit request. Base64 is used once in the JSON request body. A block starting with the Git LFS header gets a reversible one-byte prefix so Codes stores literal pointer text as file content. SQLite keeps the chunk order and SHA-256 digests. A preview or range read fetches and verifies each complete chunk covering that interval at the stored commit.
 

@@ -154,14 +154,20 @@ impl S3 for Gateway {
         &self,
         req: S3Request<HeadBucketInput>,
     ) -> S3Result<S3Response<HeadBucketOutput>> {
-        self.store.status(&req.input.bucket).await.map_err(error)?;
+        self.store
+            .check_bucket(&req.input.bucket)
+            .await
+            .map_err(error)?;
         Ok(S3Response::new(HeadBucketOutput::default()))
     }
     async fn get_bucket_location(
         &self,
         req: S3Request<GetBucketLocationInput>,
     ) -> S3Result<S3Response<GetBucketLocationOutput>> {
-        self.store.status(&req.input.bucket).await.map_err(error)?;
+        self.store
+            .check_bucket(&req.input.bucket)
+            .await
+            .map_err(error)?;
         Ok(S3Response::new(GetBucketLocationOutput::default()))
     }
 
@@ -534,7 +540,7 @@ impl S3 for Gateway {
         req: S3Request<ListMultipartUploadsInput>,
     ) -> S3Result<S3Response<ListMultipartUploadsOutput>> {
         let i = req.input;
-        self.store.status(&i.bucket).await.map_err(error)?;
+        self.store.check_bucket(&i.bucket).await.map_err(error)?;
         let uploads = self
             .uploads
             .list(&i.bucket, i.prefix.as_deref().unwrap_or_default())

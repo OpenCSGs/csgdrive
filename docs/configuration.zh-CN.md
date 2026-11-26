@@ -89,7 +89,7 @@ SQLite 保存工作区、分支、文件路径、版本，以及文件和内容�
 }
 ```
 
-令牌需要读写仓库文件的权限。`endpoint` 为 HTTP(S) 来源地址。测试环境使用 HTTP 时设置 `allow_http: true`。Git 存储分支默认为 `main`，存储目录默认为 `agentdrive/v1`。每个 AgentDrive 工作区分支的标识和历史均保存在 SQLite。SQLite 分别记录 Git 仓库的存储位置和当前的 XNet 写入设置。通过 `PUT /api/settings` 修改同一存储位置的 `xnet` 设置后，服务对新内容使用更新后的设置。`file_placements` 表记录每个已有内容的实际格式和固定的 Git 提交。
+令牌需要读写仓库文件的权限。`endpoint` 为 HTTP(S) 来源地址。测试环境使用 HTTP 时设置 `allow_http: true`。Git 存储分支默认为 `main`，存储目录默认为 `agentdrive/v1`。每个 AgentDrive 工作区分支的标识和历史均保存在 SQLite。SQLite 分别记录 Git 仓库的存储位置和当前的 XNet 写入设置。通过 `PUT /api/settings` 修改同一存储位置的 `xnet` 设置后，服务对新内容使用更新后的设置。`codes_file_placements` 表记录每个已有内容的实际格式和固定的 Git 提交。
 
 采用 `git_chunks` 格式时，Git 保存原始二进制内容块，每块最多 4 MiB。一次 Git 提交请求可包含最多 8 MiB 不重复的内容块。Base64 只用于构造 JSON 请求中的文件内容字段。对于以 Git LFS 标记开头的内容块，服务写入一个可以还原的前置字节，保留用户文件里的指针原文。SQLite 保存块的排列顺序和 SHA-256 摘要。预览或读取指定字节范围时，服务从保存的 Git 提交读取并校验覆盖该范围的完整内容块。
 

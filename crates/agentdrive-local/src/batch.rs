@@ -159,7 +159,7 @@ impl LocalBackend {
                     .connection
                     .lock()
                     .query_row(
-                        "SELECT EXISTS(SELECT 1 FROM objects WHERE workspace=?1 AND hash=?2)",
+                        "SELECT EXISTS(SELECT 1 FROM objects WHERE workspace_id=?1 AND hash=?2)",
                         params![workspace.to_string(), existing.id.as_str()],
                         |row| row.get(0),
                     )
@@ -249,13 +249,13 @@ impl LocalBackend {
             for (reference, bytes) in references {
                 if let Some(bytes) = bytes {
                     transaction.execute(
-                        "INSERT INTO metadata_objects(workspace,hash,data) VALUES(?1,?2,?3) ON CONFLICT DO NOTHING",
+                        "INSERT INTO metadata_objects(workspace_id,hash,data) VALUES(?1,?2,?3) ON CONFLICT DO NOTHING",
                         params![workspace.to_string(), reference.id.as_str(), bytes]
                     ).map_err(sql_error)?;
                 }
                 transaction.execute(
-                    "INSERT INTO objects(workspace,hash,kind,size,remote_confirmed,last_access_ns) \
-                     VALUES(?1,?2,?3,?4,0,?5) ON CONFLICT(workspace,hash) \
+                    "INSERT INTO objects(workspace_id,hash,kind,size,remote_confirmed,last_access_ns) \
+                     VALUES(?1,?2,?3,?4,0,?5) ON CONFLICT(workspace_id,hash) \
                      DO UPDATE SET last_access_ns=excluded.last_access_ns",
                     params![
                         workspace.to_string(), reference.id.as_str(),
@@ -291,7 +291,7 @@ impl LocalBackend {
                 let eligible: bool = transaction
                     .query_row(
                         "SELECT EXISTS(SELECT 1 FROM objects \
-                     WHERE workspace=?1 AND hash=?2 AND remote_confirmed=?3)",
+                     WHERE workspace_id=?1 AND hash=?2 AND remote_confirmed=?3)",
                         params![
                             entry.workspace.to_string(),
                             entry.reference.id.as_str(),
@@ -309,7 +309,7 @@ impl LocalBackend {
                         continue;
                     }
                     let deleted = transaction.execute(
-                        "DELETE FROM metadata_objects WHERE workspace=?1 AND hash=?2 AND published=0",
+                        "DELETE FROM metadata_objects WHERE workspace_id=?1 AND hash=?2 AND published=0",
                         params![entry.workspace.to_string(), entry.reference.id.as_str()],
                     ).map_err(sql_error)?;
                     if deleted == 0 {
@@ -330,7 +330,7 @@ impl LocalBackend {
                 }
                 transaction
                     .execute(
-                        "DELETE FROM objects WHERE workspace=?1 AND hash=?2",
+                        "DELETE FROM objects WHERE workspace_id=?1 AND hash=?2",
                         params![entry.workspace.to_string(), entry.reference.id.as_str()],
                     )
                     .map_err(sql_error)?;
