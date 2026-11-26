@@ -71,6 +71,8 @@ impl Engine {
         let operations = OperationService::new(runtime.clone());
         let content = ContentService::with_routes(adapters.objects.clone(), routes);
         let trees = TreeService::new(runtime.clone(), content.clone());
+        let reader: Arc<dyn agentdrive_ports::RevisionReader> = trees.clone();
+        runtime.state.set_tree_reader(Arc::downgrade(&reader));
         let snapshots = SnapshotService::new(
             runtime.clone(),
             trees.clone(),

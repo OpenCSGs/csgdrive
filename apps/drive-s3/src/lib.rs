@@ -26,13 +26,6 @@ use tokio_util::sync::CancellationToken;
 #[derive(Deserialize)]
 #[serde(tag = "action", rename_all = "lowercase", deny_unknown_fields)]
 enum Command {
-    Bind {
-        bucket: String,
-        workspace: String,
-        branch: String,
-        #[serde(default)]
-        write_mode: WriteMode,
-    },
     #[serde(rename = "bind_ids")]
     BindIds {
         bucket: String,
@@ -61,16 +54,6 @@ async fn manage(
     Json(command): Json<Command>,
 ) -> Result<Json<SessionStatus>, (StatusCode, String)> {
     let result = match command {
-        Command::Bind {
-            bucket,
-            workspace,
-            branch,
-            write_mode,
-        } => {
-            store
-                .bind_with_mode(&bucket, &workspace, &branch, write_mode)
-                .await
-        }
         Command::BindIds {
             bucket,
             workspace_id,

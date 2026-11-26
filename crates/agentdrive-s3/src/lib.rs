@@ -1,5 +1,6 @@
 //! S3 and RustFS storage with immutable content and conditional reference updates.
-use agentdrive_config::S3Config;
+mod verification;
+use agentdrive_config::{RemoteConfig, S3Config};
 use agentdrive_model::*;
 use agentdrive_ports::*;
 use async_trait::async_trait;
@@ -17,6 +18,7 @@ use sha2::Digest;
 use std::{sync::Arc, time::Duration};
 use tokio::io::AsyncReadExt;
 use tokio_util::io::StreamReader;
+use verification::{BlockHashes, Proofs};
 
 const MIN_PART_BYTES: u64 = 8 * 1024 * 1024;
 const MAX_PART_BYTES: u64 = 64 * 1024 * 1024;
@@ -25,6 +27,7 @@ pub struct S3Backend {
     client: AmazonS3,
     http: reqwest::Client,
     prefix: String,
+    proofs: Arc<Proofs>,
 }
 impl std::fmt::Debug for S3Backend {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -42,7 +45,22 @@ struct Version {
 
 impl S3Backend {
     pub fn new(config: S3Config) -> Result<Arc<Self>> {
+        Self::open(config, None)
+    }
+
+    pub fn file_store(
+        config: S3Config,
+        proofs: Arc<dyn ObjectVerificationStore>,
+    ) -> Result<Arc<Self>> {
+        Self::open(config, Some(proofs))
+    }
+
+    fn open(
+        config: S3Config,
+        proofs: Option<Arc<dyn ObjectVerificationStore>>,
+    ) -> Result<Arc<Self>> {
         config.validate()?;
+        let target = RemoteConfig::S3(config.clone()).storage_target()?;
         if config.bucket.is_empty() {
             return Err(Error::invalid("S3 bucket is required"));
         }
@@ -92,6 +110,7 @@ impl S3Backend {
             client,
             http,
             prefix,
+            proofs: Arc::new(Proofs::new(target, proofs)),
         }))
     }
 
@@ -163,29 +182,50 @@ impl S3Backend {
     }
 
     async fn verify_remote(&self, workspace: WorkspaceId, object: &ObjectRef) -> Result<()> {
-        let mut stream = self.download(workspace, object).await?;
-        let mut digest = object_hasher(object.kind);
-        let mut total = 0u64;
-        let mut buffer = vec![0; IO_BUFFER_BYTES];
-        loop {
-            let size = stream.reader.read(&mut buffer).await?;
-            if size == 0 {
-                break;
-            }
-            total = total
-                .checked_add(size as u64)
-                .ok_or_else(|| Error::integrity("remote object size overflow"))?;
-            if total > object.size {
-                return Err(Error::integrity("remote object exceeded its declared size"));
-            }
-            digest.update(&buffer[..size]);
-        }
-        if total != object.size || finish_digest(digest) != object.id {
+        self.object_stream(workspace, object, true)
+            .await?
+            .try_for_each(|_| async { Ok(()) })
+            .await
+    }
+
+    async fn object_stream(
+        &self,
+        workspace: WorkspaceId,
+        object: &ObjectRef,
+        require_digest: bool,
+    ) -> Result<futures::stream::BoxStream<'static, Result<Bytes>>> {
+        use futures::StreamExt;
+        let path = self.object_key(workspace, &object.id);
+        let result = self.client.get(&path).await.map_err(store_error)?;
+        if result.meta.size != object.size {
             return Err(Error::integrity(
-                "existing remote object failed verification",
+                "remote object length differs from its reference",
             ));
         }
-        Ok(())
+        let etag = result.meta.e_tag.clone();
+        let version = result.meta.version.clone();
+        let proofs = self.proofs.clone();
+        let object = object.clone();
+        let mut chunks = result.into_stream();
+        Ok(async_stream::try_stream! {
+            let mut digest = object_hasher(object.kind);
+            let mut blocks = BlockHashes::default();
+            let mut total = 0u64;
+            while let Some(bytes) = chunks.try_next().await.map_err(store_error)? {
+                total = total.checked_add(bytes.len() as u64)
+                    .filter(|n| *n <= object.size)
+                    .ok_or_else(|| Error::integrity("remote object exceeded its declared size"))?;
+                digest.update(&bytes);
+                blocks.update(&bytes);
+                yield bytes;
+            }
+            if total == object.size && finish_digest(digest) == object.id {
+                proofs.save(workspace, &object, etag, version, blocks).await?;
+            } else if require_digest {
+                Err(Error::integrity("existing remote object failed verification"))?;
+            }
+        }
+        .boxed())
     }
 
     async fn complete_immutable(
@@ -193,7 +233,7 @@ impl S3Backend {
         path: &Path,
         upload: &str,
         parts: Vec<PartId>,
-    ) -> Result<()> {
+    ) -> Result<(Option<String>, Option<String>)> {
         let header = HeaderName::from_static("if-none-match");
         let options = SignedUrlOptions::new()
             .with_query([("uploadId", upload)])
@@ -235,6 +275,11 @@ impl S3Backend {
             )
             .retryable());
         }
+        let version = response
+            .headers()
+            .get("x-amz-version-id")
+            .and_then(|h| h.to_str().ok())
+            .map(str::to_owned);
         let mut stream = response.bytes_stream();
         let mut body = Vec::new();
         while let Some(bytes) = stream.try_next().await.map_err(http_error)? {
@@ -246,20 +291,37 @@ impl S3Backend {
             body.extend_from_slice(&bytes);
         }
         let mut reader = quick_xml::Reader::from_reader(body.as_slice());
+        let mut root = false;
+        let mut etag = None;
         loop {
+            use quick_xml::events::Event;
             match reader.read_event() {
-                Ok(quick_xml::events::Event::Start(tag)) => {
-                    return if tag.local_name().as_ref() == b"CompleteMultipartUploadResult" {
-                        Ok(())
-                    } else {
-                        Err(Error::new(
+                Ok(Event::Start(tag)) if !root => {
+                    if tag.local_name().as_ref() != b"CompleteMultipartUploadResult" {
+                        return Err(Error::new(
                             ErrorCode::RemoteUnknown,
                             "multipart completion returned an embedded error",
                         )
-                        .retryable())
-                    };
+                        .retryable());
+                    }
+                    root = true;
                 }
-                Ok(quick_xml::events::Event::Eof) | Err(_) => {
+                Ok(Event::Start(tag)) if tag.local_name().as_ref() == b"ETag" => {
+                    let raw = reader
+                        .read_text(tag.name())
+                        .map_err(|_| Error::integrity("invalid completed ETag"))?;
+                    etag = Some(
+                        quick_xml::escape::unescape(&raw)
+                            .map_err(|_| Error::integrity("invalid completed ETag"))?
+                            .into_owned(),
+                    );
+                }
+                Ok(Event::End(tag))
+                    if tag.local_name().as_ref() == b"CompleteMultipartUploadResult" =>
+                {
+                    return Ok((etag, version));
+                }
+                Ok(Event::Eof) | Err(_) => {
                     return Err(Error::new(
                         ErrorCode::RemoteUnknown,
                         "multipart completion response is incomplete",
@@ -295,6 +357,7 @@ impl S3Backend {
             .await
             .map_err(store_error)?;
         let result = async {
+            let mut blocks = BlockHashes::default();
             let mut parts = Vec::new();
             let mut remaining = source.reference.size;
             let mut digest = object_hasher(source.reference.kind);
@@ -303,6 +366,7 @@ impl S3Backend {
                 let mut buffer = vec![0; size];
                 source.reader.read_exact(&mut buffer).await?;
                 digest.update(&buffer);
+                blocks.update(&buffer);
                 let part = self
                     .client
                     .put_part(&path, &upload, parts.len(), Bytes::from(buffer).into())
@@ -317,7 +381,10 @@ impl S3Backend {
             {
                 return Err(Error::integrity("upload source failed digest verification"));
             }
-            self.complete_immutable(&path, &upload, parts).await
+            let (etag, version) = self.complete_immutable(&path, &upload, parts).await?;
+            self.proofs
+                .save(workspace, &source.reference, etag, version, blocks)
+                .await
         }
         .await;
         if result.is_err() {
@@ -377,10 +444,8 @@ impl RemoteObjectStore for S3Backend {
 
     async fn upload(&self, workspace: WorkspaceId, mut source: ObjectStream) -> Result<()> {
         let path = self.object_key(workspace, &source.reference.id);
-        match self.client.head(&path).await {
-            Ok(_) => return self.verify_remote(workspace, &source.reference).await,
-            Err(object_store::Error::NotFound { .. }) => (),
-            Err(error) => return Err(store_error(error)),
+        if self.contains(workspace, &source.reference).await? {
+            return Ok(());
         }
         if source.reference.size > MIN_PART_BYTES {
             return self.upload_multipart(workspace, source).await;
@@ -391,12 +456,24 @@ impl RemoteObjectStore for S3Backend {
             .read_to_end(&mut bytes)
             .await?;
         verify_object(&source.reference, &bytes)?;
+        let mut blocks = BlockHashes::default();
+        blocks.update(&bytes);
         match self
             .client
             .put_opts(&path, Bytes::from(bytes).into(), PutMode::Create.into())
             .await
         {
-            Ok(_) => Ok(()),
+            Ok(result) => {
+                self.proofs
+                    .save(
+                        workspace,
+                        &source.reference,
+                        result.e_tag,
+                        result.version,
+                        blocks,
+                    )
+                    .await
+            }
             Err(object_store::Error::AlreadyExists { .. }) => {
                 self.verify_remote(workspace, &source.reference).await
             }
@@ -404,18 +481,28 @@ impl RemoteObjectStore for S3Backend {
         }
     }
 
+    async fn verified_file_exists(
+        &self,
+        workspace: WorkspaceId,
+        object: &ObjectRef,
+    ) -> Result<bool> {
+        self.contains(workspace, object).await
+    }
+
+    async fn read_verified_range(
+        &self,
+        workspace: WorkspaceId,
+        object: &ObjectRef,
+        offset: u64,
+        size: u32,
+    ) -> Result<Option<Bytes>> {
+        self.verified_range(workspace, object, offset, size).await
+    }
+
     async fn download(&self, workspace: WorkspaceId, object: &ObjectRef) -> Result<ObjectStream> {
-        let result = self
-            .client
-            .get(&self.object_key(workspace, &object.id))
-            .await
-            .map_err(store_error)?;
-        if result.meta.size != object.size {
-            return Err(Error::integrity(
-                "remote object length does not match its reference",
-            ));
-        }
-        let reader = StreamReader::new(result.into_stream().map_err(std::io::Error::from));
+        // LocalObjectStore::install checks the digest before exposing the downloaded file.
+        let stream = self.object_stream(workspace, object, false).await?;
+        let reader = StreamReader::new(stream.map_err(std::io::Error::other));
         Ok(ObjectStream {
             reference: object.clone(),
             reader: Box::pin(reader),
@@ -423,11 +510,25 @@ impl RemoteObjectStore for S3Backend {
     }
 
     async fn contains(&self, workspace: WorkspaceId, object: &ObjectRef) -> Result<bool> {
-        match self.verify_remote(workspace, object).await {
-            Ok(()) => Ok(true),
-            Err(error) if error.code == ErrorCode::NotFound => Ok(false),
-            Err(error) => Err(error),
+        let head = match self
+            .client
+            .head(&self.object_key(workspace, &object.id))
+            .await
+        {
+            Ok(head) => head,
+            Err(object_store::Error::NotFound { .. }) => return Ok(false),
+            Err(error) => return Err(store_error(error)),
+        };
+        if head.size != object.size {
+            return Err(Error::integrity(
+                "remote object length differs from its reference",
+            ));
         }
+        if self.proofs.matches(workspace, object, &head).await? {
+            return Ok(true);
+        }
+        self.verify_remote(workspace, object).await?;
+        Ok(true)
     }
 }
 

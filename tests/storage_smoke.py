@@ -7,11 +7,14 @@ from pathlib import Path
 import socket
 import sqlite3
 import subprocess
+import sys
 import tempfile
 import time
 import urllib.error
 import urllib.request
 import uuid
+
+from fixtures.codes_storage import codes_storage
 
 parser = argparse.ArgumentParser()
 parser.add_argument('--bin-dir', default='target/debug')
@@ -29,6 +32,12 @@ with tempfile.TemporaryDirectory(prefix='agentdrive-storage-') as temporary:
     config_path = root / 'agentdrive.json'
 
     client = [str(binaries / ('agentdrive' + exe)), '--endpoint', f'http://127.0.0.1:{port}/mcp']
+    # Changing to XNet checks the Python module and the Codes access token. This
+    # test reads an existing regular Git object and never invokes an XNet upload.
+    modules = root / 'test-python'
+    modules.mkdir()
+    (modules / 'hf_xet.py').write_text('', encoding='utf-8')
+    process_env = {**os.environ, 'AGENTDRIVE_XNET_PYTHON': sys.executable, 'PYTHONPATH': os.pathsep.join([str(modules), os.environ.get('PYTHONPATH', '')])}
     log = (root / 'daemon.log').open('w')
     daemon = None
 
@@ -65,7 +74,7 @@ with tempfile.TemporaryDirectory(prefix='agentdrive-storage-') as temporary:
         return result
 
     def start():
-        process = subprocess.Popen([str(binaries / ('agentdrived' + exe)), 'serve', '--config', str(config_path)], stdout=log, stderr=log)
+        process = subprocess.Popen([str(binaries / ('agentdrived' + exe)), 'serve', '--config', str(config_path)], stdout=log, stderr=log, env=process_env)
         for _ in range(100):
             try:
                 if settings()[0] == 200:
@@ -141,6 +150,29 @@ with tempfile.TemporaryDirectory(prefix='agentdrive-storage-') as temporary:
         assert (destination / 'image.bin').read_bytes() == payload
         assert not call('workspace_status', {'workspace': local})['capabilities']['remote_configured']
         assert call('workspace_status', {'workspace': shared})['capabilities']['remote_configured']
+        with codes_storage() as (codes_endpoint, fetched):
+            codes_profile = {'backend': 'opencsg', 'endpoint': codes_endpoint, 'repository': 'test/storage',
+                             'token': 'smoke-test', 'allow_http': True, 'xnet': False}
+            codes = create_workspace({'request_id': str(uuid.uuid4()), 'name': 'codes files',
+                                      'storage': codes_profile})['result']['workspace']['id']
+            codes_branch = call('workspace_import', {'workspace': codes, 'source': str(source)})['result']['branch']
+            call('sync', {'workspace': codes, 'direction': 'push'})
+            current = settings()[1]
+            runtime = copy.deepcopy(current['runtime'])
+            runtime['workspace_remotes'][codes]['xnet'] = True
+            saved = save(current, runtime)
+            assert saved['runtime']['workspace_remotes'][codes]['xnet']
+            with sqlite3.connect(root / 'state' / 'meta.db') as db:
+                [(file_id, placement)] = db.execute(
+                    'SELECT hash,format FROM file_placements WHERE workspace=?', (codes,)).fetchall()
+                assert placement == 'git_chunks'
+            (root / 'state' / 'objects' / codes / file_id).unlink()
+            destination = root / 'exchange' / 'after-policy-change'
+            call('workspace_export', {'workspace': codes, 'revision': codes_branch['formal_head'],
+                                      'destination': str(destination)})
+            assert (destination / 'image.bin').read_bytes() == payload
+            assert any('/chunks/' in path for path in fetched), fetched
+        print('Codes write policy changed through the settings API; previous Git contents restored')
         print('Workspace creation, immutable storage, credential refresh and history after restart passed')
     finally:
         if daemon and daemon.poll() is None:

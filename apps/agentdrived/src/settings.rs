@@ -46,7 +46,7 @@ pub fn use_database_settings(settings: &ConfigStore, db: &LocalBackend) -> Resul
 
 fn remote_storage(config: &RemoteConfig, db: &LocalBackend) -> Result<Arc<RemoteStorage>> {
     let files: Arc<dyn agentdrive_ports::RemoteObjectStore> = match config {
-        RemoteConfig::S3(config) => S3Backend::new(config.clone())?,
+        RemoteConfig::S3(config) => S3Backend::file_store(config.clone(), Arc::new(db.clone()))?,
         RemoteConfig::OpenCsg(config) => {
             OpenCsgBackend::file_store(config.clone(), Arc::new(db.clone()))?
         }

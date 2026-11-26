@@ -1,4 +1,4 @@
-use crate::LocalBackend;
+use crate::{LocalBackend, node_index};
 use agentdrive_model::*;
 use agentdrive_ports::*;
 use async_trait::async_trait;
@@ -41,6 +41,7 @@ pub(crate) fn initialize(connection: &mut Connection, version: u32) -> Result<Lo
         transaction
             .execute_batch(include_str!("schema.sql"))
             .map_err(sql_error)?;
+        node_index::migrate(&transaction)?;
         migrate_replicated_operations(&transaction)?;
         transaction.commit().map_err(sql_error)?;
         return Ok(location);
@@ -50,11 +51,9 @@ pub(crate) fn initialize(connection: &mut Connection, version: u32) -> Result<Lo
         .execute_batch(include_str!("schema.sql"))
         .map_err(sql_error)?;
     transaction
-        .execute_batch(include_str!("node_queries.sql"))
-        .map_err(sql_error)?;
-    transaction
         .execute_batch(include_str!("object_usage.sql"))
         .map_err(sql_error)?;
+    node_index::migrate(&transaction)?;
     let location = LocationId::new();
     transaction
         .execute(
@@ -290,14 +289,42 @@ fn upsert<T: Serialize>(
     Ok(())
 }
 
-fn put_node(transaction: &Transaction<'_>, branch: BranchId, node: &Node) -> Result<()> {
-    transaction.execute("INSERT INTO nodes(branch,path,inode,data,parent) VALUES(?1,?2,?3,?4,?5) ON CONFLICT(branch,path) DO UPDATE SET inode=excluded.inode,data=excluded.data,parent=excluded.parent",
-        params![branch.to_string(), node.path.lookup_key(), db_integer(node.inode.id.0)?, encode(node)?, node.path.parent().map(|p| p.lookup_key())]).map_err(sql_error)?;
-    Ok(())
-}
-
 #[async_trait]
 impl LocalStateStore for LocalBackend {
+    fn set_tree_reader(&self, reader: std::sync::Weak<dyn RevisionReader>) {
+        *self.inner.tree_reader.lock() = Some(reader);
+    }
+
+    async fn compact_node_views(&self) -> Result<()> {
+        self.db(|db| {
+            let tx = db.transaction().map_err(sql_error)?;
+            let changed = tx
+                .execute(
+                    "DELETE FROM metadata WHERE key='node_compaction_pending'",
+                    [],
+                )
+                .map_err(sql_error)?;
+            if changed == 0 {
+                return Ok(());
+            }
+            tx.execute_batch(include_str!("node_compact.sql"))
+                .map_err(sql_error)?;
+            tx.commit().map_err(sql_error)
+        })
+        .await
+    }
+    async fn has_node_view(&self, branch: BranchId) -> Result<bool> {
+        self.db(move |db| {
+            db.query_row(
+                "SELECT EXISTS(SELECT 1 FROM branch_node_views WHERE branch=?1)",
+                [branch.to_string()],
+                |r| r.get(0),
+            )
+            .map_err(sql_error)
+        })
+        .await
+    }
+
     async fn collaboration(&self, branch: BranchId) -> Result<Option<CollaborationRecord>> {
         self.one(
             "SELECT data FROM collaborations WHERE id=?1",
@@ -369,28 +396,33 @@ impl LocalStateStore for LocalBackend {
         .await
     }
     async fn nodes(&self, branch: BranchId) -> Result<Vec<Node>> {
-        self.many(
-            "SELECT data FROM nodes WHERE branch=?1 ORDER BY path",
-            vec![branch.to_string()],
-        )
+        self.with_node_view(branch, move |db| {
+            node_index::many(db, "1", "ORDER BY n.path", &[branch.to_string()])
+        })
         .await
     }
     async fn node_deltas(&self, branch: BranchId) -> Result<Vec<NodeDelta>> {
-        self.db(move |connection| {
-            let mut statement = connection.prepare(
-                "SELECT d.previous,n.data FROM node_deltas d LEFT JOIN nodes n ON n.branch=d.branch AND n.path=d.path WHERE d.branch=?1 ORDER BY d.path"
-            ).map_err(sql_error)?;
-            let rows = statement.query_map([branch.to_string()], |row| {
-                Ok((row.get::<_, Option<Vec<u8>>>(0)?, row.get::<_, Option<Vec<u8>>>(1)?))
-            }).map_err(sql_error)?;
-            rows.map(|row| {
-                let (before, after) = row.map_err(sql_error)?;
-                Ok(NodeDelta {
-                    before: before.map(|value| decode(&value)).transpose()?,
-                    after: after.map(|value| decode(&value)).transpose()?,
+        self.with_node_view(branch, move |db| {
+            let mut query = db
+                .prepare("SELECT path,previous FROM node_deltas WHERE branch=?1 ORDER BY path")
+                .map_err(sql_error)?;
+            let b = branch.to_string();
+            let rows = query
+                .query_map([&b], |r| {
+                    Ok((r.get::<_, String>(0)?, r.get::<_, Option<Vec<u8>>>(1)?))
                 })
-            }).collect()
-        }).await
+                .map_err(sql_error)?;
+            rows.map(|r| {
+                let (path, before) = r.map_err(sql_error)?;
+                let after = node_index::one(db, "n.path=?2", &[b.clone(), path])?;
+                Ok(NodeDelta {
+                    before: before.map(|bytes| decode(&bytes)).transpose()?,
+                    after,
+                })
+            })
+            .collect()
+        })
+        .await
     }
     async fn history_index(&self, branch: BranchId) -> Result<Option<ObjectRef>> {
         self.one(
@@ -400,13 +432,12 @@ impl LocalStateStore for LocalBackend {
         .await
     }
     async fn children(&self, branch: BranchId, parent: &WorkspacePath) -> Result<Vec<Node>> {
-        self.many(
-            "SELECT data FROM nodes WHERE branch=?1 AND parent=?2 ORDER BY path",
-            vec![branch.to_string(), parent.lookup_key()],
-        )
+        let args = [branch.to_string(), parent.lookup_key()];
+        self.with_node_view(branch, move |db| {
+            node_index::many(db, "n.parent=?2", "ORDER BY n.path", &args)
+        })
         .await
     }
-
     async fn children_page(
         &self,
         branch: BranchId,
@@ -414,33 +445,54 @@ impl LocalStateStore for LocalBackend {
         after: Option<&WorkspacePath>,
         limit: usize,
     ) -> Result<Vec<Node>> {
-        self.many(
-            "SELECT data FROM nodes WHERE branch=?1 AND parent=?2 AND path>?3 ORDER BY path LIMIT ?4",
-            vec![branch.to_string(), parent.lookup_key(), after.map(WorkspacePath::lookup_key).unwrap_or_default(), limit.to_string()],
-        ).await
+        let args = [
+            branch.to_string(),
+            parent.lookup_key(),
+            after.map(WorkspacePath::lookup_key).unwrap_or_default(),
+            limit.to_string(),
+        ];
+        self.with_node_view(branch, move |db| {
+            node_index::many(
+                db,
+                "n.parent=?2 AND n.path>?3",
+                "ORDER BY n.path LIMIT ?4",
+                &args,
+            )
+        })
+        .await
     }
-
     async fn subtree(&self, branch: BranchId, path: &WorkspacePath) -> Result<Vec<Node>> {
         if path.is_root() {
             return self.nodes(branch).await;
         }
         let key = path.lookup_key();
-        // '/' 后继字符为 '0'，范围查询不会把相似前缀的兄弟目录包含进来。
-        self.many("SELECT data FROM nodes WHERE branch=?1 AND path=?2 UNION ALL SELECT data FROM nodes WHERE branch=?1 AND path>=?3 AND path<?4",
-            vec![branch.to_string(), key.clone(), format!("{key}/"), format!("{key}0")]).await
+        let args = [
+            branch.to_string(),
+            key.clone(),
+            format!("{key}/"),
+            format!("{key}0"),
+        ];
+        self.with_node_view(branch, move |db| {
+            node_index::many(
+                db,
+                "n.path=?2 OR (n.path>=?3 AND n.path<?4)",
+                "ORDER BY n.path",
+                &args,
+            )
+        })
+        .await
     }
-
     async fn usage(&self, branch: BranchId) -> Result<WorkingTreeUsage> {
-        self.db(move |connection| {
-            let value: Option<(i64, i64)> = connection
+        self.with_node_view(branch, move |db| {
+            let (inodes, bytes) = db
                 .query_row(
-                    "SELECT inodes,bytes FROM node_usage WHERE branch=?1",
+                    "SELECT inodes,bytes FROM branch_node_views WHERE branch=?1",
                     [branch.to_string()],
-                    |row| Ok((row.get(0)?, row.get(1)?)),
+                    |r| Ok((r.get(0)?, r.get(1)?)),
                 )
                 .optional()
-                .map_err(sql_error)?;
-            let (inodes, bytes) = value.unwrap_or_default();
+                .map_err(sql_error)?
+                .unwrap_or_default();
             Ok(WorkingTreeUsage {
                 inodes: unsigned_integer(inodes)?,
                 bytes: unsigned_integer(bytes)?,
@@ -448,20 +500,16 @@ impl LocalStateStore for LocalBackend {
         })
         .await
     }
-
     async fn node(&self, branch: BranchId, inode: InodeId) -> Result<Option<Node>> {
-        self.one(
-            "SELECT data FROM nodes WHERE branch=?1 AND inode=?2",
-            vec![branch.to_string(), inode.0.to_string()],
-        )
+        self.with_node_view(branch, move |db| {
+            node_index::one(db, "n.inode=?2", &[branch.to_string(), inode.0.to_string()])
+        })
         .await
     }
     async fn node_at(&self, branch: BranchId, path: &WorkspacePath) -> Result<Option<Node>> {
-        self.one(
-            "SELECT data FROM nodes WHERE branch=?1 AND path=?2",
-            vec![branch.to_string(), path.lookup_key()],
-        )
-        .await
+        let args = [branch.to_string(), path.lookup_key()];
+        self.with_node_view(branch, move |db| node_index::one(db, "n.path=?2", &args))
+            .await
     }
     async fn revision(&self, id: RevisionId) -> Result<Option<Revision>> {
         self.one(
@@ -615,6 +663,17 @@ impl LocalStateStore for LocalBackend {
     }
 
     async fn commit(&self, commit: LocalCommit) -> Result<()> {
+        let edited = commit
+            .node_changes
+            .iter()
+            .filter_map(|change| match change {
+                NodeChange::Put { branch, .. } | NodeChange::Remove { branch, .. } => Some(*branch),
+                _ => None,
+            })
+            .collect::<std::collections::BTreeSet<_>>();
+        for branch in edited {
+            self.ensure_node_view(branch).await?;
+        }
         self.db(move |connection| {
             let transaction = connection.transaction().map_err(sql_error)?;
             for guard in &commit.guards { check_guard(&transaction, guard)?; }
@@ -648,22 +707,19 @@ impl LocalStateStore for LocalBackend {
                 ensure_root(&transaction, branch.workspace, &branch.working_root)?;
                 upsert(&transaction, "branches", branch.id.to_string(), branch.workspace, branch)?;
             }
+            if !commit.node_changes.is_empty() {
+                node_index::schedule_compaction(&transaction)?;
+            }
             for change in &commit.node_changes {
                 match change {
-                    NodeChange::Put { branch, node } => {
-                        remember_node(&transaction, *branch, &node.path)?;
-                        put_node(&transaction, *branch, node)?;
-                    }
-                    NodeChange::Remove { branch, path } => {
-                        remember_node(&transaction, *branch, path)?;
-                        transaction.execute("DELETE FROM nodes WHERE branch=?1 AND path=?2", params![branch.to_string(), path.lookup_key()]).map_err(sql_error)?;
-                    }
-                    NodeChange::Replace { branch, nodes } => {
-                        transaction.execute("DELETE FROM nodes WHERE branch=?1", [branch.to_string()]).map_err(sql_error)?;
-                        for node in nodes { put_node(&transaction, *branch, node)?; }
-                        transaction.execute("DELETE FROM node_deltas WHERE branch=?1", [branch.to_string()]).map_err(sql_error)?;
-                    }
+                    NodeChange::Put {branch,node} => node_index::change(&transaction,*branch,&node.path,Some(node))?,
+                    NodeChange::Remove {branch,path} => node_index::change(&transaction,*branch,path,None)?,
+                    NodeChange::Share {branch,workspace,root} => node_index::share(&transaction,*branch,*workspace,root)?,
+                    NodeChange::Replace {branch,nodes} => node_index::replace(&transaction,*branch,nodes)?,
                 }
+            }
+            for branch in commit.new_branches.iter().chain(&commit.branches) {
+                node_index::save(&transaction,branch)?;
             }
             for branch in &commit.checkpointed_branches {
                 transaction.execute("DELETE FROM node_deltas WHERE branch=?1", [branch.to_string()]).map_err(sql_error)?;
@@ -714,18 +770,6 @@ impl LocalStateStore for LocalBackend {
             Ok(())
         }).await
     }
-}
-
-fn remember_node(
-    transaction: &Transaction<'_>,
-    branch: BranchId,
-    path: &WorkspacePath,
-) -> Result<()> {
-    transaction.execute(
-        "INSERT OR IGNORE INTO node_deltas(branch,path,previous) VALUES(?1,?2,(SELECT data FROM nodes WHERE branch=?1 AND path=?2))",
-        params![branch.to_string(), path.lookup_key()],
-    ).map_err(sql_error)?;
-    Ok(())
 }
 
 fn put_history(transaction: &Transaction<'_>, reference: &BranchRef) -> Result<()> {
@@ -862,37 +906,34 @@ mod query_tests {
             .unwrap();
         let first = node("/Src/CAFÉ", 2, 5);
         let transaction = connection.transaction().unwrap();
-        put_node(&transaction, branch, &first).unwrap();
+        node_index::replace(&transaction, branch, std::slice::from_ref(&first)).unwrap();
         transaction.commit().unwrap();
         let parent: String = connection
-            .query_row("SELECT parent FROM nodes", [], |row| row.get(0))
+            .query_row("SELECT parent FROM node_versions", [], |row| row.get(0))
             .unwrap();
         assert_eq!(parent, "/src");
         let usage = |db: &Connection| -> (i64, i64) {
-            db.query_row("SELECT inodes,bytes FROM node_usage", [], |row| {
+            db.query_row("SELECT inodes,bytes FROM branch_node_views", [], |row| {
                 Ok((row.get(0)?, row.get(1)?))
             })
             .unwrap()
         };
         assert_eq!(usage(&connection), (1, 5));
-        {
-            let tx = connection.transaction().unwrap();
-            put_node(&tx, branch, &node("/Src/CAFÉ", 2, 9)).unwrap();
-            put_node(&tx, branch, &node("/other", 3, 7)).unwrap();
-            assert_eq!(usage(&tx), (2, 16));
-            // 事务中任何失败都不能留下已更新的容量统计。
-            assert!(put_node(&tx, branch, &node("/duplicate", 3, 99)).is_err());
-            tx.rollback().unwrap();
-        }
+        let tx = connection.transaction().unwrap();
+        let updated = node("/Src/CAFÉ", 2, 9);
+        node_index::change(&tx, branch, &updated.path, Some(&updated)).unwrap();
+        let other = node("/other", 3, 7);
+        node_index::change(&tx, branch, &other.path, Some(&other)).unwrap();
+        assert_eq!(usage(&tx), (2, 16));
+        let duplicate = node("/duplicate", 3, 99);
+        assert!(node_index::change(&tx, branch, &duplicate.path, Some(&duplicate)).is_err());
+        tx.rollback().unwrap();
         assert_eq!(usage(&connection), (1, 5));
-        {
-            let tx = connection.transaction().unwrap();
-            tx.execute("DELETE FROM nodes WHERE branch=?1", [branch.to_string()])
-                .unwrap();
-            put_node(&tx, branch, &node("/new", 4, 12)).unwrap();
-            tx.commit().unwrap();
-        }
-        assert_eq!(usage(&connection), (1, 12));
+        let tx = connection.transaction().unwrap();
+        node_index::change(&tx, branch, &first.path, None).unwrap();
+        let new = node("/new", 4, 12);
+        node_index::change(&tx, branch, &new.path, Some(&new)).unwrap();
+        tx.commit().unwrap();
         initialize(&mut connection, FORMAT_VERSION).unwrap();
         assert_eq!(usage(&connection), (1, 12));
     }

@@ -3,6 +3,7 @@
 mod batch;
 mod history;
 mod merge_history;
+mod node_index;
 mod objects;
 mod server;
 pub use server::{DatabaseStorage, ServerSettings};
@@ -29,6 +30,8 @@ pub struct LocalBackend {
 }
 
 struct Inner {
+    tree_reader: Mutex<Option<std::sync::Weak<dyn agentdrive_ports::RevisionReader>>>,
+    node_hydration: tokio::sync::Mutex<()>,
     root: PathBuf,
     database_metadata: bool,
     connection: Mutex<Connection>,
@@ -104,6 +107,8 @@ impl LocalBackend {
         sync_directory(&root)?;
         Ok(Self {
             inner: Arc::new(Inner {
+                tree_reader: Mutex::default(),
+                node_hydration: Default::default(),
                 root,
                 database_metadata,
                 connection: Mutex::new(connection),

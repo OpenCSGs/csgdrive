@@ -188,19 +188,14 @@ impl RevisionService {
         }
         let replacing = request.replace_root.is_some();
         let captured = if let Some(root) = request.replace_root {
-            let tree = self.trees.tree(branch.workspace, &root).await?;
+            branch.next_inode = branch
+                .next_inode
+                .max(self.trees.next_inode(branch.workspace, &root).await?);
             CapturedTree {
                 branch: branch.clone(),
                 root,
                 captured_seq: increment(branch.mutation_seq)?,
-                nodes: tree
-                    .into_iter()
-                    .map(|(path, inode)| Node {
-                        path,
-                        inode,
-                        dirty: false,
-                    })
-                    .collect(),
+                nodes: Vec::new(),
             }
         } else {
             self.snapshots.capture(&branch).await?
@@ -319,9 +314,10 @@ impl RevisionService {
             branches: vec![branch.clone()],
             revisions: revision.into_iter().collect(),
             node_changes: if replacing {
-                vec![NodeChange::Replace {
+                vec![NodeChange::Share {
                     branch: branch.id,
-                    nodes: captured.nodes,
+                    workspace: branch.workspace,
+                    root: branch.working_root.clone(),
                 }]
             } else {
                 captured
@@ -445,9 +441,8 @@ impl RevisionService {
         validate_label(&name, "branch name")?;
         let revision = self.trees.revision(workspace, source.revision).await?;
         let root = source.working_root.unwrap_or_else(|| revision.root.clone());
-        let tree = self.trees.tree(workspace, &root).await?;
+        let next_inode = self.trees.next_inode(workspace, &root).await?;
         let id = BranchId::new();
-        let next_inode = increment(tree.values().map(|inode| inode.id.0).max().unwrap_or(1))?;
         let branch = Branch {
             id,
             workspace,
@@ -493,16 +488,10 @@ impl RevisionService {
                     Vec::new()
                 },
                 new_branches: vec![branch.clone()],
-                node_changes: vec![NodeChange::Replace {
+                node_changes: vec![NodeChange::Share {
                     branch: id,
-                    nodes: tree
-                        .into_iter()
-                        .map(|(path, inode)| Node {
-                            path,
-                            inode,
-                            dirty: false,
-                        })
-                        .collect(),
+                    workspace,
+                    root,
                 }],
                 operations: vec![operation.clone()],
                 sync_jobs: vec![job],

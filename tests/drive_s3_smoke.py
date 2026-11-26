@@ -117,16 +117,17 @@ def run(binary, daemon):
         with urllib.request.urlopen(req, timeout=10) as response:
             return json.load(response)
 
-    def start(directory):
-        if daemon:
+    def start(directory, *, dashboard):
+        if dashboard:
+            server_binary = binary if daemon else binary.with_name("agentdrived" + binary.suffix)
             config = Path(directory) / "agentdrive.json"
             if not config.exists():
-                subprocess.run([binary, "init", "--directory", directory, "--listen", f"127.0.0.1:{ui_port}"], check=True)
-            process = subprocess.Popen([binary, "serve", "--config", config, "--drive-s3-listen", f"127.0.0.1:{s3_port}",
+                subprocess.run([server_binary, "init", "--directory", directory, "--listen", f"127.0.0.1:{ui_port}"], check=True)
+            process = subprocess.Popen([server_binary, "serve", "--config", config, "--drive-s3-listen", f"127.0.0.1:{s3_port}",
                                         "--drive-s3-admin-port", str(admin_port)],
                                        env={**os.environ, "DRIVE_S3_ACCESS_KEY": "drive-demo", "DRIVE_S3_SECRET_KEY": "drive-demo-secret"})
         else:
-            process = subprocess.Popen([binary, "--data-dir", directory, "--listen", f"127.0.0.1:{s3_port}",
+            process = subprocess.Popen([binary, "--data-dir", Path(directory) / "state", "--listen", f"127.0.0.1:{s3_port}",
                                         "--admin-port", str(admin_port)])
         try:
             deadline = time.monotonic() + 15
@@ -148,12 +149,42 @@ def run(binary, daemon):
         process.terminate()
         process.wait(timeout=10)
 
+    def provision_workspace():
+        def post(path, **fields):
+            req = urllib.request.Request(ui + path, json.dumps(fields).encode(), {"Content-Type": "application/json"})
+            with urllib.request.urlopen(req, timeout=15) as response:
+                record = json.load(response)
+                assert record["local_saved"] and not record.get("error"), record
+                return record
+
+        workspace = post("/api/workspaces", request_id="create-shared", name="shared")
+        branches = {"main": workspace["branch"]}
+        for name in ("work", "editable"):
+            branch = post("/api/commands/branch_create", request_id="fork-" + name,
+                          request={"workspace": workspace["workspace"], "source_branch": branches["main"], "name": name})
+            branches[name] = branch["branch"]
+        return workspace["workspace"], branches
+
     a, b = "sandbox-alpha", "sandbox-beta"
     with tempfile.TemporaryDirectory() as directory:
-        process = start(directory)
+        process = start(directory, dashboard=True)
         try:
+            workspace, branches = provision_workspace()
+            if not daemon:
+                stop(process)
+                process = start(directory, dashboard=False)
+
+            def bind(bucket, branch, **kwargs):
+                return manage("bind_ids", bucket=bucket, workspace_id=workspace, branch_id=branches[branch], **kwargs)
+
+            try:
+                manage("bind", bucket="typo", workspace="shaerd", branch="work")
+            except urllib.error.HTTPError as error:
+                assert error.code == 422, error
+            else:
+                raise AssertionError("the mount endpoint accepted a name-based provisioning request")
             for bucket in (a, b):
-                manage("bind", bucket=bucket, workspace="shared", branch="work")
+                bind(bucket, "work")
             assert manage("status", bucket=a)["branch_id"] == manage("status", bucket=b)["branch_id"]
             manage("acquire", bucket=a)
             key, data = "目录/file 1+%.txt", b"shared bytes"
@@ -191,9 +222,8 @@ def run(binary, daemon):
             s3.put_object(Bucket=b, Key="copy", Body=b"new writer")
             assert s3.get_object(Bucket=a, Key="copy")["Body"].read() == b"new writer"
             pair = ("editor-east", "editor-west")
-            session = manage("bind", bucket=pair[0], workspace="shared", branch="editable", write_mode="serialized")
-            session = manage("bind_ids", bucket=pair[1], workspace_id=session["workspace_id"],
-                             branch_id=session["branch_id"], write_mode="serialized")
+            bind(pair[0], "editable", write_mode="serialized")
+            session = bind(pair[1], "editable", write_mode="serialized")
             assert session["writable"] and session["write_mode"] == "serialized"
             s3.put_object(Bucket=pair[0], Key="note.txt", Body=b"east")
             s3.copy_object(Bucket=pair[1], Key="copy", CopySource={"Bucket":pair[1], "Key":"note.txt"})
@@ -217,9 +247,9 @@ def run(binary, daemon):
                 with urllib.request.urlopen(branch_api + "/file?" + query) as response:
                     assert response.read() == b"west"
             other = "sandbox-other"
-            manage("bind", bucket=other, workspace="shared", branch="main")
+            bind(other, "main")
             assert not s3.list_objects_v2(Bucket=other).get("Contents")
-            manage("bind", bucket="sandbox-competitor", workspace="shared", branch="main")
+            bind("sandbox-competitor", "main")
 
             def acquire(bucket):
                 try:
@@ -233,7 +263,7 @@ def run(binary, daemon):
                 assert sorted(executor.map(acquire, (other, "sandbox-competitor"))) == ["reader", "writer"]
         finally:
             stop(process)
-        process = start(directory)
+        process = start(directory, dashboard=daemon)
         try:
             assert s3.get_object(Bucket=pair[1], Key="note.txt")["Body"].read() == b"west"
             status = manage("status", bucket=a)

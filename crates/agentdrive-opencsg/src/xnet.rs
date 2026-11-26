@@ -2,7 +2,6 @@ use crate::{OpenCsgBackend, http::Repository};
 use agentdrive_config::OpenCsgConfig;
 use agentdrive_model::*;
 use agentdrive_ports::ObjectStream;
-use base64::{Engine as _, engine::general_purpose::STANDARD};
 use reqwest::{Client, Method};
 use serde::Deserialize;
 use serde_json::json;
@@ -12,6 +11,7 @@ use tempfile::NamedTempFile;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use url::Url;
 
+#[derive(Clone)]
 pub(crate) struct Xnet {
     pub(crate) enabled: bool,
     base: Url,
@@ -126,18 +126,6 @@ impl Repository {
             _ => Err(Error::integrity("unknown Codes upload mode")),
         }
     }
-
-    async fn commit_pointer(&self, path: &str, pointer: &[u8]) -> Result<()> {
-        let body = json!({"message":"chore: persist AgentDrive file object", "files":[{
-            "path":path, "action":"create", "content":STANDARD.encode(pointer)
-        }]});
-        self.response::<serde_json::Value>(
-            self.request(Method::POST, &format!("commit/{}", self.branch()))
-                .json(&body),
-        )
-        .await?;
-        Ok(())
-    }
 }
 
 impl OpenCsgBackend {
@@ -145,7 +133,11 @@ impl OpenCsgBackend {
         format!("{}/{workspace}/files/{}", self.prefix, object.id)
     }
 
-    pub(crate) async fn upload_lfs(&self, path: &str, mut source: ObjectStream) -> Result<()> {
+    pub(crate) async fn upload_lfs(
+        &self,
+        path: &str,
+        mut source: ObjectStream,
+    ) -> Result<(String, String)> {
         let temp = NamedTempFile::new()?;
         let mut file = tokio::fs::File::from_std(temp.reopen()?);
         let mut digest = object_hasher(source.reference.kind);
@@ -175,7 +167,8 @@ impl OpenCsgBackend {
             format!("version https://git-lfs.github.com/spec/v1\noid sha256:{oid}\nsize {size}\n");
         let head = self.repository.head().await?;
         if let Some(stored) = self.repository.read(path, &head).await? {
-            return verify_pointer(&stored, pointer.as_bytes());
+            verify_pointer(&stored, pointer.as_bytes())?;
+            return Ok((head, oid));
         }
         self.xnet
             .upload_file(self.repository.branch(), Some(temp.path()), size)
@@ -184,15 +177,17 @@ impl OpenCsgBackend {
         let _write = self.writes.lock().await;
         let head = self.repository.head().await?;
         if let Some(stored) = self.repository.read(path, &head).await? {
-            return verify_pointer(&stored, pointer.as_bytes());
+            verify_pointer(&stored, pointer.as_bytes())?;
+            return Ok((head, oid));
         }
         let result = self
             .repository
-            .commit_pointer(path, pointer.as_bytes())
+            .commit_bytes([(path, pointer.as_bytes())])
             .await;
         let head = self.repository.head().await?;
         if let Some(stored) = self.repository.read(path, &head).await? {
-            return verify_pointer(&stored, pointer.as_bytes());
+            verify_pointer(&stored, pointer.as_bytes())?;
+            return Ok((head, oid));
         }
         result?;
         Err(Error::new(
@@ -202,86 +197,14 @@ impl OpenCsgBackend {
         .retryable())
     }
 
-    pub(crate) async fn native_oid(
-        &self,
-        workspace: WorkspaceId,
-        object: &ObjectRef,
-        head: &str,
-    ) -> Result<Option<String>> {
-        if object.kind != ObjectKind::File || object.size == 0 {
-            return Ok(None);
-        }
-        let path = self.file_object_path(workspace, object);
-        let Some(content) = self.repository.read(&path, head).await? else {
-            return Ok(None);
-        };
-        let text = std::str::from_utf8(&content)
-            .map_err(|_| Error::integrity("invalid Codes LFS pointer"))?;
-        let oid = text
-            .strip_prefix("version https://git-lfs.github.com/spec/v1\noid sha256:")
-            .and_then(|s| s.strip_suffix(&format!("\nsize {}\n", object.size)))
-            .filter(|s| s.len() == 64 && s.bytes().all(|c| c.is_ascii_hexdigit()))
-            .ok_or_else(|| Error::integrity("invalid Codes LFS pointer"))?;
-        Ok(Some(oid.to_owned()))
-    }
-
     pub(crate) async fn download_lfs(
         &self,
-        workspace: WorkspaceId,
+        path: &str,
         object: &ObjectRef,
         revision: &str,
         oid: &str,
     ) -> Result<ObjectStream> {
-        let mut url = self.xnet.base.clone();
-        url.path_segments_mut()
-            .expect("validated URL")
-            .extend(["resolve", revision])
-            .extend(self.file_object_path(workspace, object).split('/'));
-        // Resolve the exact Git commit with repository credentials. Signed data URLs
-        // receive no Authorization, including redirects back to the repository host.
-        let client = &self.xnet.download;
-        let mut request = client.get(url.clone()).bearer_auth(&self.xnet.token);
-        let mut response = None;
-        for _ in 0..6 {
-            let result = request.send().await.map_err(|_| download_error())?;
-            if !result.status().is_redirection() {
-                response = Some(result);
-                break;
-            }
-            let location = result
-                .headers()
-                .get(reqwest::header::LOCATION)
-                .and_then(|header| header.to_str().ok())
-                .ok_or_else(download_error)?;
-            url = url.join(location).map_err(|_| download_error())?;
-            let allowed =
-                url.scheme() == "https" || (url.scheme() == "http" && self.xnet.allow_http);
-            if !allowed
-                || url.host_str().is_none()
-                || !url.username().is_empty()
-                || url.password().is_some()
-            {
-                return Err(Error::invalid("invalid Codes file redirect"));
-            }
-            request = client.get(url.clone());
-        }
-        let mut response = response.ok_or_else(download_error)?;
-        match response.status().as_u16() {
-            200 => (),
-            401 | 403 => {
-                return Err(Error::new(
-                    ErrorCode::PermissionDenied,
-                    "Codes file access denied",
-                ));
-            }
-            404 => {
-                return Err(Error::new(
-                    ErrorCode::NotFound,
-                    "Codes file not found at requested commit",
-                ));
-            }
-            _ => return Err(download_error()),
-        }
+        let mut response = self.xnet.resolve(revision, path).await?;
         let temp = NamedTempFile::new()?;
         let mut file = tokio::fs::File::from_std(temp.reopen()?);
         let mut digest = object_hasher(object.kind);
@@ -307,6 +230,61 @@ impl OpenCsgBackend {
             reference: object.clone(),
             reader: Box::pin(reader),
         })
+    }
+}
+
+impl Xnet {
+    pub(crate) async fn resolve(&self, revision: &str, path: &str) -> Result<reqwest::Response> {
+        let mut url = self.base.clone();
+        url.path_segments_mut()
+            .expect("validated URL")
+            .extend(["resolve", revision])
+            .extend(path.split('/'));
+        // Resolve the exact Git commit with repository credentials. Signed data URLs
+        // receive no Authorization, including redirects back to the repository host.
+        let client = &self.download;
+        let mut request = client.get(url.clone()).bearer_auth(&self.token);
+        let mut response = None;
+        for _ in 0..6 {
+            let result = request.send().await.map_err(|_| download_error())?;
+            if !result.status().is_redirection() {
+                response = Some(result);
+                break;
+            }
+            let location = result
+                .headers()
+                .get(reqwest::header::LOCATION)
+                .and_then(|header| header.to_str().ok())
+                .ok_or_else(download_error)?;
+            url = url.join(location).map_err(|_| download_error())?;
+            let allowed = url.scheme() == "https" || (url.scheme() == "http" && self.allow_http);
+            if !allowed
+                || url.host_str().is_none()
+                || !url.username().is_empty()
+                || url.password().is_some()
+            {
+                return Err(Error::invalid("invalid Codes file redirect"));
+            }
+            request = client.get(url.clone());
+        }
+        let response = response.ok_or_else(download_error)?;
+        match response.status().as_u16() {
+            200 => (),
+            401 | 403 => {
+                return Err(Error::new(
+                    ErrorCode::PermissionDenied,
+                    "Codes file access denied",
+                ));
+            }
+            404 => {
+                return Err(Error::new(
+                    ErrorCode::NotFound,
+                    "Codes file not found at requested commit",
+                ));
+            }
+            _ => return Err(download_error()),
+        }
+        Ok(response)
     }
 }
 

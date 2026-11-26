@@ -18,6 +18,8 @@ mod merge_recording;
 mod mount_messages;
 #[path = "workflows/relationships.rs"]
 mod relationships;
+#[path = "workflows/shared_nodes.rs"]
+mod shared_nodes;
 #[path = "workflows/workspace_storage.rs"]
 mod workspace_storage;
 use agentdrive_ports::*;

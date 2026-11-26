@@ -10,6 +10,7 @@ agentdrive-config.workspace = true
 agentdrive-model.workspace = true
 agentdrive-ports.workspace = true
 async-trait.workspace = true
+async-stream = "0.3.6"
 bytes.workspace = true
 futures.workspace = true
 object_store.workspace = true
@@ -27,3 +28,7 @@ workspace = true
 
 [dev-dependencies]
 uuid.workspace = true
+agentdrive-engine.workspace = true
+agentdrive-local.workspace = true
+axum.workspace = true
+tempfile.workspace = true

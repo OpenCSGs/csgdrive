@@ -118,9 +118,9 @@ flowchart TD
 
 `LocalStateStore::usage` 返回当前 branch 的节点数量和逻辑字节数。local 在修改节点的同一个 SQLite 事务内增量更新统计；事务回滚同时恢复统计。engine 负责将统计与 workspace 限额比较。这里的逻辑容量不包含历史对象、下载缓存和临时文件，也不代表宿主机剩余磁盘容量。
 
-`children` 只查询直接子项，使用 `(branch, parent, path)` 索引；`subtree` 按规范化路径范围读取需要移动的节点。检查点捕获读取 `node_deltas`；需要完整工作树的操作和恢复继续使用 `nodes` 查询。create/unlink 提交目标与父目录变化；rename 提交移动的节点、目标替换及父目录变化。目录移动的成本随被移动节点数量增长。
+`children` 使用各目录层的 `(layer, parent, path)` 索引查询直接子项。创建分支时，子分支引用来源目录的固定版本。对子分支路径的新增、修改和删除只记录在子分支目录层。`subtree` 按规范化路径范围读取需要移动的节点；检查点从 `node_deltas` 读取待保存的变化。
 
-SQLite 中的 `parent` 查询列和 `node_usage` 统计由 local 管理。新建数据库在一个事务内创建当前结构、索引、计数和触发器；重新打开时读取已有 location 身份并使用持久化计数。显示路径仍保存在 Node 中，查询键使用 Unicode 规范化与大小写折叠。首个 release 发布前，项目维护单一开发数据结构。
+SQLite 在修改节点的同一个事务中更新 `branch_node_views` 的 inode 数量和文件字节数。节点保存用户看到的路径，查询使用经过 Unicode 规范化和大小写折叠的路径。
 
 同一 branch 的文件操作与快照仍通过 branch 互斥锁协调。不要在适配器中额外实现文件版本规则，也不要绕过该锁修改工作文件。缓存未命中的内容读取和首次修改仍可能在持锁期间下载旧内容；本次优化没有改变这项行为。SQLite 仍使用单连接互斥访问。
 
@@ -170,13 +170,15 @@ object ID 使用 SHA-256 对域分隔标记、格式版本、对象类型和内�
 
 ## 同步与所有权
 
-`meta.db` 中的 `nodes` 记录分支路径，`metadata_objects` 保存目录树和历史索引，`published_refs` 通过 SQL 条件更新保存版本引用。S3 网关收到文件后校验并上传内容，再提交分支的新目录项。确认失败时客户端可重试。操作的 `request_id` 和命名版本由数据库维护。
+`meta.db` 中的 `branch_node_views` 记录分支的目录层，`node_versions` 记录路径与 inode 的关系，`metadata_objects` 保存目录树和历史索引，`published_refs` 通过 SQL 条件更新保存版本引用。发布时数据库直接标记已经保存的元数据。S3 网关确认文件内容已保存到指定后端后，再提交分支的新目录项。确认失败时客户端可重试。操作的 `request_id` 和命名版本由数据库维护。
 
 `s3-sessions.sqlite3` 保存 bucket 与分支的绑定和写入模式。使用 `serialized` 时，多个挂载可以写入，网关在每次发布期间持有该分支的文件锁，写入权交接也使用同一个锁，同时修改一个文件时，最后一次成功提交的内容可见。`exclusive` 保留指定写入方，交接会更新 epoch 并禁止旧挂载继续写入。两种模式均在文件发布时检查写入权限。
 
 ## OpenCSG 和 S3 的内容布局
 
-S3 在工作区前缀下按内容 ID 保存文件字节。OpenCSG Codes 使用配置的 Git 存储分支保存文件数据块；对应的块清单保存在 SQLite 的 `file_manifests`。启用 XNet 后，符合仓库大文件规则的内容经 XNet 上传，Git 保存相应的 LFS 指针。工作区分支和命名版本均通过 AgentDrive 查询。
+S3 在同一工作区内为相同内容保存一个对象。SQLite 记录已验证的对象版本标识及各数据块的摘要。重复写入时，后端标识一致即可复用已有内容。缓存中尚无文件时，范围读取可以只下载和校验覆盖请求的数据块。
+
+OpenCSG Codes 使用配置中的 Git 分支保存文件内容。SQLite 的 `file_placements` 记录每个文件的存储方式和 Git 提交版本。普通文件按内容摘要分块并批量提交。启用 XNet 时，Codes 可为新文件选择 Git LFS。修改上传策略后，已有文件仍按各自的记录读取。用户看到的路径、工作区分支和命名版本由 AgentDrive 查询。
 
 ## 合并
 
@@ -193,7 +195,7 @@ S3 在工作区前缀下按内容 ID 保存文件字节。OpenCSG Codes 使用�
 
 ## 当前分支文件读取
 
-`Dashboard -> BranchFilesApi -> BranchFileService` 提供当前目录和文件读取。服务负责分支读取权限、版本校验和并发读取；`LocalStateStore::children_page` 使用 `(branch, parent, path)` 索引分页查询直接子项，`node_at` 定位单个文件。未保存文件经 `WorkingTreeStore` 读取，已保存对象经 `ContentResolver` 读取，可按需从远端获取。HTTP 层转换参数与字节响应；浏览器负责目录导航、UTF-8 字符边界和二进制展示。
+`Dashboard -> BranchFilesApi -> BranchFileService` 提供当前目录和文件读取。服务负责分支读取权限、版本校验和并发读取；`LocalStateStore::children_page` 使用 `(layer, parent, path)` 索引分页查询直接子项，`node_at` 定位单个文件。未保存文件经 `WorkingTreeStore` 读取，已保存对象经 `ContentResolver` 读取，可按需从远端获取。HTTP 层转换参数与字节响应；浏览器负责目录导航、UTF-8 字符边界和二进制展示。
 
 服务使用分支 ID、authority epoch、generation 和 mutation sequence 生成读取版本。在分支锁内验证版本并读取元数据；未保存文件的有界读取保持分支锁，已保存文件读取期间通过对象保护锁保持对象可用，并释放分支锁。此能力不创建文件句柄、挂载绑定、检查点或 revision。
 

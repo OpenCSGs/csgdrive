@@ -48,6 +48,11 @@ pub struct LocalCommit {
 
 #[derive(Clone, Debug)]
 pub enum NodeChange {
+    Share {
+        branch: BranchId,
+        workspace: WorkspaceId,
+        root: ObjectRef,
+    },
     Put {
         branch: BranchId,
         node: Node,
@@ -135,6 +140,9 @@ pub struct WorkingTreeUsage {
 /// 本地元数据查询与原子提交；权限、配额和发布决策由 engine 负责。
 #[async_trait]
 pub trait LocalStateStore: Send + Sync {
+    fn set_tree_reader(&self, reader: std::sync::Weak<dyn crate::RevisionReader>);
+    async fn compact_node_views(&self) -> Result<()>;
+    async fn has_node_view(&self, branch: BranchId) -> Result<bool>;
     async fn collaboration(&self, branch: BranchId) -> Result<Option<CollaborationRecord>>;
     async fn collaborations(&self, workspace: WorkspaceId) -> Result<Vec<CollaborationRecord>>;
     async fn relationship_snapshot(
@@ -313,10 +321,38 @@ pub enum CasOutcome {
 
 #[async_trait]
 pub trait RemoteObjectStore: Send + Sync {
+    /// Publish metadata already held in the destination database. Other stores need an upload.
+    async fn publish_stored_metadata(
+        &self,
+        _workspace: WorkspaceId,
+        _object: &ObjectRef,
+    ) -> Result<bool> {
+        Ok(false)
+    }
     /// Verify the content endpoint before binding a workspace to it.
     async fn check_file_storage(&self) -> Result<()> {
         Ok(())
     }
+    /// Check an existing file's complete identity when the publisher has evicted its local copy.
+    async fn verified_file_exists(
+        &self,
+        _workspace: WorkspaceId,
+        _object: &ObjectRef,
+    ) -> Result<bool> {
+        Ok(false)
+    }
+
+    /// Return bytes verified against the immutable reference, or None for full-object verification.
+    async fn read_verified_range(
+        &self,
+        _workspace: WorkspaceId,
+        _object: &ObjectRef,
+        _offset: u64,
+        _size: u32,
+    ) -> Result<Option<Bytes>> {
+        Ok(None)
+    }
+
     async fn upload(&self, workspace: WorkspaceId, source: ObjectStream) -> Result<()>;
     async fn download(&self, workspace: WorkspaceId, object: &ObjectRef) -> Result<ObjectStream>;
     async fn contains(&self, workspace: WorkspaceId, object: &ObjectRef) -> Result<bool>;
@@ -334,18 +370,47 @@ pub trait RemoteRefStore: Send + Sync {
     async fn list_branches(&self, workspace: WorkspaceId) -> Result<Vec<BranchId>>;
 }
 
-/// Reconstruction data for a file stored in content-addressed chunks.
+/// An immutable content location, including the Git revision and file representation.
 #[async_trait]
-pub trait FileManifestStore: Send + Sync {
-    async fn file_manifest(
+pub trait FilePlacementStore: Send + Sync {
+    async fn file_placement(
         &self,
         workspace: WorkspaceId,
         file: &ObjectId,
     ) -> Result<Option<Vec<u8>>>;
-    async fn save_file_manifest(
+    async fn save_file_placement(
         &self,
         workspace: WorkspaceId,
         file: &ObjectId,
-        manifest: Vec<u8>,
+        placement: Vec<u8>,
+    ) -> Result<()>;
+}
+
+/// Evidence obtained when a transfer's full digest matched its immutable reference.
+#[derive(Clone, Debug)]
+pub struct ObjectVerification {
+    pub etag: Option<String>,
+    pub version: Option<String>,
+    pub size: u64,
+    /// Concatenated SHA-256 digests of fixed-size blocks.
+    pub hashes: Bytes,
+}
+
+#[async_trait]
+pub trait ObjectVerificationStore: Send + Sync {
+    /// Return only the requested subrange of the digest blob. An empty range loads only the validator.
+    async fn verification(
+        &self,
+        target: &str,
+        workspace: WorkspaceId,
+        object: &ObjectId,
+        digest_bytes: std::ops::Range<u64>,
+    ) -> Result<Option<ObjectVerification>>;
+    async fn save_verification(
+        &self,
+        target: &str,
+        workspace: WorkspaceId,
+        object: &ObjectId,
+        proof: ObjectVerification,
     ) -> Result<()>;
 }

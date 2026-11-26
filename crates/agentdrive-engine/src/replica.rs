@@ -125,9 +125,13 @@ impl ReplicaService {
                     self.uploads.acquire().await.map_err(|_| {
                         Error::new(ErrorCode::Unavailable, "upload scheduler closed")
                     })?;
-                remote
-                    .upload(workspace, self.content.open(workspace, &object).await?)
-                    .await?;
+                if object.kind == ObjectKind::File
+                    || !remote.publish_stored_metadata(workspace, &object).await?
+                {
+                    self.content
+                        .upload_object(remote.as_ref(), workspace, &object)
+                        .await?;
+                }
                 self.content
                     .local
                     .confirm_remote(workspace, &object)

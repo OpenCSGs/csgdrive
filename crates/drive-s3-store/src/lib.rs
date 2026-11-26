@@ -10,12 +10,9 @@ use agentdrive_engine::{Adapters, Engine, EngineConfig};
 use agentdrive_local::LocalBackend;
 use agentdrive_model::{BranchId, BranchState, ErrorCode, Principal, WorkspaceId};
 use agentdrive_platform::{HostDirectories, NativeMountDriver, SystemClock, local_identity};
-use agentdrive_ports::{CreateWorkspace, ForkBranch, RequestContext};
 pub use objects::{ObjectMeta, ObjectReader};
 use serde::{Deserialize, Serialize};
 use std::{fmt, path::Path, sync::Arc};
-use tokio::sync::Mutex;
-use uuid::Uuid;
 
 pub type Result<T> = std::result::Result<T, Error>;
 
@@ -96,7 +93,6 @@ pub struct Store {
     engine: Arc<Engine>,
     principal: Principal,
     leases: Arc<dyn SessionRepository>,
-    bindings: Arc<Mutex<()>>,
 }
 
 impl Store {
@@ -145,124 +141,11 @@ impl Store {
             engine,
             principal,
             leases,
-            bindings: Arc::default(),
         }
     }
 
     pub fn engine(&self) -> Arc<Engine> {
         self.engine.clone()
-    }
-
-    fn request(&self) -> RequestContext {
-        RequestContext {
-            principal: self.principal.clone(),
-            request_id: Uuid::new_v4().to_string(),
-        }
-    }
-
-    pub async fn bind(&self, bucket: &str, workspace: &str, branch: &str) -> Result<SessionStatus> {
-        self.bind_with_mode(bucket, workspace, branch, WriteMode::Exclusive)
-            .await
-    }
-
-    pub async fn bind_with_mode(
-        &self,
-        bucket: &str,
-        workspace: &str,
-        branch: &str,
-        mode: WriteMode,
-    ) -> Result<SessionStatus> {
-        if [bucket, workspace, branch]
-            .iter()
-            .any(|s| s.is_empty() || s.len() > 255 || s.chars().any(char::is_control))
-        {
-            return Err(Error::new(
-                ErrorKind::Invalid,
-                "invalid bucket, workspace or branch name",
-            ));
-        }
-        let _binding = self.bindings.lock().await;
-        match self.status(bucket).await {
-            Ok(old)
-                if old.workspace == workspace && old.branch == branch && old.write_mode == mode =>
-            {
-                return Ok(old);
-            }
-            Ok(_) => {
-                return Err(Error::new(
-                    ErrorKind::Conflict,
-                    "bucket already has a different branch or write mode",
-                ));
-            }
-            Err(e) if e.kind == ErrorKind::NoSuchBucket => (),
-            Err(e) => return Err(e),
-        }
-        let api = &self.engine.services.workspace;
-        let mut matches = api
-            .list(&self.principal)
-            .await?
-            .into_iter()
-            .filter(|w| w.name == workspace && !w.deleted);
-        let id = match (matches.next(), matches.next()) {
-            (_, Some(_)) => {
-                return Err(Error::new(
-                    ErrorKind::Conflict,
-                    "workspace name is ambiguous; use bind_ids",
-                ));
-            }
-            (Some(w), None) => w.id,
-            (None, None) => api
-                .create(
-                    self.request(),
-                    CreateWorkspace {
-                        name: workspace.into(),
-                        grants: vec![],
-                        max_file_bytes: None,
-                        max_working_bytes: None,
-                        max_inodes: None,
-                    },
-                )
-                .await?
-                .workspace
-                .ok_or_else(|| {
-                    Error::new(ErrorKind::Internal, "workspace creation returned no ID")
-                })?,
-        };
-        let branches = self.engine.runtime.state.branches(id).await?;
-        let branch_id = match branches
-            .iter()
-            .find(|b| b.name == branch && b.state != BranchState::Deleted)
-        {
-            Some(b) => b.id,
-            None => {
-                let main = branches
-                    .iter()
-                    .find(|b| b.name == "main" && b.state != BranchState::Deleted)
-                    .ok_or_else(|| {
-                        Error::new(ErrorKind::Conflict, "workspace has no main branch")
-                    })?;
-                self.engine
-                    .services
-                    .revisions
-                    .fork(
-                        self.request(),
-                        ForkBranch {
-                            workspace: id,
-                            source: None,
-                            source_branch: Some(main.id),
-                            name: branch.into(),
-                        },
-                    )
-                    .await?
-                    .branch
-                    .ok_or_else(|| {
-                        Error::new(ErrorKind::Internal, "branch creation returned no ID")
-                    })?
-            }
-        };
-        self.leases
-            .bind(bucket, workspace, branch, id, branch_id, mode)
-            .await
     }
 
     pub async fn bind_ids(
@@ -275,7 +158,6 @@ impl Store {
         if bucket.is_empty() || bucket.len() > 255 || bucket.chars().any(char::is_control) {
             return Err(Error::new(ErrorKind::Invalid, "invalid bucket name"));
         }
-        let _binding = self.bindings.lock().await;
         let record = self
             .engine
             .runtime

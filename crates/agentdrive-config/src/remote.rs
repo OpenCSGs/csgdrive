@@ -57,7 +57,6 @@ impl RemoteConfig {
                 &codes.repository,
                 &codes.branch,
                 &codes.prefix,
-                codes.xnet,
             ))?,
         };
         Ok(format!("{:x}", Sha256::digest(fields)))

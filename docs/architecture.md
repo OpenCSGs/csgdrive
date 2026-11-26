@@ -38,7 +38,7 @@ flowchart LR
   C -->|optional| X(["XNet"])
 ```
 
-Each workspace selects one content backend. Each CSI mount uses a bucket alias that resolves to a workspace ID and branch ID in SQLite. The Archive and MCP share the same engine and can read changes before a named revision is created. Local sandboxes share one daemon. Remote sandboxes connect to the same service.
+Each workspace selects one content backend. Each CSI mount uses a distinct bucket alias bound to existing workspace and branch IDs in SQLite. Creating workspaces and branches is an explicit dashboard or API operation. The Archive and MCP share the same engine and can read changes before a named revision is created. Local sandboxes share one daemon. Remote sandboxes connect to the same service.
 
 ## Module responsibilities
 
@@ -104,9 +104,9 @@ Unique exact-content added/deleted file pairs are reported as renames. Ambiguous
 
 `usage` reads branch inode and logical-byte counters maintained in the same SQLite transaction as node mutations. Rollback restores both. The engine applies workspace limits; these counters do not measure historical objects, cache, temporary files or host free space.
 
-`children` uses the `(branch, parent, path)` index for direct children. `subtree` uses normalized path ranges for directory moves. Checkpoint capture reads `node_deltas`; full `nodes` queries remain for full-tree operations and recovery. Create/unlink update affected nodes and parents; rename changes only the moved subtree, replacement target and parents. Directory moves remain proportional to the moved subtree.
+`children` queries direct children in each visible directory layer using `(layer, parent, path)`. A path added, changed or deleted in a child layer takes precedence over the parent version captured by the fork. `subtree` uses normalized path ranges for directory moves. `node_deltas` records changes awaiting a checkpoint.
 
-The local adapter owns the `parent` projection and `node_usage` table. New databases create the current schema, indexes, counters and triggers in one transaction. Reopening reads the persisted location identity and uses the existing counters. Node display names retain casing; query keys use Unicode normalization and case folding. The project maintains a single development schema before its first release.
+SQLite keeps each branch’s inode and byte counts in the same transaction as its directory changes. Node display names retain their spelling. Query keys use Unicode normalization and case folding.
 
 Branch mutexes still coordinate file operations and snapshots. Cache misses and first writes can download content while holding that mutex. SQLite still uses one mutex-protected connection. These synchronization semantics are unchanged by the query optimizations.
 
@@ -154,13 +154,15 @@ Each state directory persists one `location_id`. Therefore `workspace_selections
 
 ## Replication and ownership
 
-In `meta.db`, `nodes` maps branch paths to inodes, `metadata_objects` stores trees and history indexes, and `published_refs` stores versioned references using conditional SQL updates. For a file PUT the gateway verifies and uploads the content before committing the new branch entry. Clients may retry failed requests. The database records operation IDs and named revisions.
+In `meta.db`, `branch_node_views` selects the directory layer for a branch, `node_versions` maps paths to inodes, `metadata_objects` stores trees and history indexes, and `published_refs` stores versioned references using conditional SQL updates. Database-backed publication marks an existing verified metadata row as published. For a file PUT the gateway confirms the content at its destination before it commits the new branch entry. Clients may retry failed requests. The database records operation IDs and named revisions.
 
 `s3-sessions.sqlite3` stores the mount aliases and write policy. With `serialized`, multiple mounts can edit the branch and the gateway reserves that branch during publication using a file lock shared with ownership transfers. The last successful update to a file becomes visible. With `exclusive`, one holder may publish. Handoff advances the epoch and fences the old mount. Both modes check permission at publication.
 
 ## OpenCSG and S3 content layout
 
-S3 stores file bytes by content ID under the workspace prefix. OpenCSG Codes stores content chunks on the configured Git branch. SQLite stores the chunk manifest in `file_manifests`. With XNet enabled, files that match the repository's large-file rules use XNet transfer and a Git LFS pointer. AgentDrive serves workspace branches and named revisions from its database.
+S3 stores one object per content ID within a workspace. SQLite records the verified object validator and block digests. An unchanged validator allows reuse on a duplicate write. A cold byte-range request can fetch and verify the covering blocks. The local file cache handles warm reads.
+
+OpenCSG Codes uses a configured Git branch for physical storage. SQLite records each file's physical layout and Git revision in `file_placements`. Regular files use batches of content-addressed binary chunks. With XNet enabled, Codes can select Git LFS for a new file. Changing the upload policy keeps existing files readable through their recorded layout. User-facing paths, workspace branches and named revisions are resolved by AgentDrive.
 
 ## Merge
 
@@ -177,7 +179,7 @@ See [configuration and remote storage](configuration.md), [CLI usage](cli.md), a
 
 ## Current branch file reads
 
-`Dashboard -> BranchFilesApi -> BranchFileService` provides current directory and file reads. The service owns branch authorization, version validation and concurrent reads. `LocalStateStore::children_page` uses the `(branch, parent, path)` index to page direct children; `node_at` resolves one file. Unsaved files use `WorkingTreeStore`; saved objects use `ContentResolver`, including remote retrieval when needed. HTTP translates parameters and byte responses. The browser owns directory navigation, UTF-8 boundaries and binary presentation.
+`Dashboard -> BranchFilesApi -> BranchFileService` provides current directory and file reads. The service owns branch authorization, version validation and concurrent reads. `LocalStateStore::children_page` uses the `(layer, parent, path)` index to page direct children; `node_at` resolves one file. Unsaved files use `WorkingTreeStore`; saved objects use `ContentResolver`, including remote retrieval when needed. HTTP translates parameters and byte responses. The browser owns directory navigation, UTF-8 boundaries and binary presentation.
 
 Read versions contain the branch ID, authority epoch, generation and mutation sequence. Version checks and metadata reads run under the branch lock. Bounded working-file reads retain that lock; immutable reads hold the object retention barrier and release the branch lock. Browsing creates no file handles, mount bindings, checkpoints or revisions.
 

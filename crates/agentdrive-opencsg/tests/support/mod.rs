@@ -18,6 +18,10 @@ use std::{
 pub struct Data {
     pub generation: u64,
     pub xnet_token: Option<Value>,
+    pub binary_snapshots: BTreeMap<String, BTreeMap<String, Vec<u8>>>,
+    pub commit_sizes: Vec<usize>,
+    pub fail_batch_before_commit: bool,
+    pub resolved_paths: Vec<String>,
     pub xnet_download: Option<String>,
     pub xnet_upload_mode: Option<String>,
     pub xnet_paths: Vec<String>,
@@ -45,7 +49,13 @@ impl Data {
         self.snapshots.get(&self.head()).unwrap()
     }
     pub fn publish(&mut self, files: BTreeMap<String, String>) {
+        let binaries = self
+            .binary_snapshots
+            .get(&self.head())
+            .cloned()
+            .unwrap_or_default();
         self.generation += 1;
+        self.binary_snapshots.insert(self.head(), binaries);
         self.snapshots.insert(self.head(), files);
     }
 }
@@ -150,6 +160,14 @@ async fn handle(
     }
     if let Some(rest) = uri.path().strip_prefix("/hf/codes/test/storage/resolve/") {
         let (revision, path) = rest.split_once('/').unwrap();
+        data.resolved_paths.push(path.to_owned());
+        if let Some(bytes) = data
+            .binary_snapshots
+            .get(revision)
+            .and_then(|items| items.get(path))
+        {
+            return bytes.clone().into_response();
+        }
         let Some(pointer) = data
             .snapshots
             .get(revision)
@@ -180,12 +198,33 @@ async fn handle(
     }
     if path == "commit/main" && method == Method::POST {
         let request: Value = serde_json::from_slice(&body).unwrap();
-        let file = &request["files"][0];
-        let path = file["path"].as_str().unwrap();
-        let bytes = STANDARD.decode(file["content"].as_str().unwrap()).unwrap();
+        let entries = request["files"].as_array().unwrap();
+        data.commit_sizes.push(entries.len());
+        if std::mem::take(&mut data.fail_batch_before_commit) {
+            return error(StatusCode::SERVICE_UNAVAILABLE);
+        }
         let mut files = data.files().clone();
-        files.insert(path.to_owned(), String::from_utf8(bytes).unwrap());
+        let mut binaries = Vec::new();
+        for file in entries {
+            let path = file["path"].as_str().unwrap();
+            let bytes = STANDARD.decode(file["content"].as_str().unwrap()).unwrap();
+            if path.contains("/chunks/") {
+                // Codes checks pointer-shaped payloads against its LFS object store at commit time.
+                if bytes.starts_with(b"version https://git-lfs.github.com/spec/v1\noid sha256:") {
+                    return error(StatusCode::UNPROCESSABLE_ENTITY);
+                }
+                files.insert(path.to_owned(), "<binary>".to_owned());
+                binaries.push((path.to_owned(), bytes));
+            } else {
+                files.insert(path.to_owned(), String::from_utf8(bytes).unwrap());
+            }
+        }
         data.publish(files);
+        let head = data.head();
+        data.binary_snapshots
+            .get_mut(&head)
+            .unwrap()
+            .extend(binaries);
         if std::mem::take(&mut data.lose_pointer_response) {
             return error(StatusCode::SERVICE_UNAVAILABLE);
         }

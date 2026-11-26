@@ -89,7 +89,9 @@ Create a Codes repository with an initialized Git branch. In the creation reques
 }
 ```
 
-The token must permit reading and writing repository files. The endpoint is an HTTP(S) origin. HTTP requires `allow_http: true`. The Git storage branch defaults to `main` and the prefix to `agentdrive/v1`. Each AgentDrive workspace branch keeps its identity and history in SQLite. Regular files are represented by SHA-256-verified chunks of up to 4 MiB in the repository. The chunk list and its order are in the server database.
+The token must permit reading and writing repository files. The endpoint is an HTTP(S) origin. HTTP requires `allow_http: true`. The Git storage branch defaults to `main` and the prefix to `agentdrive/v1`. Each AgentDrive workspace branch keeps its identity and history in SQLite. SQLite records the repository destination separately from the current XNet setting. You can update `xnet` for this destination through `PUT /api/settings`. The selection applies to new content. Each existing file has a `file_placements` row with its actual format and a fixed Git commit.
+
+For `git_chunks`, Git stores the original binary chunks, up to 4 MiB each. The daemon batches up to 8 MiB of unique content per commit request. Base64 is used once in the JSON request body. A block starting with the Git LFS header gets a reversible one-byte prefix so Codes stores literal pointer text as file content. SQLite keeps the chunk order and SHA-256 digests. A preview or range read fetches and verifies each complete chunk covering that interval at the stored commit.
 
 To use XNet, enable it on the Codes repository, select the XNet checkbox at workspace creation, and install the transfer dependency on the daemon host.
 
@@ -99,7 +101,9 @@ python3 -m venv /opt/agentdrive-xnet
 export AGENTDRIVE_XNET_PYTHON=/opt/agentdrive-xnet/bin/python
 ```
 
-Start the daemon with this environment. Codes classifies each nonempty file with its preupload API. For an LFS file the daemon uploads the bytes through XNet and writes a standard LFS pointer to the repository. Regular files follow the chunk path. AgentDrive verifies the downloaded size and content identifier.
+Start the daemon with this environment. With XNet enabled, Codes classifies each new nonempty object using its size and its Git path, `<prefix>/<workspace UUID>/files/<content ID>`. Rules that depend on the filename extension see this internal Git path. The same bytes have the same object ID when several workspace paths name them.
+
+For `git_lfs`, the daemon uploads through XNet and commits a standard Git LFS pointer. SQLite stores the Git commit, pointer path and LFS SHA-256 OID. Whole-file reads verify both the OID and the AgentDrive content ID. Requests for a cold range use full verification before returning bytes. Changing the XNet setting leaves both formats readable.
 
 ## Share one branch across machines
 

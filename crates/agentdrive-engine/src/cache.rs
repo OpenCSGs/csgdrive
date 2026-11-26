@@ -264,6 +264,7 @@ impl CacheApi for CacheService {
         let Ok(_collection) = self.collecting.try_lock() else {
             return Ok(0);
         };
+        self.runtime.state.compact_node_views().await?;
         let roots = RetentionRoots::from_state(self.runtime.state.retention_state().await?);
         let candidates = self.collection_candidates(&roots).await?;
         let mut reclaimed = 0;

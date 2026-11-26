@@ -138,7 +138,7 @@ fn opencsg_token_is_private_and_only_reused_for_the_same_destination() {
 }
 
 #[test]
-fn codes_destination_is_fixed_across_token_rotation_and_includes_xnet() {
+fn codes_destination_is_independent_of_credentials_and_write_policy() {
     let profile = json!({"backend":"opencsg", "endpoint":"https://codes.example", "repository":"team/files",
         "branch":"main", "prefix":"drive", "token":"first", "xnet":false});
     let target = |profile| {
@@ -151,12 +151,14 @@ fn codes_destination_is_fixed_across_token_rotation_and_includes_xnet() {
     let mut rotated = profile.clone();
     rotated["token"] = json!("second");
     assert_eq!(target(rotated), original);
+    let mut switched = profile.clone();
+    switched["xnet"] = json!(true);
+    assert_eq!(target(switched), original);
     for (field, value) in [
         ("endpoint", json!("https://another.example")),
         ("repository", json!("team/other")),
         ("branch", json!("other")),
         ("prefix", json!("other")),
-        ("xnet", json!(true)),
     ] {
         let mut changed = profile.clone();
         changed[field] = value;
