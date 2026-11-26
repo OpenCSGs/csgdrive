@@ -14,6 +14,16 @@ struct Gateway {
     client: reqwest::Client,
 }
 
+/// Until the kernel reports a mount, cancellation must also stop helper processes.
+struct MountStartup(Option<rustix::process::Pid>);
+impl Drop for MountStartup {
+    fn drop(&mut self) {
+        if let Some(pid) = self.0 {
+            let _ = rustix::process::kill_process_group(pid, rustix::process::Signal::KILL);
+        }
+    }
+}
+
 fn alias(binding: &MountBinding) -> String {
     format!("drive-{}-{:x}", binding.id, binding.generation)
 }
@@ -97,24 +107,52 @@ impl Driver {
         if binding.access == AccessMode::ReadOnly {
             command.args(["-o", "ro"]);
         }
-        // GeeseFS's parent exits after the child has mounted the directory.
-        let output = command
+        // Keep the helper and its mounting subprocess in a private process group.
+        // A denied macFUSE activation can leave both processes waiting indefinitely.
+        let mut child = command
+            .arg("-f")
             .arg(&bucket)
             .arg(&binding.path)
             .stdin(Stdio::null())
-            .output()
-            .await
+            .process_group(0)
+            .spawn()
             .map_err(|e| Error::new(ErrorCode::Io, format!("start geesefs: {e}")))?;
-        if !output.status.success() {
-            return Err(Error::new(
-                ErrorCode::Io,
-                format!(
-                    "GeeseFS mount failed ({}): {}",
-                    output.status,
-                    String::from_utf8_lossy(&output.stderr).trim()
-                ),
-            ));
+        let mut group = MountStartup(
+            child
+                .id()
+                .and_then(|id| rustix::process::Pid::from_raw(id as i32)),
+        );
+        let startup = tokio::time::timeout(Duration::from_secs(20), async {
+            loop {
+                if let Some(status) = child.try_wait()? {
+                    return Err(Error::new(ErrorCode::Io, format!("GeeseFS exited before mounting (status {status}); check the FUSE driver and daemon log")));
+                }
+                if mount_source(&binding.path)?.as_deref() == Some(bucket.as_str()) {
+                    return Ok(());
+                }
+                tokio::time::sleep(Duration::from_millis(50)).await;
+            }
+        }).await.unwrap_or_else(|_| Err(Error::new(ErrorCode::Unavailable,
+            "GeeseFS mount timed out; check the system FUSE driver, mount permissions and daemon log")));
+        if let Err(error) = startup {
+            if child.id().is_none() {
+                group.0 = None;
+            }
+            drop(group);
+            let _ = child.wait().await;
+            if mount_source(&binding.path)?.as_deref() == Some(bucket.as_str()) {
+                detach(&binding.path).await?;
+            }
+            return Err(error);
         }
+        group.0 = None;
+        tokio::spawn(async move {
+            if let Ok(status) = child.wait().await
+                && !status.success()
+            {
+                tracing::warn!(%bucket, %status, "GeeseFS stopped");
+            }
+        });
         Ok(())
     }
 
@@ -143,9 +181,11 @@ impl Driver {
             ));
         }
         let path = binding.path.clone();
-        tokio::task::spawn_blocking(move || std::fs::File::open(path)?.sync_all())
-            .await
-            .map_err(|e| Error::new(ErrorCode::Io, e.to_string()))??;
+        tokio::task::spawn_blocking(move || -> std::io::Result<()> {
+            Ok(rustix::fs::fsync(std::fs::File::open(path)?)?)
+        })
+        .await
+        .map_err(|e| Error::new(ErrorCode::Io, e.to_string()))??;
         Ok(())
     }
 

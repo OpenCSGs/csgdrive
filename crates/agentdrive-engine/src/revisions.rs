@@ -299,7 +299,30 @@ impl RevisionService {
             .publisher
             .build_job(&branch, revision.as_ref(), &operation)
             .await?;
+        let mounts = if replacing {
+            self.runtime
+                .state
+                .mounts()
+                .await?
+                .into_iter()
+                .filter_map(|mut mount| {
+                    if mount.branch == branch.id
+                        && mount.revision.is_none()
+                        && mount.access == AccessMode::ReadWrite
+                        && mount.state != MountState::Released
+                    {
+                        mount.branch_generation = Some(branch.generation);
+                        Some(mount)
+                    } else {
+                        None
+                    }
+                })
+                .collect()
+        } else {
+            Vec::new()
+        };
         let commit = LocalCommit {
+            mounts,
             guards: vec![request.guard],
             branches: vec![branch.clone()],
             revisions: revision.into_iter().collect(),

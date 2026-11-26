@@ -869,6 +869,9 @@ async fn sandbox_reconciliation_does_not_release_a_restarting_branch() {
 #[tokio::test]
 async fn desktop_switch_preserves_running_guest_branch_and_mount() {
     let f = fixture().await;
+    f.mounts
+        .shared_mounts
+        .store(true, std::sync::atomic::Ordering::SeqCst);
     let server = crate::McpServer::new(f.engine.services.clone(), f.owner.clone());
     let desktop = f._directory.path().join("desktop");
     let prepared = server

@@ -130,7 +130,7 @@ def run(binary, *, geesefs=False):
                 if process.poll() is not None:
                     raise RuntimeError(f"server exited with {process.returncode}")
                 try:
-                    with socket.create_connection(("127.0.0.1", admin_port), timeout=.3):
+                    with urllib.request.urlopen(ui + "/api/workspaces", timeout=1):
                         return process
                 except OSError:
                     time.sleep(.05)
@@ -142,7 +142,7 @@ def run(binary, *, geesefs=False):
 
     def stop(process):
         process.terminate()
-        process.wait(timeout=10)
+        assert process.wait(timeout=30) == 0
 
     def post(path, **fields):
         req = urllib.request.Request(ui + path, json.dumps(fields).encode(), {"Content-Type": "application/json"})

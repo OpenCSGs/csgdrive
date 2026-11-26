@@ -2224,9 +2224,7 @@ async fn concurrent_mounts_reuse_location_branch_and_mount() {
         )
         .await
         .unwrap();
-    let second = mounted(other_path);
-    assert_ne!(second.id, binding.id);
-    assert!(!second.follows_selection);
+    assert_eq!(other_path.error.unwrap().code, ErrorCode::MountBusy);
     success(
         harness
             .engine

@@ -312,7 +312,7 @@ impl MountService {
                 "old mount generation changed",
             ));
         }
-        if self.files.open_handles(old.id) != 0 {
+        if !self.supports_shared_writable_mounts() && self.files.open_handles(old.id) != 0 {
             return Err(Error::new(
                 ErrorCode::MountBusy,
                 "close open file handles before releasing the mount",
@@ -684,7 +684,9 @@ impl MountService {
     ) -> Result<OperationRecord> {
         let _gate = self.runtime.lock_branch(target.branch).await;
         self.runtime.check_mutation(target.branch)?;
-        self.runtime.check_sandbox(target.branch)?;
+        if !self.supports_shared_writable_mounts() {
+            self.runtime.check_sandbox(target.branch)?;
+        }
         let _protection = self.runtime.objects.read().await;
         let branch = self.runtime.branch(target.branch).await?;
         check_guard(&branch, &target)?;
@@ -1467,10 +1469,31 @@ impl RevisionTransition for MountService {
         {
             return Ok(current);
         }
+        let mounts = self.runtime.state.mounts().await?;
+        let live: Vec<_> = mounts
+            .into_iter()
+            .filter(|m| {
+                m.branch == target.branch
+                    && m.access == AccessMode::ReadWrite
+                    && m.state != MountState::Released
+            })
+            .collect();
+        // Shared clients keep their branch alias through a restore or merge. Flush
+        // before taking the branch lock because GeeseFS writes through the gateway.
+        let mount = if self.supports_shared_writable_mounts() {
+            for binding in live.iter().filter(|m| m.state == MountState::Ready) {
+                self.driver.flush(binding).await?;
+            }
+            None
+        } else {
+            live.into_iter().next()
+        };
         let record = {
             let _gate = self.runtime.lock_branch(target.branch).await;
             self.runtime.check_mutation(target.branch)?;
-            self.runtime.check_sandbox(target.branch)?;
+            if !self.supports_shared_writable_mounts() {
+                self.runtime.check_sandbox(target.branch)?;
+            }
             let branch = self.runtime.branch(target.branch).await?;
             check_guard(&branch, &target)?;
             self.revisions
@@ -1480,17 +1503,6 @@ impl RevisionTransition for MountService {
             if merge.is_none() {
                 branch.check_write(self.runtime.location, target.authority_epoch)?;
             }
-            let mount = self
-                .runtime
-                .state
-                .mounts()
-                .await?
-                .into_iter()
-                .find(|mount| {
-                    mount.branch == target.branch
-                        && mount.access == AccessMode::ReadWrite
-                        && mount.state != MountState::Released
-                });
             let mut record = current;
             record.error = None;
             record.pending = Some(PendingAction::ApplyRevision {
