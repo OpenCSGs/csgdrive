@@ -4,7 +4,7 @@
 
 ## 请求身份与结果记录
 
-对于命令工具，相同工具和相同参数的重试应复用 `request_id`。请求身份由接收请求的 daemon 和本地 principal 确定，并在重启后保留。冲突复用会返回 `REQUEST_ID_CONFLICT`。命令会在执行记录中的流程前登记操作。`operation_by_request` 查询提交给当前 daemon 的请求；`operation_get` 通过 operation ID 查询结果，也支持从其他节点同步的已发布操作。不同节点可以使用相同的请求名称，同步时会保留每条操作记录。`operation_cancel` 直接接收已有 operation ID，详见 [MCP 参数参考](mcp.zh-CN.md)。
+对于命令工具，相同工具和相同参数的重试应复用 `request_id`。请求身份由接收请求的 daemon 和本地 principal 确定，并在重启后保留。冲突复用会返回 `REQUEST_ID_CONFLICT`。命令会在执行记录中的流程前登记操作。`operation_by_request` 查询提交给当前 daemon 的请求。`operation_get` 通过 operation ID 从服务数据库读取操作记录。`operation_cancel` 直接接收已有 operation ID，详见 [MCP 参数参考](mcp.zh-CN.md)。
 
 升级时，已保存且没有对应本地分支记录的旧操作会转入同步历史，释放请求名称，并保留通过 operation ID 查询的能力。迁移在单个事务中执行一次，也适用于已经创建同步记录表的数据库。旧记录没有来源位置字段；对应分支在本地存在时，包括已经转移或接管的分支，原有请求登记会保留，保证本地命令的幂等性。接管分支中无法确认来源的旧记录仍可能要求新命令使用新的请求名称。
 
@@ -44,13 +44,13 @@
 
 ## 同步、缓存与所有权
 
-`sync` 支持 `push`、`pull` 和 `both`。在新的 location 拉取工作区会导入其历史。首次可写 `mount_prepare` 也会自动导入尚未存在的工作区，并从根分支最新发布的工作根对象创建当前 location 的分支；后续挂载复用本机选择。持有远端历史引用不会获得本地写入所有权。
+同一工作区的客户端连接同一个 AgentDrive 服务。SQLite 保存分支、版本历史和写入方，选定的 S3 或 OpenCSG 后端保存文件内容。新客户端可以在档案室打开已有工作区，也可以使用 workspace ID 和 branch ID 将 CSI 卷绑定到该分支。
 
 使用 `cache_prefetch` 下载指定版本或路径。使用 `cache_pin` 并设置 `enabled: true`，保留完整选择范围，以供离线使用。`cache_status` 会报告内容是否完整以及是否受到保留设置保护。取消保留后，如果不存在其他保护，缓存可以在之后回收。容量回收移除已经获得远端确认、没有活动读取者且没有受保护引用的不可变对象。被后续检查点替代的未确认对象，在检查全部保留引用及活动读取者后也可以回收。
 
-启用 S3 后，通过 `agentdrive.json` 中的 `cache.max_bytes` 调整本地缓存容量。超过容量或磁盘剩余空间低于内部的 64 MiB 阈值时开始清理，容量目标为设置值的 75%。受保护的内容可能使实际占用超过设置容量。仅本地存储的工作区会完整保留历史。工作区存储位置和本地 SQLite 数据库的用途见[配置说明](configuration.zh-CN.md)。
+启用 S3 后，通过 Dashboard 的设置页面或 `PUT /api/settings` 中的 `cache.max_bytes` 调整本地缓存容量。超过容量或磁盘剩余空间低于内部的 64 MiB 阈值时开始清理，容量目标为设置值的 75%。受保护的内容可能使实际占用超过设置容量。仅本地存储的工作区会完整保留历史。工作区存储位置和本地 SQLite 数据库的用途见[配置说明](configuration.zh-CN.md)。
 
-所有权交接在线执行。请在旧 location 停止写入文件，并释放可写挂载。使用当前 `BranchGuard` 和目标 `LocationId` 提交 `ownership_transfer`。旧 location 会停止分支写入，完成发布队列，再更新条件引用。新的 location 通过拉取接管已确认的所有权。远端响应无法确定时，请保留原始交接操作。
+使用独占写入模式时，原写入方停止修改文件，刷新缓冲并检查保存结果。向服务提交 `handoff` 命令，指定原挂载和目标挂载的 bucket 别名。SQLite 记录新的写入方，原别名保留读取权限。两端都需要编辑时，绑定卷时选择 `write_mode: "serialized"`，每次成功保存后都可以通过同一分支查看内容。[S3 操作与命令](../apps/drive-s3/README.md)
 
 ## 合并文件
 

@@ -1,0 +1,31 @@
+[package]
+name = "drive-s3"
+version.workspace = true
+edition.workspace = true
+rust-version = "1.96"
+license.workspace = true
+
+[dependencies]
+agentdrive-model.workspace = true
+tokio-util.workspace = true
+async-trait.workspace = true
+axum.workspace = true
+bytes.workspace = true
+clap.workspace = true
+drive-s3-store = { path = "../../crates/drive-s3-store" }
+futures.workspace = true
+hex.workspace = true
+md-5 = "0.10"
+percent-encoding = "2"
+s3s = "0.17"
+serde.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+uuid.workspace = true
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["test-util"] }
+
+[lints]
+workspace = true

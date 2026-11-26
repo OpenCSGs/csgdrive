@@ -6,7 +6,7 @@ mod server;
 mod web;
 mod workspace_view;
 pub use client::{Client, stdio_proxy};
-pub use gateway::{GatewayConfig, router};
+pub use gateway::{GatewayConfig, router, router_with_routes};
 pub use server::{McpServer, tool_catalog};
 
 mod sandbox_proxy;

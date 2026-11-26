@@ -101,6 +101,8 @@ async function open(t, data = fixture(), target = '/dashboard') {
     } else if (url.pathname === '/api/workspaces/workspace/relationships') {
       const result = typeof data.relationships === 'function' ? await data.relationships(url) : data.relationships || relationshipFixture(data);
       await route.fulfill(result.error ? {status:409, json:result} : {json:result});
+    } else if (url.pathname.endsWith('/s3-mounts')) {
+      await route.fulfill({json:data.s3Mounts?.[url.pathname.split('/').at(-2)] || []});
     } else if (url.pathname.endsWith('/files')) {
       const branch = url.pathname.split('/').at(-2);
       const version = `${branch}:1:1:1`;
@@ -385,6 +387,22 @@ test('archive opens branch contents directly, preserves the mounted selection, a
   await page.goBack();
   await page.waitForFunction(() => document.querySelector('#history-title')?.textContent === 'feature');
   assert.equal(await page.locator('#history-title').textContent(),'feature');
+});
+
+test('archive shows the selected S3 branch write mode and its mount aliases', async t => {
+  const data = fixture();
+  data.s3Mounts = {
+    feature:[{bucket:'desktop-a',write_mode:'serialized'}, {bucket:'desktop-b',write_mode:'serialized'}],
+    main:[{bucket:'owner',write_mode:'exclusive',holder:'owner'}],
+  };
+  const {page} = await open(t, data, '/archive?workspace=workspace&branch=feature');
+  const archive = page.locator('#archive-page');
+  await archive.getByText('2 个挂载已绑定').waitFor();
+  await archive.getByText('desktop-a · desktop-b').waitFor();
+  await archive.getByText(/最后一次成功写入/).waitFor();
+  await archive.locator('[data-branch="main"]').click();
+  await archive.getByText(/当前写入方为 owner/).waitFor();
+  assert.equal(await archive.getByText(/最后一次成功写入/).count(), 0);
 });
 
 test('archive renders safe Markdown, filters files, exposes hidden files and keeps directory links across reload', async t => {

@@ -33,11 +33,15 @@ impl OpenCsgBackend {
         object: &ObjectRef,
         head: &str,
     ) -> Result<Option<Manifest>> {
-        let Some(bytes) = self
-            .repository
-            .read(&self.object_path(workspace, object), head)
-            .await?
-        else {
+        let bytes = match &self.manifests {
+            Some(db) => db.file_manifest(workspace, &object.id).await?,
+            None => {
+                self.repository
+                    .read(&self.object_path(workspace, object), head)
+                    .await?
+            }
+        };
+        let Some(bytes) = bytes else {
             return Ok(None);
         };
         if bytes.len() > MAX_METADATA_BYTES {
@@ -64,7 +68,16 @@ impl OpenCsgBackend {
 
 #[async_trait]
 impl RemoteObjectStore for OpenCsgBackend {
+    async fn check_file_storage(&self) -> Result<()> {
+        self.check_connection().await
+    }
+
     async fn upload(&self, workspace: WorkspaceId, mut source: ObjectStream) -> Result<()> {
+        if self.manifests.is_some() && source.reference.kind != ObjectKind::File {
+            return Err(Error::invalid(
+                "Codes file storage accepts only file contents",
+            ));
+        }
         self.check_connection().await?;
         if self.xnet.enabled
             && source.reference.kind == ObjectKind::File
@@ -116,7 +129,13 @@ impl RemoteObjectStore for OpenCsgBackend {
             object: source.reference,
             chunks,
         };
-        self.create(&path, &encode(&manifest)?).await
+        let bytes = encode(&manifest)?;
+        if let Some(db) = &self.manifests {
+            db.save_file_manifest(workspace, &manifest.object.id, bytes)
+                .await
+        } else {
+            self.create(&path, &bytes).await
+        }
     }
 
     async fn download(&self, workspace: WorkspaceId, object: &ObjectRef) -> Result<ObjectStream> {

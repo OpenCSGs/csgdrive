@@ -1,10 +1,10 @@
-"""Verify two shipped daemons against a disposable, existing S3 test bucket."""
+"""Verify shared clients, database isolation, multipart file storage and restore from S3."""
 import argparse
-import hashlib
 import json
 import os
 from pathlib import Path
 import socket
+import sqlite3
 import subprocess
 import tempfile
 import time
@@ -76,25 +76,6 @@ class Daemon:
         result = self.api('/api/workspaces', {'request_id': str(uuid.uuid4()), 'name': name, 'storage': profile}, 'POST')
         return result['result']['workspace']['id']
 
-    def connect_workspace(self, workspace):
-        settings = self.api('/api/settings')
-        settings['runtime']['workspace_remotes'][workspace] = profile
-        self.api('/api/settings', {'revision': settings['revision'], 'runtime': settings['runtime']}, 'PUT')
-
-    def event(self, binding, turn, phase):
-        return self.api('/api/collaboration/events', {'mount': binding['id'], 'source': 'replica-smoke',
-            'thread_id': binding['workspace'], 'turn_id': turn, 'phase': phase}, 'POST')
-
-    def collaboration(self, binding):
-        states = self.api(f"/api/workspaces/{binding['workspace']}/collaboration")
-        return next(item for item in states if item['branch'] == binding['branch'])
-
-    def disable_collaboration(self):
-        settings = self.api('/api/settings')
-        settings['runtime']['collaboration']['enabled'] = False
-        changed = self.api('/api/settings', {'revision': settings['revision'], 'runtime': settings['runtime']}, 'PUT')
-        assert not changed['runtime']['collaboration']['enabled'], changed
-
     def stop(self):
         if self.process.poll() is None:
             self.process.terminate()
@@ -105,131 +86,50 @@ class Daemon:
                 self.process.wait()
         self.log.close()
 
-def wait_for(description, predicate):
-    deadline = time.monotonic() + 45
-    last = None
-    while time.monotonic() < deadline:
-        try:
-            last = predicate()
-            if last:
-                return
-        except OSError as error:
-            last = str(error)
-        time.sleep(0.2)
-    raise AssertionError((description, last))
-
-def released(daemon, binding):
-    state = daemon.collaboration(binding)
-    return state['phase'] == 'following' and state['writer'] is None and state['remote_confirmed']
-
-with tempfile.TemporaryDirectory(prefix='agentdrive-replica-') as temporary:
+with tempfile.TemporaryDirectory(prefix='agentdrive-shared-') as temporary:
     daemons = []
     try:
-        for name in ['one', 'two']:
-            daemons.append(Daemon(Path(temporary) / name))
-        first, second = daemons
-        workspace = first.create_workspace('replica-integration')
-        for daemon in daemons[1:]:
-            daemon.connect_workspace(workspace)
-        source = first.root / 'exchange' / 'source'
+        first = Daemon(Path(temporary) / 'first')
+        daemons.append(first)
+        workspace = first.create_workspace('shared')
+        source = first.root / 'exchange' / 'incoming'
         source.mkdir()
         payload = bytes(range(251)) * 84000
         (source / 'multipart').write_bytes(payload)
         imported = first.call('workspace_import', {'workspace': workspace, 'source': str(source)}, 'import')
         branch = imported['result']['branch']
-        revision = branch['formal_head']
-        first.call('sync', {'workspace': workspace, 'direction': 'push'}, 'push')
-        receipt = first.call('operation_get', {'operation': imported['id']})
-        assert receipt['remote_confirmed'], receipt
-        second.call('sync', {'workspace': workspace, 'direction': 'pull'}, 'pull')
-        destination = second.root / 'exchange' / 'export'
-        second.call('workspace_export', {'workspace': workspace, 'revision': revision, 'destination': str(destination)}, 'export')
-        assert hashlib.sha256((destination / 'multipart').read_bytes()).digest() == hashlib.sha256(payload).digest()
-        status = second.call('workspace_status', {'workspace': workspace})
-        current = next(item for item in first.call('workspace_status', {'workspace': workspace})['branches'] if item['id'] == branch['id'])
-        guard = {'branch': current['id'], 'authority_epoch': current['authority_epoch'], 'generation': current['generation'], 'expected_head': current['formal_head'], 'mutation_seq': current['mutation_seq']}
-        transfer = first.call('ownership_transfer', {'guard': guard, 'target': status['location']}, 'transfer')
-        assert transfer['remote_confirmed'], transfer
-        second.call('sync', {'workspace': workspace, 'direction': 'pull'}, 'adopt')
-        adopted = next(item for item in second.call('workspace_status', {'workspace': workspace})['branches'] if item['id'] == branch['id'])
-        assert adopted['owner'] == status['location'] and adopted['state'] == 'writable', adopted
-        assert adopted['authority_epoch'] == current['authority_epoch'] + 1
-        if status['capabilities']['platform_mount'] in ('linux-fuse', 'windows-winfsp', 'macos-nfs'):
-            mounted_workspace = first.create_workspace('shared-mounts')
-            for daemon in daemons[1:]:
-                daemon.connect_workspace(mounted_workspace)
-            mount_path = first.root / 'mounts' / 'shared'
-            original = first.call('mount_prepare', {'workspace': mounted_workspace, 'path': str(mount_path)}, 'mount-root')['result']['binding']
-            assert first.api('/api/settings')['runtime']['collaboration']['enabled']
-            first.event(original, 'publish-root', 'started')
-            contents = 'published root content'
-            (mount_path / 'shared.txt').write_text(contents, encoding='utf-8')
-            saved = first.call('mount_save', {'mount': original['id'], 'expected_binding_generation': original['generation'], 'durability': 'remote'}, 'save-root')
-            assert saved['remote_confirmed'], saved
-            first.event(original, 'publish-root', 'completed')
-            wait_for('root publication and authority release', lambda: released(first, original))
-            third = Daemon(Path(temporary) / 'three')
-            daemons.append(third)
-            third.connect_workspace(mounted_workspace)
-            mounts = [(first, original, mount_path)]
-            for remote_daemon in (second, third):
-                assert remote_daemon.api('/api/settings')['runtime']['collaboration']['enabled']
-                remote_path = remote_daemon.root / 'mounts' / 'shared'
-                request = {'workspace': mounted_workspace, 'path': str(remote_path)}
-                mounted = remote_daemon.call('mount_prepare', request, 'mount-location')['result']['binding']
-                assert mounted['branch'] == original['branch'], mounted
-                assert (remote_path / 'shared.txt').read_text(encoding='utf-8') == contents
-                repeated = remote_daemon.call('mount_prepare', request, 'mount-again')['result']['binding']
-                assert repeated == mounted, (repeated, mounted)
-                mounts.append((remote_daemon, mounted, remote_path))
-            for index in (1, 2, 0):
-                writer, binding, writer_path = mounts[index]
-                turn = f'continue-{index}'
-                writer.event(binding, turn, 'started')
-                contents += f'\ncontinued at {writer.root.name}'
-                (writer_path / 'shared.txt').write_text(contents, encoding='utf-8')
-                writer.event(binding, turn, 'completed')
-                wait_for(f'{turn} publication and authority release', lambda: released(writer, binding))
-                for reader, _, reader_path in mounts:
-                    wait_for(f'{reader.root.name} receives {turn}', lambda: (reader_path / 'shared.txt').read_text(encoding='utf-8') == contents)
-                    local_status = reader.call('workspace_status', {'workspace': mounted_workspace})
-                    assert local_status['selected_branch'] == original['branch'], local_status
-                    assert {item['id'] for item in local_status['branches']} == {original['branch']}, local_status
-            print('Default shared branch, three-location turn handoff and automatic S3 publication passed')
+        published = first.call('sync', {'workspace': workspace, 'direction': 'push'}, 'publish')
+        assert not published.get('error'), published
 
-            for daemon, binding, _ in mounts:
-                daemon.disable_collaboration()
-                wait_for(f'{daemon.root.name} disables collaboration', lambda: daemon.collaboration(binding)['phase'] == 'disabled')
-            mounted_workspace = first.create_workspace('manual-location-mounts')
-            for daemon in daemons[1:]:
-                daemon.connect_workspace(mounted_workspace)
-            mount_path = first.root / 'mounts' / 'manual'
-            original = first.call('mount_prepare', {'workspace': mounted_workspace, 'path': str(mount_path)}, 'manual-root')['result']['binding']
-            (mount_path / 'shared.txt').write_text('published root content', encoding='utf-8')
-            saved = first.call('mount_save', {'mount': original['id'], 'expected_binding_generation': original['generation'], 'durability': 'remote'}, 'manual-save-root')
-            assert saved['remote_confirmed'], saved
-            branches = {original['branch']}
-            for remote_daemon in (second, third):
-                remote_path = remote_daemon.root / 'mounts' / 'manual'
-                request = {'workspace': mounted_workspace, 'path': str(remote_path)}
-                mounted = remote_daemon.call('mount_prepare', request, 'manual-location')['result']['binding']
-                assert mounted['branch'] not in branches, mounted
-                branches.add(mounted['branch'])
-                assert (remote_path / 'shared.txt').read_text(encoding='utf-8') == 'published root content'
-                local_status = remote_daemon.call('workspace_status', {'workspace': mounted_workspace})
-                assert local_status['selected_branch'] == mounted['branch'], local_status
-                local_branch = next(item for item in local_status['branches'] if item['id'] == mounted['branch'])
-                assert local_branch['owner'] == local_status['location'], local_branch
-                assert local_branch['source_branch'] == original['branch'], local_branch
-                assert local_branch['base_revision'] == saved['result']['revision'], local_branch
-                repeated = remote_daemon.call('mount_prepare', request, 'manual-again')['result']['binding']
-                assert repeated == mounted, (repeated, mounted)
-                (remote_path / 'local.txt').write_text(local_status['location'], encoding='utf-8')
-                local_saved = remote_daemon.call('mount_save', {'mount': mounted['id'], 'expected_binding_generation': mounted['generation'], 'durability': 'remote'}, 'manual-save-location')
-                assert local_saved['remote_confirmed'], local_saved
-                assert not (mount_path / 'local.txt').exists()
-            print('Explicit global disable, isolated location branches and repeated binding reuse passed')
-        print('Two-daemon S3 replication, multipart content, remote receipts and ownership transfer passed')
+        # A second CLI process and the dashboard query the same daemon.
+        status = first.call('workspace_status', {'workspace': workspace})
+        assert any(row['id'] == branch['id'] for row in status['branches'])
+        listing = first.api(f"/api/workspaces/{workspace}/branches/{branch['id']}/files?path=/")
+        assert any(entry['path'] == '/multipart' for entry in listing['entries']), listing
+        database = first.root / 'state' / 'meta.db'
+        with sqlite3.connect(database) as db:
+            refs = db.execute('SELECT count(*) FROM published_refs WHERE workspace=?', (workspace,)).fetchone()[0]
+            assert refs > 0
+
+        # Use the same destination in an independent database. Its namespace is private.
+        independent = Daemon(Path(temporary) / 'independent')
+        daemons.append(independent)
+        another = independent.create_workspace('independent')
+        assert independent.call('workspace_status', {'workspace': another})['workspace']['id'] == another
+        visible = independent.call('workspace_list', {})
+        assert workspace not in json.dumps(visible), visible
+        # Remove the disposable confirmed cache entry to exercise read-through from S3.
+        with sqlite3.connect(database) as db:
+            [(cached_hash,)] = db.execute(
+                "SELECT hash FROM objects WHERE workspace=? AND size=? AND remote_confirmed=1",
+                (workspace, len(payload))).fetchall()
+        (first.root / 'state' / 'objects' / workspace / cached_hash).unlink()
+        destination = first.root / 'exchange' / 'restored'
+        exported = first.call('workspace_export', {'workspace': workspace, 'revision': branch['formal_head'],
+                                                   'destination': str(destination)}, 'export')
+        assert not exported.get('error'), exported
+        assert (destination / 'multipart').read_bytes() == payload
+        print('Shared CLI and dashboard views, multipart bytes, and independent database namespaces passed')
     finally:
         for daemon in reversed(daemons):
             daemon.stop()

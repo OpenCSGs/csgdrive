@@ -57,6 +57,11 @@ jobs:
         run: |
           python3 tests/lifecycle_smoke.py
           python3 tests/branch_switch_smoke.py
+      - name: Verify shared S3 mounts and the dashboard
+        run: |
+          python3 -m venv "$RUNNER_TEMP/drive-sdk"
+          "$RUNNER_TEMP/drive-sdk/bin/pip" install boto3==1.44.12
+          make -j "$(nproc)" drive-s3-verify PYTHON="$RUNNER_TEMP/drive-sdk/bin/python"
       - name: Start isolated RustFS
         run: |
           docker run -d --name agentdrive-test-s3 -p 127.0.0.1:9000:9000 -e RUSTFS_ACCESS_KEY=AGENTDRIVETESTLOCAL -e RUSTFS_SECRET_KEY=agentdrive-local-integration-secret-2026 rustfs/rustfs@sha256:60f4f2f41ce95216f8cac676e69f9d90c0bfec458a3bc7fd7fb9b7c2452ac57a /data

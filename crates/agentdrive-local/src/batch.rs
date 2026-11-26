@@ -14,6 +14,7 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 pub(crate) struct StagedObject {
     pub reference: ObjectRef,
     temporary: Option<tempfile::TempPath>,
+    metadata: Option<Vec<u8>>,
 }
 
 #[derive(Debug)]
@@ -93,6 +94,25 @@ impl LocalBackend {
         mut reader: ByteStream,
         expected: Option<ObjectRef>,
     ) -> Result<StagedObject> {
+        if self.inner.database_metadata && kind != ObjectKind::File {
+            let mut bytes = Vec::new();
+            reader
+                .take(MAX_METADATA_BYTES as u64 + 1)
+                .read_to_end(&mut bytes)
+                .await?;
+            if bytes.len() > MAX_METADATA_BYTES {
+                return Err(Error::invalid("metadata object exceeds its size limit"));
+            }
+            let reference = object_ref(kind, &bytes);
+            if expected.as_ref().is_some_and(|object| object != &reference) {
+                return Err(Error::integrity("metadata does not match its reference"));
+            }
+            return Ok(StagedObject {
+                reference,
+                temporary: None,
+                metadata: Some(bytes),
+            });
+        }
         let staging = self.inner.root.join("staging");
         let (file, temporary) = self
             .blocking(move |_| Ok(tempfile::NamedTempFile::new_in(staging)?.into_parts()))
@@ -158,6 +178,7 @@ impl LocalBackend {
             return Ok(StagedObject {
                 reference,
                 temporary: None,
+                metadata: None,
             });
         }
         output.sync_all().await?;
@@ -165,6 +186,7 @@ impl LocalBackend {
         Ok(StagedObject {
             reference,
             temporary: Some(temporary),
+            metadata: None,
         })
     }
 
@@ -175,7 +197,7 @@ impl LocalBackend {
     ) -> Result<()> {
         let pending: Vec<_> = objects
             .into_iter()
-            .filter(|object| object.temporary.is_some())
+            .filter(|object| object.temporary.is_some() || object.metadata.is_some())
             .collect();
         if pending.is_empty() {
             return Ok(());
@@ -184,10 +206,17 @@ impl LocalBackend {
             let _guard = backend.inner.object_io.lock();
             let parent = backend.inner.root.join("objects").join(workspace.to_string());
             let existed = parent.is_dir();
-            create_private_dir(&parent)?;
+            let data_files = pending.iter().any(|object| object.temporary.is_some());
+            if data_files {
+                create_private_dir(&parent)?;
+            }
             let mut references = Vec::with_capacity(pending.len());
             for object in pending {
                 let reference = object.reference;
+                if let Some(bytes) = object.metadata {
+                    references.push((reference, Some(bytes)));
+                    continue;
+                }
                 let destination = backend.object_path(workspace, &reference.id);
                 let temporary = object
                     .temporary
@@ -204,18 +233,26 @@ impl LocalBackend {
                     (workspace, reference.id.clone()),
                     (metadata.len(), metadata.modified()?),
                 );
-                references.push(reference);
+                references.push((reference, None));
             }
             // Every staged file is synced before publication. Confirm the entire
             // namespace before exposing any of its references to SQLite commits.
-            sync_directory(&parent)?;
-            if !existed || !backend.inner.durable_directories.lock().contains(&workspace) {
-                sync_directory(&backend.inner.root.join("objects"))?;
-                backend.inner.durable_directories.lock().insert(workspace);
+            if data_files {
+                sync_directory(&parent)?;
+                if !existed || !backend.inner.durable_directories.lock().contains(&workspace) {
+                    sync_directory(&backend.inner.root.join("objects"))?;
+                    backend.inner.durable_directories.lock().insert(workspace);
+                }
             }
             let mut connection = backend.inner.connection.lock();
             let transaction = connection.transaction().map_err(sql_error)?;
-            for reference in references {
+            for (reference, bytes) in references {
+                if let Some(bytes) = bytes {
+                    transaction.execute(
+                        "INSERT INTO metadata_objects(workspace,hash,data) VALUES(?1,?2,?3) ON CONFLICT DO NOTHING",
+                        params![workspace.to_string(), reference.id.as_str(), bytes]
+                    ).map_err(sql_error)?;
+                }
                 transaction.execute(
                     "INSERT INTO objects(workspace,hash,kind,size,remote_confirmed,last_access_ns) \
                      VALUES(?1,?2,?3,?4,0,?5) ON CONFLICT(workspace,hash) \
@@ -266,17 +303,31 @@ impl LocalBackend {
                 if !eligible {
                     continue;
                 }
-                let path = backend.object_path(entry.workspace, &entry.reference.id);
-                match std::fs::remove_file(&path) {
-                    Ok(()) => (),
-                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => (),
-                    Err(error) => return Err(error.into()),
+                if backend.inner.database_metadata && entry.reference.kind != ObjectKind::File {
+                    // SQL tree pages are durable history. Unpublished, unreachable pages can be reclaimed.
+                    if entry.remote_confirmed {
+                        continue;
+                    }
+                    let deleted = transaction.execute(
+                        "DELETE FROM metadata_objects WHERE workspace=?1 AND hash=?2 AND published=0",
+                        params![entry.workspace.to_string(), entry.reference.id.as_str()],
+                    ).map_err(sql_error)?;
+                    if deleted == 0 {
+                        continue;
+                    }
+                } else {
+                    let path = backend.object_path(entry.workspace, &entry.reference.id);
+                    match std::fs::remove_file(&path) {
+                        Ok(()) => (),
+                        Err(error) if error.kind() == std::io::ErrorKind::NotFound => (),
+                        Err(error) => return Err(error.into()),
+                    }
+                    directories.insert(
+                        path.parent()
+                            .ok_or_else(|| Error::integrity("object path has no parent"))?
+                            .to_owned(),
+                    );
                 }
-                directories.insert(
-                    path.parent()
-                        .ok_or_else(|| Error::integrity("object path has no parent"))?
-                        .to_owned(),
-                );
                 transaction
                     .execute(
                         "DELETE FROM objects WHERE workspace=?1 AND hash=?2",

@@ -313,6 +313,10 @@ pub enum CasOutcome {
 
 #[async_trait]
 pub trait RemoteObjectStore: Send + Sync {
+    /// Verify the content endpoint before binding a workspace to it.
+    async fn check_file_storage(&self) -> Result<()> {
+        Ok(())
+    }
     async fn upload(&self, workspace: WorkspaceId, source: ObjectStream) -> Result<()>;
     async fn download(&self, workspace: WorkspaceId, object: &ObjectRef) -> Result<ObjectStream>;
     async fn contains(&self, workspace: WorkspaceId, object: &ObjectRef) -> Result<bool>;
@@ -328,4 +332,20 @@ pub trait RemoteRefStore: Send + Sync {
     async fn compare_exchange(&self, update: RefUpdate) -> Result<CasOutcome>;
     async fn list_workspaces(&self) -> Result<Vec<WorkspaceId>>;
     async fn list_branches(&self, workspace: WorkspaceId) -> Result<Vec<BranchId>>;
+}
+
+/// Reconstruction data for a file stored in content-addressed chunks.
+#[async_trait]
+pub trait FileManifestStore: Send + Sync {
+    async fn file_manifest(
+        &self,
+        workspace: WorkspaceId,
+        file: &ObjectId,
+    ) -> Result<Option<Vec<u8>>>;
+    async fn save_file_manifest(
+        &self,
+        workspace: WorkspaceId,
+        file: &ObjectId,
+        manifest: Vec<u8>,
+    ) -> Result<()>;
 }

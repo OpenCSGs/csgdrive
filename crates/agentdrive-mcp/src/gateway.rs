@@ -26,6 +26,22 @@ pub struct GatewayConfig {
 }
 
 pub fn router(services: Services, config: GatewayConfig) -> Result<Router> {
+    router_with_routes(
+        services,
+        config,
+        Router::new().route(
+            "/api/workspaces/{workspace}/branches/{branch}/s3-mounts",
+            axum::routing::get(|| async { axum::Json(Vec::<String>::new()) }),
+        ),
+    )
+}
+
+/// Extensions use the dashboard's host, origin and principal checks.
+pub fn router_with_routes(
+    services: Services,
+    config: GatewayConfig,
+    extra: Router,
+) -> Result<Router> {
     if config.allowed_hosts.is_empty() {
         return Err(Error::invalid("MCP requires an explicit host allowlist"));
     }
@@ -45,6 +61,7 @@ pub fn router(services: Services, config: GatewayConfig) -> Result<Router> {
             .with_cancellation_token(config.cancellation.clone()),
     );
     let api = crate::web::api(services.clone())
+        .merge(extra)
         .merge(crate::web::settings_api(
             config.settings.clone(),
             services.clone(),

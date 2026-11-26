@@ -14,6 +14,12 @@ pub(crate) struct BranchFileService {
     working: Arc<dyn WorkingTreeStore>,
 }
 
+impl std::fmt::Debug for BranchFileService {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("BranchFileService").finish_non_exhaustive()
+    }
+}
+
 impl BranchFileService {
     pub(crate) fn new(
         runtime: Arc<Runtime>,
@@ -161,5 +167,98 @@ impl BranchFilesApi for BranchFileService {
             request.size,
         )
         .await
+    }
+}
+
+/// An open read is tied to the selected file contents throughout the transfer.
+pub struct BranchFileReader {
+    pub node: Node,
+    pub version: String,
+    source: FileSource,
+}
+
+impl std::fmt::Debug for BranchFileReader {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("BranchFileReader")
+            .field("path", &self.node.path)
+            .field("version", &self.version)
+            .finish_non_exhaustive()
+    }
+}
+
+enum FileSource {
+    Empty,
+    Stored {
+        content: Arc<dyn ContentResolver>,
+        workspace: WorkspaceId,
+        object: ObjectRef,
+        _retention: tokio::sync::OwnedRwLockReadGuard<()>,
+    },
+    Working {
+        store: Arc<dyn WorkingTreeStore>,
+        file: WorkingFile,
+        _branch: tokio::sync::OwnedMutexGuard<()>,
+    },
+}
+
+impl crate::Engine {
+    pub async fn open_branch_file(
+        &self,
+        actor: &Principal,
+        workspace: WorkspaceId,
+        branch: BranchId,
+        path: &WorkspacePath,
+    ) -> Result<BranchFileReader> {
+        let service = &self.branch_files;
+        let gate = self.runtime.lock_branch(branch).await;
+        let version = service.authorize(actor, workspace, branch, None).await?;
+        let node = service.node(branch, path).await?;
+        let source = if node.inode.kind == FileKind::Directory {
+            FileSource::Empty
+        } else if node.dirty {
+            FileSource::Working {
+                store: service.working.clone(),
+                file: WorkingFile {
+                    workspace,
+                    branch,
+                    inode: node.inode.id,
+                },
+                _branch: gate,
+            }
+        } else {
+            FileSource::Stored {
+                content: service.content.clone(),
+                workspace,
+                object: node
+                    .inode
+                    .content
+                    .clone()
+                    .ok_or_else(|| Error::integrity("file content is missing"))?,
+                _retention: self.runtime.objects.clone().read_owned().await,
+            }
+        };
+        Ok(BranchFileReader {
+            node,
+            version,
+            source,
+        })
+    }
+}
+
+impl BranchFileReader {
+    pub async fn read(&self, offset: u64, size: u32) -> Result<Bytes> {
+        if size > READ_LIMIT {
+            return Err(Error::invalid("file read exceeds chunk size"));
+        }
+        match &self.source {
+            FileSource::Empty => Ok(Bytes::new()),
+            FileSource::Stored {
+                content,
+                workspace,
+                object,
+                ..
+            } => read_content(content.as_ref(), *workspace, object, offset, size).await,
+            FileSource::Working { store, file, .. } => store.read(*file, offset, size).await,
+        }
     }
 }

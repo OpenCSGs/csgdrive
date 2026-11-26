@@ -4,7 +4,7 @@ mod settings;
 use agentdrive_config::{ConfigStore, initialize};
 use agentdrive_engine::{Adapters, Engine, EngineConfig};
 use agentdrive_local::LocalBackend;
-use agentdrive_mcp::{GatewayConfig, router};
+use agentdrive_mcp::{GatewayConfig, router, router_with_routes};
 use agentdrive_model::*;
 use agentdrive_platform::{HostDirectories, NativeMountDriver, SystemClock, local_identity};
 use agentdrive_ports::LocalStateStore;
@@ -31,6 +31,12 @@ enum Command {
     Serve {
         #[arg(long)]
         config: PathBuf,
+        /// Serve branch objects over S3 on this private address.
+        #[arg(long)]
+        drive_s3_listen: Option<SocketAddr>,
+        /// Loopback port for CSI mount configuration.
+        #[arg(long, default_value_t = 19732)]
+        drive_s3_admin_port: u16,
     },
 }
 #[tokio::main]
@@ -54,14 +60,30 @@ async fn run(arguments: Arguments) -> Result<()> {
             println!("{}", path.display());
             Ok(())
         }
-        Command::Serve { config } => serve(ConfigStore::open(&config)?).await,
+        Command::Serve {
+            config,
+            drive_s3_listen,
+            drive_s3_admin_port,
+        } => {
+            serve(
+                ConfigStore::open(&config)?,
+                drive_s3_listen,
+                drive_s3_admin_port,
+            )
+            .await
+        }
     }
 }
-async fn serve(settings: Arc<ConfigStore>) -> Result<()> {
+async fn serve(
+    settings: Arc<ConfigStore>,
+    s3_listen: Option<SocketAddr>,
+    s3_admin_port: u16,
+) -> Result<()> {
     let config = settings.startup();
-    let local = Arc::new(LocalBackend::open(&config.data_dir)?);
+    let local = Arc::new(LocalBackend::open_server(&config.data_dir)?);
+    settings::use_database_settings(&settings, &local)?;
     let driver = NativeMountDriver::new(config.mount_roots.clone())?;
-    let (routes, _) = settings::storage_routes(&settings.live().load().values, None)?;
+    let (routes, _) = settings::storage_routes(&settings.live().load().values, None, &local)?;
     let engine = Engine::open_with_routes(
         Adapters {
             state: local.clone(),
@@ -82,6 +104,7 @@ async fn serve(settings: Arc<ConfigStore>) -> Result<()> {
     .await?;
     settings.set_applier(Arc::new(settings::StorageSettings {
         engine: engine.clone(),
+        metadata: local.as_ref().clone(),
         runtime: tokio::runtime::Handle::current(),
     }))?;
     let cancellation = CancellationToken::new();
@@ -105,14 +128,40 @@ async fn serve(settings: Arc<ConfigStore>) -> Result<()> {
         sandbox_monitor = Some(service);
     }
     let sandbox_service = services.sandbox.clone();
-    let app = router(
-        services,
-        GatewayConfig {
-            allowed_hosts: vec![address.to_string(), format!("localhost:{}", address.port())],
-            settings: settings.clone(),
-            cancellation: cancellation.clone(),
-        },
-    )?;
+    let gateway = GatewayConfig {
+        allowed_hosts: vec![address.to_string(), format!("localhost:{}", address.port())],
+        settings: settings.clone(),
+        cancellation: cancellation.clone(),
+    };
+    let (app, s3) = if let Some(listen) = s3_listen {
+        let required = |key| {
+            std::env::var(key)
+                .ok()
+                .filter(|s| !s.is_empty())
+                .ok_or_else(|| Error::invalid(format!("{key} is required when serving S3")))
+        };
+        let store = Arc::new(
+            drive_s3::Store::from_engine(
+                engine.clone(),
+                &config.data_dir.join("s3-sessions.sqlite3"),
+                config.principal.clone(),
+            )
+            .await
+            .map_err(|e| Error::new(ErrorCode::Io, e.to_string()))?,
+        );
+        let app = router_with_routes(services, gateway, drive_s3::dashboard_routes(store.clone()))?;
+        let s3 = drive_s3::Endpoints::bind(
+            store,
+            listen,
+            s3_admin_port,
+            required("DRIVE_S3_ACCESS_KEY")?,
+            required("DRIVE_S3_SECRET_KEY")?,
+        )
+        .await?;
+        (app, Some(s3))
+    } else {
+        (router(services, gateway)?, None)
+    };
     engine.restore_native_mounts().await?;
     tracing::info!(endpoint = %format!("http://{address}/mcp"), location = %engine.runtime.location, "AgentDrive is ready");
     let mut workers = tokio::task::JoinSet::new();
@@ -205,12 +254,23 @@ async fn serve(settings: Arc<ConfigStore>) -> Result<()> {
         });
     }
     let shutdown = cancellation.clone();
-    let server_result = axum::serve(listener, app)
-        .with_graceful_shutdown(async move {
-            shutdown_signal().await;
-            shutdown.cancel();
-        })
-        .await;
+    let signal = tokio::spawn(async move {
+        shutdown_signal().await;
+        shutdown.cancel();
+    });
+    let server_result = tokio::try_join!(
+        axum::serve(listener, app)
+            .with_graceful_shutdown(cancellation.clone().cancelled_owned())
+            .into_future(),
+        async {
+            if let Some(server) = s3 {
+                server.serve(cancellation.clone()).await?;
+            }
+            Ok(())
+        },
+    )
+    .map(|_| ());
+    signal.abort();
     cancellation.cancel();
     while let Some(result) = workers.join_next().await {
         if let Err(error) = result {

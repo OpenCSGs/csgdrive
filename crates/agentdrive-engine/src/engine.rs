@@ -34,6 +34,7 @@ pub struct Engine {
     workspaces: Arc<WorkspaceService>,
     mounts: Arc<MountService>,
     pub services: Services,
+    pub(crate) branch_files: Arc<crate::branch_files::BranchFileService>,
     pub runtime: Arc<Runtime>,
     pub(crate) revisions: Arc<RevisionService>,
     pub(crate) publisher: Arc<ReplicaService>,
@@ -171,12 +172,13 @@ impl Engine {
             mounts: mounts.clone(),
             operations,
             files,
-            branch_files,
+            branch_files: branch_files.clone(),
         };
         Ok(Arc::new(Self {
             workspaces: workspace,
             mounts,
             services,
+            branch_files,
             runtime,
             revisions,
             publisher,

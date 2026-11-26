@@ -1,3 +1,5 @@
+import { newRequestId } from './ui.js';
+
 export function createCommandPanel({api, element, container, scope, changed, setBusy}) {
   const panel = element('section', 'panel command-panel'); panel.hidden = true;
   panel.setAttribute('aria-label', '操作进度');
@@ -72,7 +74,7 @@ export function createCommandPanel({api, element, container, scope, changed, set
     try {
       let record;
       if (mode === 'release') {
-        active.release_request_id ||= crypto.randomUUID();
+        active.release_request_id ||= newRequestId();
         active.release_request ||= {operation:active.record.id,
           expected_binding_generation:active.record.recovery?.expected_binding_generation ?? active.record.pending.old.generation};
         persist();
@@ -110,7 +112,7 @@ export function createCommandPanel({api, element, container, scope, changed, set
   }
   async function run(tool, request, label) {
     if (running) return;
-    ticket = {tool, request, label, request_id:crypto.randomUUID()}; persist();
+    ticket = {tool, request, label, request_id:newRequestId()}; persist();
     await execute();
   }
   retry.onclick = () => execute(); check.onclick = () => execute('check'); release.onclick = () => execute('release');

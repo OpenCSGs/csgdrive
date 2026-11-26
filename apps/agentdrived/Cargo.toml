@@ -6,6 +6,7 @@ rust-version.workspace = true
 license.workspace = true
 
 [dependencies]
+drive-s3 = { path = "../drive-s3" }
 bytes.workspace = true
 async-trait.workspace = true
 serde.workspace = true

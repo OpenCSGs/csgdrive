@@ -161,6 +161,9 @@ impl LocalObjectStore for LocalBackend {
     }
 
     async fn open(&self, workspace: WorkspaceId, object: &ObjectRef) -> Result<ObjectStream> {
+        if self.inner.database_metadata && object.kind != ObjectKind::File {
+            return self.open_metadata(workspace, object).await;
+        }
         let reference = object.clone();
         let object = object.clone();
         let file = self
@@ -198,6 +201,9 @@ impl LocalObjectStore for LocalBackend {
     }
 
     async fn contains(&self, workspace: WorkspaceId, object: &ObjectRef) -> Result<bool> {
+        if self.inner.database_metadata && object.kind != ObjectKind::File {
+            return self.has_metadata(workspace, object).await;
+        }
         let object = object.clone();
         self.blocking(move |backend| {
             let _guard = backend.inner.object_io.lock();
@@ -219,6 +225,11 @@ impl LocalObjectStore for LocalBackend {
     ) -> Result<Bytes> {
         if size as usize > IO_BUFFER_BYTES * 16 {
             return Err(Error::invalid("read request exceeds the buffer limit"));
+        }
+        if self.inner.database_metadata && object.kind != ObjectKind::File {
+            let bytes = self.metadata_bytes(workspace, object).await?;
+            let start = offset.min(bytes.len() as u64) as usize;
+            return Ok(bytes.slice(start..start.saturating_add(size as usize).min(bytes.len())));
         }
         let object = object.clone();
         self.blocking(move |backend| {

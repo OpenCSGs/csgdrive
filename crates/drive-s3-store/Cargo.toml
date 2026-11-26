@@ -1,0 +1,26 @@
+[package]
+name = "drive-s3-store"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+async-trait.workspace = true
+agentdrive-config.workspace = true
+agentdrive-engine.workspace = true
+agentdrive-local.workspace = true
+agentdrive-model.workspace = true
+agentdrive-platform.workspace = true
+agentdrive-ports.workspace = true
+bytes.workspace = true
+rusqlite.workspace = true
+serde.workspace = true
+tokio.workspace = true
+uuid.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+
+[lints]
+workspace = true

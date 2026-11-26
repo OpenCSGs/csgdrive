@@ -1,5 +1,9 @@
 //! Workspace services. Storage, host integration and transport remain behind ports.
 mod branch_files;
+pub use branch_files::BranchFileReader;
+mod branch_objects;
+pub use branch_objects::{BranchObjectChange, ObjectConditions};
+
 mod cache;
 mod collaboration;
 mod content;

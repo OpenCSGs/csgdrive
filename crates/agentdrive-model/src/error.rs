@@ -7,6 +7,7 @@ pub type Result<T> = std::result::Result<T, Error>;
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
 pub enum ErrorCode {
     InvalidArgument,
+    PreconditionFailed,
     NotFound,
     AlreadyExists,
     NameConflict,

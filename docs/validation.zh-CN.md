@@ -67,9 +67,9 @@ python3 tests/replica_smoke.py
 python3 tests/storage_smoke.py
 ```
 
-后端测试覆盖竞争条件下的引用创建、过期条件更新、空文件、摘要拒绝，以及 20 MiB 对象的分段发布。同步测试会推送导入的版本，在另一个 location 拉取并导出该版本，并通过实际 S3 后端交接分支所有权。启用原生驱动时，还会让三个 location 挂载同一工作区，验证自动导入工作区、从已发布根分支创建自有分支、重复挂载复用分支与关联，以及各自文件内容的独立性。
+后端测试覆盖条件引用创建、旧版本更新、空文件、摘要校验和 20 MiB 分段上传。在测试用的 Python 环境安装 boto3，运行 `make drive-s3-verify`，可以验证同一个服务上的两个 S3 挂载和 Dashboard 读取相同分支，同时验证独占写入交接、按次写入、分段提交和重启恢复。
 
-`storage_smoke.py` 验证 daemon PID 保持不变时的本地/S3 切换、凭据保存、切换失败恢复、配置文件修改、历史导出和重启恢复。
+`storage_smoke.py` 验证每个工作区的内容后端、凭据更新、禁止更换已有工作区后端和重启后导出历史版本。
 
 ## 执行记录
 
@@ -79,7 +79,7 @@ python3 tests/storage_smoke.py
 | 原生挂载文件操作和版本访问 | Linux root 用户与普通用户；安装 WinFsp 2.1 的 Windows；macOS 26.5 内置 NFSv3 客户端 |
 | CLI、stdio MCP、目录元数据、重启恢复 | macOS、Linux、Windows |
 | S3 条件写入和分段内容 | 隔离的 RustFS 实例 |
-| 两个守护进程之间的 S3 同步和所有权交接 | macOS 和 Linux |
+| 两个 S3 挂载别名、分支写入模式和 Dashboard 文件读取 | Linux |
 
 macOS 的原生挂载测试覆盖打开文件时的 turn 交接、交接后的目录与文件读取、旧句柄写入保护、等待 12 秒取得写权限，以及正常重启后恢复挂载。各平台的测试均可在 [GitHub Actions](https://github.com/OpenCSGs/csgdrive/actions) 查看。
 
@@ -94,7 +94,7 @@ python3 tests/config_smoke.py
 
 `lifecycle_smoke.py` 需要原生挂载支持，覆盖 ACP 和 Codex app-server 协议中的完成、取消、失败、进程中断、重复请求、自动保存、daemon 重启、重连、两个 Agent 连接共用挂载，以及已有挂载上的 CLI 分支切换。常规 Rust 测试还覆盖响应正文丢失后的重试、多个连接共用同一个挂载、切换时的文件句柄检查、分支选择持久化和 HTTP 权限。浏览器检查覆盖分支树、版本信息、工作区导航和小屏幕布局。本机 Codex app-server 的 initialize 与 thread/start 已验证工作目录指向 AgentDrive 挂载；完整任务流程通过协议测试程序验证。
 
-`config_smoke.py` 使用临时目录运行 daemon，验证文件热更新、错误配置保留、启动配置修改提示、单个缓存容量字段的 HTTP 保存、版本冲突和重启恢复。该脚本无需挂载驱动。配置测试覆盖已有文件的读取和快照一致性；engine 缓存测试验证修改容量后按 75% 目标清理，并保留当前分支内容。
+`config_smoke.py` 在临时目录启动 daemon，验证设置接口、更新版本冲突，以及重启后从 SQLite 读取已保存设置。该脚本无需挂载驱动。
 
 目录转换测试覆盖新 workspace 的 `main` 初始内容、指定 workspace 导入、Agent 重启确认、原目录备份、无效输入，以及挂载失败和 daemon 重启后的重试。
 

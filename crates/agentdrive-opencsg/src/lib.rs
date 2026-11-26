@@ -15,6 +15,7 @@ pub struct OpenCsgBackend {
     repository: Repository,
     xnet: xnet::Xnet,
     prefix: String,
+    manifests: Option<Arc<dyn agentdrive_ports::FileManifestStore>>,
     verified: OnceCell<()>,
     writes: Mutex<()>,
 }
@@ -29,11 +30,27 @@ impl std::fmt::Debug for OpenCsgBackend {
 
 impl OpenCsgBackend {
     pub fn new(config: OpenCsgConfig) -> Result<Arc<Self>> {
+        Self::open(config, None)
+    }
+
+    /// Store chunk manifests in the server database when using Codes as a file backend.
+    pub fn file_store(
+        config: OpenCsgConfig,
+        manifests: Arc<dyn agentdrive_ports::FileManifestStore>,
+    ) -> Result<Arc<Self>> {
+        Self::open(config, Some(manifests))
+    }
+
+    fn open(
+        config: OpenCsgConfig,
+        manifests: Option<Arc<dyn agentdrive_ports::FileManifestStore>>,
+    ) -> Result<Arc<Self>> {
         config.validate()?;
         Ok(Arc::new(Self {
             repository: Repository::new(&config)?,
             xnet: xnet::Xnet::new(&config)?,
             prefix: config.prefix,
+            manifests,
             verified: OnceCell::new(),
             writes: Mutex::new(()),
         }))
@@ -49,6 +66,10 @@ impl OpenCsgBackend {
     async fn probe(&self) -> Result<()> {
         if self.xnet.enabled {
             self.xnet.check(self.repository.branch()).await?;
+        }
+        if self.manifests.is_some() {
+            self.repository.head().await?;
+            return Ok(());
         }
         let path = format!("{}/checks/{}.json", self.prefix, OperationId::new());
         let create_path = format!("{path}.create");
