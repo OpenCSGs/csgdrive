@@ -1,4 +1,6 @@
-use crate::{BranchId, Error, ErrorKind, Result, SessionStatus, WorkspaceId, WriteMode};
+use crate::{
+    BranchId, Error, ErrorKind, Result, RevisionId, SessionStatus, WorkspaceId, WriteMode,
+};
 use async_trait::async_trait;
 use std::fmt::Debug;
 
@@ -6,6 +8,8 @@ use std::fmt::Debug;
 #[derive(Clone, Debug)]
 pub struct MountSession {
     pub bucket: String,
+    pub revision: Option<RevisionId>,
+    pub read_only: bool,
     pub workspace_id: WorkspaceId,
     pub branch_id: BranchId,
     pub epoch: u64,
@@ -37,6 +41,8 @@ pub trait SessionRepository: Send + Sync + Debug {
         workspace_id: WorkspaceId,
         branch_id: BranchId,
         mode: WriteMode,
+        revision: Option<RevisionId>,
+        read_only: bool,
     ) -> Result<MountSession>;
     async fn branch_mounts(
         &self,
@@ -54,6 +60,7 @@ impl MountSession {
             workspace,
             branch,
             bucket: self.bucket,
+            revision: self.revision,
             workspace_id: self.workspace_id,
             branch_id: self.branch_id,
             epoch: self.epoch,

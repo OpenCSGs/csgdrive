@@ -88,15 +88,29 @@ impl Store {
     pub async fn reader(&self, bucket: &str, key: &str) -> Result<ObjectReader> {
         let (path, kind) = path_and_kind(key)?;
         let session = self.leases.status(bucket).await?;
-        let source = self
-            .engine
-            .open_branch_file(
-                &self.principal,
-                session.workspace_id,
-                session.branch_id,
-                &path,
-            )
-            .await?;
+        let source = match session.revision {
+            Some(revision) => {
+                self.engine
+                    .open_revision_file(
+                        &self.principal,
+                        session.workspace_id,
+                        session.branch_id,
+                        revision,
+                        &path,
+                    )
+                    .await?
+            }
+            None => {
+                self.engine
+                    .open_branch_file(
+                        &self.principal,
+                        session.workspace_id,
+                        session.branch_id,
+                        &path,
+                    )
+                    .await?
+            }
+        };
         let node = &source.node;
         if node.path != path || node.inode.kind != kind {
             return Err(Error::new(ErrorKind::NoSuchKey, "object does not exist"));
@@ -116,6 +130,21 @@ impl Store {
 
     pub async fn list(&self, bucket: &str, prefix: &str) -> Result<Vec<ObjectMeta>> {
         let s = self.leases.status(bucket).await?;
+        if let Some(revision) = s.revision {
+            let version = revision.to_string();
+            let tree = self
+                .engine
+                .revision_tree(&self.principal, s.workspace_id, s.branch_id, revision)
+                .await?;
+            let mut entries: Vec<_> = tree
+                .into_iter()
+                .filter(|(path, _)| !path.is_root())
+                .map(|(path, inode)| metadata(&path, &inode, false, &version))
+                .filter(|meta| meta.key.starts_with(prefix))
+                .collect();
+            entries.sort_by(|a, b| a.key.cmp(&b.key));
+            return Ok(entries);
+        }
         let runtime = &self.engine.runtime;
         let _gate = runtime.lock_branch(s.branch_id).await;
         runtime

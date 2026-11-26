@@ -1,7 +1,7 @@
 use super::*;
 
 #[tokio::test]
-async fn running_sandbox_allows_turn_handoff_and_defers_recovery_branch_switch() {
+async fn running_sandbox_defers_recovery_branch_switch() {
     let remote = Arc::new(MemoryRemote::default());
     let f = fixture_with_remote(Some(remote.clone())).await;
     f.sandbox
@@ -23,37 +23,8 @@ async fn running_sandbox_allows_turn_handoff_and_defers_recovery_branch_switch()
         .await
         .unwrap();
     f.engine.collaborate_due().await.unwrap();
-    for (turn, phase) in [
-        ("first", ExecutionPhase::Started),
-        ("first", ExecutionPhase::Completed),
-        ("second", ExecutionPhase::Started),
-    ] {
-        f.engine
-            .services
-            .collaboration
-            .execution_event(
-                &f.owner,
-                CollaborationEvent {
-                    mount: mount.id,
-                    source: "sandbox-test".into(),
-                    thread_id: "thread".into(),
-                    turn_id: turn.into(),
-                    phase,
-                },
-            )
-            .await
-            .unwrap();
-        f.engine.collaborate_due().await.unwrap();
-        if phase == ExecutionPhase::Completed {
-            assert_eq!(
-                f.local.branch(f.branch).await.unwrap().unwrap().state,
-                BranchState::Available
-            );
-        }
-    }
     let current = f.local.mount(mount.id).await.unwrap().unwrap();
     assert_eq!(current.branch, f.branch);
-    assert!(current.generation > mount.generation);
     f.engine
         .services
         .files

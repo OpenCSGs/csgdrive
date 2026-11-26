@@ -133,7 +133,7 @@ async fn repeated_upload_and_cold_range_verify_the_remote_representation() {
         }),
     };
     let temp = tempfile::tempdir().unwrap();
-    let db = LocalBackend::open_server(temp.path()).unwrap();
+    let db = LocalBackend::open(temp.path()).unwrap();
     let remote = S3Backend::file_store(cfg.clone(), Arc::new(db.clone())).unwrap();
     let workspace = WorkspaceId::new();
     let data = Bytes::from(
@@ -148,7 +148,7 @@ async fn repeated_upload_and_cold_range_verify_the_remote_representation() {
         .unwrap();
     drop(remote);
     drop(db);
-    let db = LocalBackend::open_server(temp.path()).unwrap();
+    let db = LocalBackend::open(temp.path()).unwrap();
     let remote = S3Backend::file_store(cfg, Arc::new(db.clone())).unwrap();
     fixture.lock().unwrap().requests.clear();
     remote

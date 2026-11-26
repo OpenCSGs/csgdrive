@@ -2,7 +2,7 @@
 
 [English](architecture.md) | [简体中文](architecture.zh-CN.md)
 
-`agentdrived` is the composition root. It creates concrete adapters, injects them into the engine, and serves the resulting `Services` facade. The engine imports model, port, and configuration crates; persistence, native drivers, S3, OpenCSG, and protocol dependencies stay in adapters.
+`agentdrived` is the composition root. It creates concrete adapters, injects them into the engine, and serves the resulting `Services` facade. The engine imports model, port, and configuration crates; persistence, native drivers, S3, Scion, OpenCSG, and protocol dependencies stay in adapters.
 
 | Crate | Responsibility |
 | --- | --- |
@@ -14,7 +14,7 @@
 | `drive-s3`, `drive-s3-store` | S3 requests, multipart uploads, mount bindings and SQLite write reservations |
 | `agentdrive-s3` | Upload, download and verify file contents |
 | `agentdrive-opencsg` | Codes file transfer, chunk verification and optional XNet |
-| `agentdrive-platform` | NFS/FUSE/WinFsp callbacks, contained host-directory access and clock |
+| `agentdrive-platform` | GeeseFS mount lifecycle on Linux and macOS, WinFsp on Windows, confined host directories and clock |
 | `agentdrive-mcp` | Typed tools, local HTTP routing, dashboard and settings HTTP API, client, stdio forwarding |
 | `agentdrive-test-support` | Deterministic clocks, mount and storage doubles, injected outages and lost acknowledgements |
 | `agentdrived` / `agentdrive` | Daemon lifecycle and command-line client |
@@ -23,9 +23,11 @@
 
 ```mermaid
 flowchart LR
-  A(["VM A · /workspace"]) --> VA["virtiofs · PVC A"]
-  B(["VM B · /workspace"]) --> VB["virtiofs · PVC B"]
-  VA & VB -->|CSI client · S3| G["drive-s3"]
+  VM(["Local VM · /workspace"]) --> V["virtio-fs"]
+  V --> F["Host GeeseFS mount"]
+  Desktop(["Linux / macOS desktop"]) --> F
+  F -->|S3| G["drive-s3 in agentdrived"]
+  External(["External S3 client / CSI"]) -->|S3| G
   G --> M["drive-s3-store"]
   M -->|bucket → workspace ID + branch ID| E["agentdrive-engine"]
   UI(["Drive UI / MCP"]) --> E
@@ -33,6 +35,7 @@ flowchart LR
   E --> D[("SQLite · paths / branches / revisions / backend")]
   E -->|file bytes| P{"workspace storage"}
   P --> S[("S3 bucket")]
+  P --> SC["Scion Git LFS"]
   P --> C["OpenCSG Codes"]
   P --> H[("Local files")]
   C -->|optional| X(["XNet"])
@@ -57,7 +60,7 @@ Each workspace selects one content backend. Each CSI mount uses a distinct bucke
 | `engine/relationships` | Relationship authorization, origin visibility, ownership observations, filtering and stable pagination |
 | `engine/mounts` | Select the local branch for a workspace, reuse mount bindings, save mounted files and coordinate mount transitions |
 | `engine/replica`, `engine/ownership` | Synchronization jobs, conditional remote publication and writer ownership transfer |
-| `engine/collaboration` | Per-branch following, automatic writer acquisition and release, execution registration and recovery coordination |
+| `engine/collaboration` | Per-branch following, automatic writer acquisition and branch recovery |
 | `engine/storage` | Install workspace storage connections under the publication and object guards |
 | `engine/cache` | Prefetch, pin and reclaim eligible local objects using the current cache policy |
 | `engine/merge` | Prepare candidates, edit files, resolve conflicts and apply results |
@@ -67,7 +70,6 @@ Each workspace selects one content backend. Each CSI mount uses a distinct bucke
 | `config/store` | Validate candidate settings, serialize writers, save configuration and publish `ArcSwap` snapshots |
 | `mcp/gateway`, `mcp/server` | Authenticate HTTP requests and dispatch typed application tools |
 | `mcp/web`, `mcp/dashboard` | Workspace, revision differences, lifecycle and settings HTTP endpoints and browser views |
-| `apps/agentdrive/integration` | ACP and Codex app-server event forwarding and persistence lifecycle |
 | `apps/agentdrived/main` | Construct adapters, start HTTP and background workers, shut down cleanly |
 
 `agentdrive-ports` describes the interfaces used by the engine. Storage and platform adapters implement those interfaces. The configuration crate depends on model types and does not construct database, mount or network services. The daemon supplies one `LiveConfig` handle to the engine and HTTP gateway. Only `ConfigStore` publishes replacement snapshots; consumers obtain a consistent snapshot for each operation. `apps/agentdrived/settings::remote_storage` selects the remote adapter for both startup and runtime changes.
@@ -114,11 +116,7 @@ A `ReplicaService` shares four upload permits across publication operations. Obj
 
 ## Automatic collaboration
 
-MCP and HTTP webhooks call the engine through the application interfaces. NFS, FUSE and WinFsp translate file operations into the shared `FileSystem` interface. The engine checks binding generation and write authority. `agentdrive-local` owns SQLite, working files and immutable objects. The publisher uses the same object and conditional reference interfaces for OpenCSG Git and S3.
-
-One location writes a branch at a time. A registered turn's terminal callback captures accepted file changes. The coordinator fences further branch mutations when the final active turn ends, verifies the formal revision, content root and saved sequence in the remote branch reference, and releases ownership with a conditional update. Failed uploads leave the handoff pending for retry. Duplicate callbacks reuse the persisted outcome.
-
-Handoff updates the view in the existing mount. Open file handles retain their original binding generation. Agents can reopen the path to read the new revision. Unexpected authority loss preserves unpublished changes on a recovery branch.
+On Linux and macOS, the local mount driver registers a bucket alias with the gateway, then starts GeeseFS on the requested directory. External S3 clients and GeeseFS use the same workspace engine. WinFsp calls the engine through the `FileSystem` interface. The engine persists branch metadata in SQLite. Remote writer acquisition and recovery on WinFsp use conditional reference updates.
 
 ## Configuration lifecycle
 
@@ -164,7 +162,9 @@ In `meta.db`, `branch_node_views` selects the directory layer for a branch, `nod
 
 `s3-sessions.sqlite3` stores the mount aliases and write policy. With `serialized`, multiple mounts can edit the branch and the gateway reserves that branch during publication using a file lock shared with ownership transfers. The last successful update to a file becomes visible. With `exclusive`, one holder may publish. Handoff advances the epoch and fences the old mount. Both modes check permission at publication.
 
-## OpenCSG and S3 content layout
+## Remote content layout
+
+Scion repositories store 4 MiB file chunks using Git LFS. The workspace SQLite catalog records their SHA-256 identifiers in file order.
 
 S3 stores one object per content ID within a workspace. SQLite records the verified object validator and block digests. An unchanged validator allows reuse on a duplicate write. A cold byte-range request can fetch and verify the covering blocks. The local file cache handles warm reads.
 

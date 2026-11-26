@@ -2,7 +2,7 @@
 
 [English](integrations.md) | [简体中文](integrations.zh-CN.md)
 
-启动 `agentdrived`。原生目录需要 FUSE、macOS 内置 NFS 或 WinFsp。挂载路径必须位于 daemon 配置的 `mount_roots` 中。Agent 的执行环境需要能够访问该目录。
+启动 `agentdrived`。Linux 使用 GeeseFS 和 FUSE，macOS 使用 GeeseFS 和 macFUSE，Windows 使用 WinFsp。挂载路径必须位于 daemon 配置的 `mount_roots` 中。Agent 的执行环境需要能够访问该目录。
 
 ## MCP 与挂载目录
 
@@ -26,7 +26,7 @@ agentdrive mount --workspace "$WORKSPACE" "$AGENTDRIVE_DIRECTORY/mounts/project"
 
 `location_id` 属于 daemon 的数据目录，重启后保持不变。本机重复挂载同一工作区会复用选中的分支。多个远端 sandbox 共享分支时，每份 CSI 卷使用同一 AgentDrive 服务上的独立 bucket 别名，绑定到相同的 workspace ID 和 branch ID。该服务的档案室可以直接查看分支文件。[S3 挂载配置](../apps/drive-s3/README.md)
 
-同一个 principal 使用相同路径和参数重复挂载会返回已有 binding，多个 Agent 可以共享目录。其他 principal 即使具有 `manage` 权限，也无法复用该 binding。共享目录中的文件修改与分支切换影响全部使用者。一个分支最多有一个可写挂载；更换目录时，需要显式卸载原目录。卸载和 Agent 断开都保留本机分支选择。需要隔离工作内容时，通过 CLI 或 MCP 显式创建分支。
+同一个 principal 使用相同路径和参数重复挂载会返回已有 binding，多个 Agent 可以共享目录。其他 principal 即使具有 `manage` 权限，也无法复用该 binding。共享目录中的文件修改与分支切换影响全部使用者。每个分支可以同时拥有一个可写的桌面目录和一个独立的本机 sandbox 挂载。更换桌面目录时，需要卸载原目录。卸载和 Agent 断开都保留本机分支选择。需要隔离工作内容时，通过 CLI 或 MCP 显式创建分支。
 
 MCP 返回 `result.binding`，其中包含 `id`、`branch`、`path` 和 `generation`。Agent 使用返回路径执行文件操作。MCP 连接本身不会改变 Agent 的工作目录或文件访问权限。保存当前挂载可调用 `mount_save`，参数为 `mount` 和 `expected_binding_generation`；保存请求不会创建新分支。
 
@@ -54,104 +54,13 @@ WinFsp 会创建目录挂载点。Windows 上，AgentDrive 在启动驱动前移
 
 移动目录后如果挂载失败，原文件保存在 `backup_path`，原路径可能为空。暂停目录访问，使用相同 request ID 和相同参数重试；daemon 重启后也支持继续处理，并复用已导入的 branch。响应丢失时通过 `operation_get` 或 `operation_by_request` 查询结果。导入阶段失败时，修正源目录后使用新的 request ID。已经移动的路径应继续原请求。
 
-## 应用启动命令
+## 保存挂载目录中的文件
 
-需要由协议集成程序设置 Agent 工作目录并在任务结束时保存，可以配置以下启动命令：
-
-```sh
-agentdrive integrate --protocol acp --workspace "$WORKSPACE" \
-  --mount-path "$AGENTDRIVE_DIRECTORY/mounts/project" -- your-acp-agent
-```
-
-```sh
-agentdrive integrate --protocol codex-app-server --workspace "$WORKSPACE" \
-  --mount-path "$AGENTDRIVE_DIRECTORY/mounts/project" -- codex app-server --listen stdio://
-```
-
-应用与集成程序交换逐行 JSON-RPC 消息。集成程序复用挂载，等待目录就绪后启动 Agent。ACP 的 `session/new`、`session/load`、`session/resume`，以及 Codex 的 `thread/start`、`thread/resume`、`thread/fork`、`turn/start` 使用该目录作为 `cwd`。协议中的对话 ID 由应用管理。
-
-## 保存与恢复
-
-未保存修改累计约两秒后触发自动保存，持续写入期间同样执行。daemon 每秒检查保存条件，每两秒检查待上传任务和跟随端更新。保存包含共享分支当时的文件内容。
-
-集成程序在开始任务时查询当前挂载 binding。手工管理的挂载在完成、取消、失败、Agent 退出或连接中断时调用保存，正常结束响应在本地保存成功后转发。自动协作挂载会在转发任务之前登记工作，结束时报告执行结果，由 daemon 在驱动报告没有打开的句柄后完成同步与权限交还。请求重试保留身份信息；重复的协议请求复用已完成响应。断开连接后保留共享挂载。
-
-分支切换和恢复可能更新 binding ID 或 generation，迟到的保存请求返回 `STALE_BINDING`。集成程序在下一次任务开始时重新查询当前 binding。daemon 重启后重新连接会恢复已保存内容并检查原生挂载，尚未达到保存时刻的修改可能丢失。
-
-自定义应用可以调用`POST /api/lifecycle`：
-
-| event | 参数 | 行为 |
-| --- | --- | --- |
-| `attach` | `request_id`, `workspace`, `mount_path`，可选 `branch`、`automatic` | 准备或复用挂载，返回 `binding` 和 `mount_path`。遵从 daemon 的全局协作配置；`automatic: true` 要求自动模式可用。 |
-| `check` | `request_id`, `workspace`, `mount_path` | 查询该目录当前可写的 binding 和协作状态。使用 attach 返回的规范化路径。 |
-| `save` | `request_id`, `mount`, `expected_binding_generation` | 保存指定挂载版本的内容，返回操作记录。 |
-
-远程发布由 daemon 的后台同步任务执行。只有 `remote_confirmed` 才表示该次修改已经获得远程确认。
-
-## 自动协作
-
-启用全局自动协作并配置远端存储后，Agent 将共享分支挂载到本机目录，首次修改时申请写权限。通过 webhook 登记每个 turn，在结束时发送回调。发送结束回调之前请等待该轮文件写入完成，包含应用缓冲区中的内容。
-
-AgentDrive 会提交并发布本机挂载目录中这一轮的修改。挂载点管理页面显示当前写入方、已登记的 turn 和保存进度。CSI 客户端按分支的写入模式工作。独占模式支持主动交接写入方，按次写入模式允许各个已绑定的 sandbox 保存文件。
-
-自动协作开启时，`mount_save`、`revision_commit`（正式提交或 checkpoint）、`branch_restore` 和 `merge_apply` 通过同一个协作服务申请写权限，也支持没有挂载目录的本机分支。受保护分支保留现有权限规则。申请前后都会检查请求指定的版本、generation 和可选的修改序号；内容条件仍然匹配时可以使用新的权限 epoch。尚未保存且允许重试的请求继续使用原 request_id，内容已经变化时需要重新读取分支并提交新请求。准备合并使用固定版本，不申请写权限；应用合并和继续恢复版本时会重新申请权限并检查目标内容。
-
-关闭全局开关后，稳定状态的分支保留当前权限，由手动管理；已经冻结写入的交还和恢复分支切换继续完成。新读写挂载根据请求指定分支、已有挂载、本机选择或工作区初始分支继续使用共享分支。只读挂载和仅使用本地存储的工作区保留普通挂载行为。
-
-使用以下命令启动带有事件转发的 Codex App Server：
-
-```sh
-agentdrive integrate --protocol codex-app-server \
-  --workspace "$WORKSPACE" --branch "$BRANCH" \
-  --mount-path "$AGENTDRIVE_DIRECTORY/mounts/project" -- codex app-server
-```
-
-ACP 支持相同的 `--branch` 参数。集成程序读取 daemon 的协作配置并转发工作事件。可选的 `--automatic` 要求自动模式可用，无法绕过已经关闭的全局开关。此命令代理它启动的进程；其他桌面会话需要单独连接。普通文件修改自动申请权限。
-
-自定义集成调用以下本地 HTTP 接口：
-
-| 接口 | 参数或结果 |
-| --- | --- |
-| `GET /api/workspaces/{workspace}/collaboration` | 返回分支协作状态及关联的本机 mount ID。 |
-| `PUT /api/collaboration` | `{mount, expected_binding_generation, enabled}`，`enabled` 与当前全局设置一致。 |
-| `POST /api/collaboration/events` | `{mount, source, thread_id, turn_id, phase}`；phase 支持 `started`、`completed`、`interrupted`、`failed`。 |
-| `POST /api/collaboration/codex` | 在 Codex 通知中加入 `mount` 和 `source`；支持 `turn/started` 与结束状态的 `turn/completed`。 |
-
-工作访问目录之前登记 `started`。结束时使用相同的 source、thread、turn 和 mount 标识。daemon 保存登记时的挂载版本和写权限代次；客户端无需提供解锁代次。重复结束事件复用已有处理结果，迟到事件不能释放后续取得的权限。事件请求成功表示后台已经接收处理状态，远端保存与权限交还需要查看协作状态。
-
-以下命令模拟一次 turn。将 `MOUNT_ID` 设为本机读写挂载 ID，并为每次新工作使用不同的 `turn_id`。
-
-```sh
-send_turn_event() {
-  curl --fail-with-body -sS http://127.0.0.1:7421/api/collaboration/events \
-    -H 'Content-Type: application/json' \
-    -d "{\"mount\":\"$MOUNT_ID\",\"source\":\"worker\",\"thread_id\":\"session-1\",\"turn_id\":\"$TURN_ID\",\"phase\":\"$1\"}"
-}
-TURN_ID="$(uuidgen)"
-send_turn_event started
-# 在挂载目录写入并刷新本轮文件。
-send_turn_event completed
-```
-
-Codex 通知格式示例：
-
-```json
-{
-  "mount": "<mount-id>",
-  "source": "codex-local",
-  "method": "turn/completed",
-  "params": {
-    "threadId": "thread-123",
-    "turn": {"id": "turn-456", "status": "completed"}
-  }
-}
-```
-
-终止状态包括 `completed`、`failed` 和 `interrupted`。均保留已经写入的内容。交接后在原路径重新打开文件，可读取新版本。
+Agent 可以使用常用文件工具读写挂载目录。刷新文件内容后，将当前挂载 ID 和 generation 传给 `mount_save`。保存成功后，操作记录包含 `local_saved`。请求远端保存时，通过 `remote_confirmed` 查询远端是否已经确认。
 
 ## 分支与 Dashboard
 
-`agentdrive branch create` 和 MCP `branch_create` 显式创建分支，保持原有选择。`agentdrive branch switch` 和 MCP `branch_switch` 保存原分支并更新当前 location 的 workspace 选择。CLI 和 MCP 均在一次调用中完成切换。遇到 `MOUNT_BUSY`，关闭文件和使用目录的进程，或重启 Agent，再使用相同 request ID 重试 `branch_switch`。其他错误保留具体原因。
+`agentdrive branch create` 和 MCP `branch_create` 显式创建分支，保持原有选择。`agentdrive branch switch` 和 MCP `branch_switch` 保存原分支并更新当前 location 的 workspace 选择。CLI 和 MCP 均在一次调用中完成切换。Windows 上，如果 WinFsp 报告目录占用，请关闭对应文件或目录，使用相同 request ID 重试。其他错误保留具体原因。
 
 旧数据库保留已有分支和选择。没有选择且只有一个可写本机分支时自动复用；存在多个可写本机分支时，使用 `branch_switch` 明确选择。
 
@@ -163,7 +72,6 @@ Codex 通知格式示例：
 
 只读 JSON 接口为 `GET /api/workspaces` 和 `GET /api/workspaces/{workspace}`。后者返回 `status`、`revisions`、`summary` 和 `origins`。`summary` 包含 `branch_count`、`mount_count`、`ready_mount_count`、`mounted_branch_count`；`status.mounts` 仅保留未释放记录，并按路径排序。`origins` 为每个 branch 提供来源 branch、准确的来源 revision、版本是否可读和工作区根分支标识。`selected_branch` 是当前 location 对此工作区的默认选择。通过 `/settings` 编辑全局运行配置，详见[配置说明](configuration.zh-CN.md)。
 
-协议参考：[ACP 会话](https://agentclientprotocol.com/protocol/v1/session-setup)、[ACP 回合](https://agentclientprotocol.com/protocol/v1/prompt-turn)、[Codex app-server](https://developers.openai.com/codex/app-server/)。
 
 顶部显示当前工作区的工作分支数量、本机挂载点数量、被就绪挂载使用的不同分支数量和远程同步状态。挂载点统计排除已释放记录，准备中、暂停和待恢复记录保留并显示状态。分支图按 `source_branch` 与 `base_revision` 连接到创建来源版本，点击版本可查看信息；来源版本可能是 commit、自动保存或检查点。“默认”表示本机未指定 branch 时的选择，“已挂载”显示就绪目录数量。
 
@@ -173,7 +81,7 @@ Codex 通知格式示例：
 
 **分支管理**（`/branches`）支持选择来源分支、来源内容和名称创建分支。本机分支可通过 `source_branch` 捕获当前工作内容，包括尚未提交的修改；指定已保存版本时使用 `source`。两个来源参数互斥。列表展示全部已知分支及其来源，本机可写分支提供切换和挂载入口。切换使用会更新本机默认分支，并切换原默认分支正在使用的挂载目录。
 
-页面通过 `POST /api/commands/{command}` 调用现有 MCP 服务。允许的操作为 `branch_create`、`branch_switch`、`mount_prepare`、`mount_save`、`mount_unmount`、`mount_release`、`operation_get` 和 `operation_by_request`，参数结构与对应 MCP 工具一致。请求使用本地 daemon 身份，原有服务执行 binding generation 校验。操作进度分别显示 `local_saved`、`remote_confirmed` 和 `mount_ready`。页面为每次操作保存稳定的 `request_id`，刷新或请求中断后可查询结果、重试原请求。目录被占用时显示释放占用提示与继续操作按钮。
+页面通过 `POST /api/commands/{command}` 调用现有 MCP 服务。允许的操作为 `branch_create`、`branch_switch`、`mount_prepare`、`mount_save`、`mount_unmount`、`mount_release`、`operation_get` 和 `operation_by_request`，参数结构与对应 MCP 工具一致。请求使用本地 daemon 身份，原有服务执行 binding generation 校验。操作进度分别显示 `local_saved`、`remote_confirmed` 和 `mount_ready`。页面为每次操作保存稳定的 `request_id`，刷新或请求中断后可查询结果、重试原请求。操作需要释放挂载时，页面提供继续操作按钮。
 
 分支提示分为“有未保存修改”（`mutation_seq != saved_seq`）、“已自动保存 · 有未提交修改”（序号相同且 `dirty` 为真）和“已提交”（序号相同且 `dirty` 为假）。已保存表示内容已有本地持久化检查点；检查点已保存、自动保存版本尚未生成时，悬浮说明会解释此状态。远程确认通过同步卡片展示，停止写入的状态单独显示。
 
@@ -192,10 +100,6 @@ Codex 通知格式示例：
 Dashboard 默认进入 `/archive`，导航位于“分支与版本”上方。选择项目和分支后直接阅读当前文件，保持挂载分支不变。页面通过 `GET /api/workspaces/{workspace}/archive` 获取当前工作区状态，无需加载全部版本历史；与分支弹框共用 `BranchFilesApi` 的目录和文件读取。筛选仅针对当前目录已载入的条目，隐藏文件可以通过开关显示。Markdown 通过安全文本节点渲染，并提供源码视图。项目、分支和目录保存在页面地址中。
 
 远端确认要求已知远端记录的 owner、authority epoch、generation、durable sequence 和 working root 与本机一致，并且本机修改已保存；同步队列为空本身不表示远端已保存。页面展示最近一次确认。在另一个 sandbox 中重新打开文件，或在档案室点击“刷新文件”，可以读取 CSI 客户端保存的修改。
-
-## macOS 内置 NFS
-
-每个工作目录通过本机 NFSv3 提供。交接时保持挂载目录，旧文件句柄的写入会被拒绝。
 
 ## 工作区发现与删除
 

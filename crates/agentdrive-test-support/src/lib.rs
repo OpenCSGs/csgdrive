@@ -251,6 +251,10 @@ impl MemoryMountDriver {
 }
 #[async_trait]
 impl MountDriver for MemoryMountDriver {
+    fn supports_shared_writable_mounts(&self) -> bool {
+        true
+    }
+
     fn supports_automatic_collaboration(&self) -> bool {
         !self.automatic_collaboration_disabled.load(Ordering::SeqCst)
     }

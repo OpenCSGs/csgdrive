@@ -3,7 +3,7 @@ mod listing;
 mod multipart;
 mod s3;
 
-use agentdrive_model::{BranchId, WorkspaceId};
+use agentdrive_model::{BranchId, RevisionId, WorkspaceId};
 use axum::error_handling::HandleError;
 use axum::{
     Json, Router,
@@ -31,6 +31,9 @@ enum Command {
         bucket: String,
         workspace_id: WorkspaceId,
         branch_id: BranchId,
+        revision: Option<RevisionId>,
+        #[serde(default)]
+        read_only: bool,
         #[serde(default)]
         write_mode: WriteMode,
     },
@@ -58,10 +61,19 @@ async fn manage(
             bucket,
             workspace_id,
             branch_id,
+            revision,
+            read_only,
             write_mode,
         } => {
             store
-                .bind_ids(&bucket, workspace_id, branch_id, write_mode)
+                .bind_view(
+                    &bucket,
+                    workspace_id,
+                    branch_id,
+                    write_mode,
+                    revision,
+                    read_only,
+                )
                 .await
         }
         Command::Acquire { bucket } => store.acquire(&bucket).await,
@@ -137,6 +149,18 @@ impl Endpoints {
             api: Router::new().fallback_service(service),
             management,
         })
+    }
+
+    pub fn local_addresses(&self) -> io::Result<(SocketAddr, SocketAddr)> {
+        let mut address = self.s3_listener.local_addr()?;
+        if address.ip().is_unspecified() {
+            address.set_ip(if address.is_ipv4() {
+                Ipv4Addr::LOCALHOST.into()
+            } else {
+                std::net::Ipv6Addr::LOCALHOST.into()
+            });
+        }
+        Ok((address, self.admin_listener.local_addr()?))
     }
 
     pub async fn serve(self, cancellation: CancellationToken) -> io::Result<()> {

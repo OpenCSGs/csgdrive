@@ -145,16 +145,6 @@ impl RevisionService {
         context: OperationContext,
         request: SaveRevision,
     ) -> Result<OperationRecord> {
-        self.save_and_record_locked(context, request, |_| {}).await
-    }
-
-    /// Include the caller's durable state change in the same transaction as the saved revision.
-    pub(crate) async fn save_and_record_locked(
-        &self,
-        context: OperationContext,
-        request: SaveRevision,
-        record: impl FnOnce(&mut LocalCommit) + Send,
-    ) -> Result<OperationRecord> {
         let mut branch = self.runtime.branch(request.guard.branch).await?;
         check_guard(&branch, &request.guard)?;
         let permission = if request
@@ -309,7 +299,7 @@ impl RevisionService {
             .publisher
             .build_job(&branch, revision.as_ref(), &operation)
             .await?;
-        let mut commit = LocalCommit {
+        let commit = LocalCommit {
             guards: vec![request.guard],
             branches: vec![branch.clone()],
             revisions: revision.into_iter().collect(),
@@ -335,7 +325,6 @@ impl RevisionService {
             sync_jobs: vec![job],
             ..Default::default()
         };
-        record(&mut commit);
         self.runtime.state.commit(commit).await?;
         self.runtime.clear_dirty(branch.id, branch.saved_seq);
         Ok(operation)

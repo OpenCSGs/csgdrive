@@ -466,6 +466,7 @@ mod tests {
 
     fn mount(branch: &Branch, state: MountState, access: AccessMode) -> MountBinding {
         MountBinding {
+            follows_selection: false,
             id: MountId::new(),
             workspace: branch.workspace,
             branch: branch.id,

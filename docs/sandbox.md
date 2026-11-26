@@ -1,12 +1,12 @@
 # 分支 Ubuntu Sandbox
 
-分支管理页面提供创建、打开桌面、停止和重新启动功能。每个分支使用独立 Ubuntu 系统磁盘，`/workspace` 通过 virtio-fs 连接 AgentDrive 的可写 FUSE 挂载。实例由 agentdrived 的内部 worker 管理，worker 链接 CubeSandbox hypervisor。
+分支管理页面提供创建、打开桌面、停止和重新启动功能。每个分支使用独立 Ubuntu 系统磁盘，`/workspace` 通过 virtio-fs 访问宿主机的 GeeseFS 挂载目录。每个虚拟机使用独立目录，GeeseFS 通过本机 drive-s3 读写该实例的工作区分支。实例由 agentdrived 的内部 worker 管理，worker 链接 CubeSandbox hypervisor。
 
 正常停止会等待 guest 同步文件。同步失败时实例继续运行，页面显示原因，并提供「强制停止」；输入分支名称确认后会终止进程，尚未同步的修改可能丢失。进程退出等待有超时限制。worker 异常退出后，后台检查会释放分支保护，允许卸载或切换分支；重新启动期间仍保留分支保护。
 
 CSGClaw 的登录回调使用当前实例的 `csgclaw.<工作区>.<分支>.localhost:<AgentDrive 端口>` 地址。AgentDrive 写入实例的助手启动信息，启动脚本通过 CSGClaw 的 `--endpoint` 参数传入地址；已有实例的旧回调配置会被启动参数覆盖。更换 AgentDrive 端口后重新启动 Sandbox 即可更新。STG 登录沿用相同代理入口。
 
-运行主机需要 Linux x86_64、已启用的 KVM 或 PVM、FUSE、至少 9 GiB 可用内存，以及可用的 Docker 镜像构建环境。每个实例使用 4 vCPU、8 GiB 内存和 16 GiB 按需分配的系统磁盘。默认同时运行两个实例，可以通过 `max_instances` 调整数量。
+运行主机需要 Linux x86_64、已启用的 KVM 或 PVM、GeeseFS、FUSE 3、至少 9 GiB 可用内存，以及可用的 Docker 镜像构建环境。每个实例使用 4 vCPU、8 GiB 内存和 16 GiB 按需分配的系统磁盘。默认同时运行两个实例，可以通过 `max_instances` 调整数量。
 
 ## 桌面使用
 
@@ -212,7 +212,7 @@ python3 -m unittest discover -s tests/sandbox -p 'test_*.py'
 
 启动 Sandbox 时，已有分支挂载处于 `recovery_required` 或 `suspended` 状态会自动尝试恢复，继续使用原目录和持久化配置。恢复流程检查挂载所属用户、分支版本及本机目录状态；存在未完成的分支操作时，需要先在挂载管理中处理该操作。挂载失败会显示目录和具体原因，页面提供“恢复挂载”按钮，处理问题后点击即可重新恢复并继续启动 Ubuntu。无法确认本机挂载身份时保留 `recovery_required` 状态。
 
-未完成的挂载操作按照挂载 ID 和版本检查，已被新挂载替代的旧卸载记录会保留为历史记录。Linux 下，恢复流程会确认残留挂载的文件系统类型为 `fuse.agentdrive`、来源为当前挂载 ID，且目录访问返回 `ENOTCONN`，随后正常卸载并重新挂载。运行中的挂载和身份不匹配的挂载会保留；目录被占用时会显示具体错误，关闭占用后可以重试。
+Linux 使用挂载 ID 和 generation 生成 S3 bucket 别名。恢复时会核对挂载目录、文件系统类型 `fuse.geesefs` 和别名。切换桌面分支保留虚拟机的独立挂载目录。
 
 
 ## Ubuntu GNOME 与 CSGClaw

@@ -12,6 +12,7 @@ pub(crate) struct BranchFileService {
     runtime: Arc<Runtime>,
     content: Arc<dyn ContentResolver>,
     working: Arc<dyn WorkingTreeStore>,
+    queries: Arc<dyn TreeQuery>,
 }
 
 impl std::fmt::Debug for BranchFileService {
@@ -25,11 +26,13 @@ impl BranchFileService {
         runtime: Arc<Runtime>,
         content: Arc<dyn ContentResolver>,
         working: Arc<dyn WorkingTreeStore>,
+        queries: Arc<dyn TreeQuery>,
     ) -> Arc<Self> {
         Arc::new(Self {
             runtime,
             content,
             working,
+            queries,
         })
     }
 
@@ -202,6 +205,66 @@ enum FileSource {
 }
 
 impl crate::Engine {
+    pub async fn revision_tree(
+        &self,
+        actor: &Principal,
+        workspace: WorkspaceId,
+        branch: BranchId,
+        revision: RevisionId,
+    ) -> Result<FileTree> {
+        self.runtime
+            .authorize(actor, workspace, Some(branch), Permission::Read)
+            .await?;
+        let _retention = self.runtime.objects.read().await;
+        let trees = &self.revisions.trees;
+        let revision = trees.revision(workspace, revision).await?;
+        trees.tree(workspace, &revision.root).await
+    }
+
+    pub async fn open_revision_file(
+        &self,
+        actor: &Principal,
+        workspace: WorkspaceId,
+        branch: BranchId,
+        revision: RevisionId,
+        path: &WorkspacePath,
+    ) -> Result<BranchFileReader> {
+        self.runtime
+            .authorize(actor, workspace, Some(branch), Permission::Read)
+            .await?;
+        let retention = self.runtime.objects.clone().read_owned().await;
+        let trees = &self.revisions.trees;
+        let revision = trees.revision(workspace, revision).await?;
+        let inode = self
+            .branch_files
+            .queries
+            .lookup(workspace, &revision.root, path)
+            .await?
+            .ok_or_else(|| Error::new(ErrorCode::NotFound, "path does not exist in revision"))?;
+        let source = if inode.kind == FileKind::Directory {
+            FileSource::Empty
+        } else {
+            FileSource::Stored {
+                content: self.branch_files.content.clone(),
+                workspace,
+                object: inode
+                    .content
+                    .clone()
+                    .ok_or_else(|| Error::integrity("file content is missing"))?,
+                _retention: retention,
+            }
+        };
+        Ok(BranchFileReader {
+            node: Node {
+                path: path.clone(),
+                inode,
+                dirty: false,
+            },
+            version: revision.id.to_string(),
+            source,
+        })
+    }
+
     pub async fn open_branch_file(
         &self,
         actor: &Principal,

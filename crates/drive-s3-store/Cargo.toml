@@ -7,17 +7,17 @@ license.workspace = true
 
 [dependencies]
 async-trait.workspace = true
-agentdrive-config.workspace = true
 agentdrive-engine.workspace = true
-agentdrive-local.workspace = true
 agentdrive-model.workspace = true
-agentdrive-platform.workspace = true
 bytes.workspace = true
 rusqlite.workspace = true
 serde.workspace = true
 tokio.workspace = true
 
 [dev-dependencies]
+agentdrive-platform.workspace = true
+agentdrive-local.workspace = true
+agentdrive-config.workspace = true
 agentdrive-ports.workspace = true
 tempfile.workspace = true
 

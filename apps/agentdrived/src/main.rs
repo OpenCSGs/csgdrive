@@ -4,7 +4,7 @@ mod settings;
 use agentdrive_config::{ConfigStore, initialize};
 use agentdrive_engine::{Adapters, Engine, EngineConfig};
 use agentdrive_local::LocalBackend;
-use agentdrive_mcp::{GatewayConfig, router, router_with_routes};
+use agentdrive_mcp::{GatewayConfig, router_with_routes};
 use agentdrive_model::*;
 use agentdrive_platform::{HostDirectories, NativeMountDriver, SystemClock, local_identity};
 use agentdrive_ports::LocalStateStore;
@@ -35,8 +35,8 @@ enum Command {
         #[arg(long)]
         drive_s3_listen: Option<SocketAddr>,
         /// Loopback port for CSI mount configuration.
-        #[arg(long, default_value_t = 19732)]
-        drive_s3_admin_port: u16,
+        #[arg(long)]
+        drive_s3_admin_port: Option<u16>,
     },
 }
 #[tokio::main]
@@ -77,10 +77,10 @@ async fn run(arguments: Arguments) -> Result<()> {
 async fn serve(
     settings: Arc<ConfigStore>,
     s3_listen: Option<SocketAddr>,
-    s3_admin_port: u16,
+    s3_admin_port: Option<u16>,
 ) -> Result<()> {
     let config = settings.startup();
-    let local = Arc::new(LocalBackend::open_server(&config.data_dir)?);
+    let local = Arc::new(LocalBackend::open(&config.data_dir)?);
     settings::use_database_settings(&settings, &local)?;
     let driver = NativeMountDriver::new(config.mount_roots.clone())?;
     let (routes, _) = settings::storage_routes(&settings.live().load().values, None, &local)?;
@@ -92,7 +92,7 @@ async fn serve(
             remote_objects: None,
             remote_refs: None,
             clock: Arc::new(SystemClock::default()),
-            mounts: driver,
+            mounts: driver.clone(),
             directories: HostDirectories::new(config.directory_roots.clone())?,
         },
         EngineConfig {
@@ -110,7 +110,9 @@ async fn serve(
     let cancellation = CancellationToken::new();
     let listener = tokio::net::TcpListener::bind(config.listen).await?;
     let address = listener.local_addr()?;
-    let mut services = engine.services.clone();
+    let services = engine.services.clone();
+    #[cfg(target_os = "linux")]
+    let mut services = services;
     #[cfg(target_os = "linux")]
     let mut sandbox_monitor = None;
     #[cfg(target_os = "linux")]
@@ -133,35 +135,57 @@ async fn serve(
         settings: settings.clone(),
         cancellation: cancellation.clone(),
     };
-    let (app, s3) = if let Some(listen) = s3_listen {
-        let required = |key| {
-            std::env::var(key)
-                .ok()
-                .filter(|s| !s.is_empty())
-                .ok_or_else(|| Error::invalid(format!("{key} is required when serving S3")))
-        };
-        let store = Arc::new(
-            drive_s3::Store::from_engine(
-                engine.clone(),
-                &config.data_dir.join("s3-sessions.sqlite3"),
-                config.principal.clone(),
-            )
-            .await
-            .map_err(|e| Error::new(ErrorCode::Io, e.to_string()))?,
-        );
-        let app = router_with_routes(services, gateway, drive_s3::dashboard_routes(store.clone()))?;
-        let s3 = drive_s3::Endpoints::bind(
-            store,
-            listen,
-            s3_admin_port,
-            required("DRIVE_S3_ACCESS_KEY")?,
-            required("DRIVE_S3_SECRET_KEY")?,
-        )
-        .await?;
-        (app, Some(s3))
-    } else {
-        (router(services, gateway)?, None)
+    let (local_secret, local_port) = local.local_s3_listener()?;
+    let listen = s3_listen.unwrap_or_else(|| ([127, 0, 0, 1], local_port).into());
+    let credentials = match (
+        std::env::var("DRIVE_S3_ACCESS_KEY").ok(),
+        std::env::var("DRIVE_S3_SECRET_KEY").ok(),
+    ) {
+        (Some(access), Some(secret)) if !access.is_empty() && !secret.is_empty() => {
+            (access, secret)
+        }
+        (None, None) if s3_listen.is_none() => ("local-drive".into(), local_secret),
+        _ => {
+            return Err(Error::invalid(
+                "set both DRIVE_S3_ACCESS_KEY and DRIVE_S3_SECRET_KEY for the S3 listener",
+            ));
+        }
     };
+    let store = Arc::new(
+        drive_s3::Store::from_engine(
+            engine.clone(),
+            &config.data_dir.join("s3-sessions.sqlite3"),
+            config.principal.clone(),
+        )
+        .await
+        .map_err(|e| Error::new(ErrorCode::Io, e.to_string()))?,
+    );
+    let app = router_with_routes(services, gateway, drive_s3::dashboard_routes(store.clone()))?;
+    let endpoints = drive_s3::Endpoints::bind(
+        store,
+        listen,
+        s3_admin_port.unwrap_or(if s3_listen.is_some() { 19732 } else { 0 }),
+        credentials.0.clone(),
+        credentials.1.clone(),
+    )
+    .await?;
+    let (endpoint, _admin_endpoint) = endpoints.local_addresses()?;
+    if s3_listen.is_none() {
+        local.remember_local_s3_port(endpoint.port())?;
+    }
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    {
+        driver.configure_geesefs(
+            format!("http://{endpoint}"),
+            format!("http://{_admin_endpoint}"),
+            credentials.0,
+            credentials.1,
+        )?;
+    }
+    // GeeseFS needs both listeners during startup restoration and unmount flushing.
+    let s3_shutdown = CancellationToken::new();
+    let s3_guard = s3_shutdown.clone().drop_guard();
+    let mut s3 = tokio::spawn(endpoints.serve(s3_shutdown));
     engine.restore_native_mounts().await?;
     tracing::info!(endpoint = %format!("http://{address}/mcp"), location = %engine.runtime.location, "AgentDrive is ready");
     let mut workers = tokio::task::JoinSet::new();
@@ -258,18 +282,12 @@ async fn serve(
         shutdown_signal().await;
         shutdown.cancel();
     });
-    let server_result = tokio::try_join!(
-        axum::serve(listener, app)
+    let server_result = tokio::select! {
+        result = axum::serve(listener, app)
             .with_graceful_shutdown(cancellation.clone().cancelled_owned())
-            .into_future(),
-        async {
-            if let Some(server) = s3 {
-                server.serve(cancellation.clone()).await?;
-            }
-            Ok(())
-        },
-    )
-    .map(|_| ());
+            .into_future() => result,
+        result = &mut s3 => result.map_err(std::io::Error::other)?,
+    };
     signal.abort();
     cancellation.cancel();
     while let Some(result) = workers.join_next().await {
@@ -293,17 +311,12 @@ async fn serve(
             }
         }
     }
-    let mut last_error = None;
-    while let Err(error) = engine.suspend_native_mounts().await {
-        let detail = error.to_string();
-        if last_error.as_ref() != Some(&detail) {
-            tracing::warn!(%error, "shutdown is waiting for native mounts; close files and leave occupied directories");
-            last_error = Some(detail);
-        }
-        // Keep the filesystems available while the kernel still has clients.
-        tokio::time::sleep(Duration::from_secs(1)).await;
-    }
+    engine.suspend_native_mounts().await?;
     engine.flush_local().await?;
+    drop(s3_guard);
+    if !s3.is_finished() {
+        s3.await.map_err(std::io::Error::other)??;
+    }
     server_result.map_err(Into::into)
 }
 async fn shutdown_signal() {

@@ -18,6 +18,7 @@ agentdrive-model = { path = "crates/agentdrive-model" }
 agentdrive-ports = { path = "crates/agentdrive-ports" }
 agentdrive-engine = { path = "crates/agentdrive-engine" }
 agentdrive-local = { path = "crates/agentdrive-local" }
+agentdrive-scion = { path = "crates/agentdrive-scion" }
 agentdrive-s3 = { path = "crates/agentdrive-s3" }
 agentdrive-opencsg = { path = "crates/agentdrive-opencsg" }
 agentdrive-platform = { path = "crates/agentdrive-platform" }

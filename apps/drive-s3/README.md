@@ -1,32 +1,21 @@
 # Drive S3
 
-Expose a workspace branch as a path-style S3 bucket to CSI clients. The S3
-gateway and the existing AgentDrive dashboard share one engine, so a completed
-write is visible through the other mount and through the dashboard's file
-browser. Clients with a directory or file cache may need to refresh or reopen
-a file.
+The local `agentdrived` process serves a path-style S3 API alongside its dashboard and MCP tools. Linux and macOS desktop mounts use GeeseFS. Local Sandbox guests access a host GeeseFS mount through virtio-fs. A signed S3 client can use this API directly.
 
-## Run the server
+## Connect an external S3 client
 
-Build with Rust 1.96 or later. Give each server its own data directory.
+For desktop use, start `agentdrived serve --config <config>`. It opens a private loopback listener and persists the selected port and a generated signing secret in the local SQLite catalog. To expose a stable endpoint to a service, supply the listen address and credentials:
 
 ```sh
-cargo build --locked -p agentdrived
-target/debug/agentdrived init --directory ./drive-server --listen 127.0.0.1:19743
-export DRIVE_S3_ACCESS_KEY=drive-csi
+make -j8 build
+target/debug/agentdrived init --directory ./drive --listen 127.0.0.1:19743
+export DRIVE_S3_ACCESS_KEY=drive-client
 export DRIVE_S3_SECRET_KEY="$(openssl rand -hex 32)"
-target/debug/agentdrived serve --config ./drive-server/agentdrive.json \
+target/debug/agentdrived serve --config ./drive/agentdrive.json \
     --drive-s3-listen 127.0.0.1:19741 --drive-s3-admin-port 19742
 ```
 
-For Kubernetes clients, set `--drive-s3-listen` to the server's private IP
-and configure the CSI secret with the same signing credentials. The dashboard
-and the administration endpoint listen on loopback. Use the dashboard at
-`http://127.0.0.1:19743/archive` to create the workspace and choose storage.
-S3 and OpenCSG Codes are independent choices. XNet is optional for Codes
-repositories. The workspace, branch tree, revisions and backend selection live
-in SQLite. A personal daemon started without the S3 listener uses the same
-database layout. The selected content backend receives file content.
+Use a private network address reachable by the external client for `--drive-s3-listen`. The management endpoint listens on loopback. The S3 credentials grant access to the bound aliases on this daemon. The desktop, S3 API and dashboard use the same local engine and SQLite catalog. A branch belongs to one workspace and inherits its content backend. Available destinations include local files, S3, Scion and OpenCSG Codes with optional XNet.
 
 Create the workspace and branch in the dashboard. In **Archive**, select the
 branch and copy the `workspace` and `branch` UUIDs from the URL. Bind each
@@ -35,7 +24,7 @@ handle. Set the CSI bucket to that alias and configure the path-style endpoint
 and region. An unknown ID or a branch that belongs to another workspace
 causes the bind to fail.
 
-### Edit the same branch from two desktops
+### Access the same branch through two S3 clients
 
 Set `WORKSPACE_ID` and `BRANCH_ID` to the UUIDs from the dashboard. These
 examples use `jq` to encode the management requests.
@@ -57,9 +46,18 @@ same file, the last successful publication wins. A rename implemented as S3
 copy followed by delete consists of two requests. Open the branch under
 **Archive** and use **刷新文件** to read the latest contents.
 
+A direct S3 client can now read and write the branch through either alias:
+
+```sh
+AWS_ACCESS_KEY_ID="$DRIVE_S3_ACCESS_KEY" AWS_SECRET_ACCESS_KEY="$DRIVE_S3_SECRET_KEY" \
+    aws --region us-east-1 --endpoint-url http://127.0.0.1:19741 s3 ls s3://desktop-a/
+```
+
+Omit `write_mode` to use serialized writes. Set `read_only: true` to bind a read-only alias. To expose a saved revision, also pass its UUID as `revision`. A revision alias stays read-only and keeps returning that revision as the branch changes.
+
 ### Assign one writer
 
-Set `write_mode` to `exclusive` (the default) when binding each alias.
+Set `write_mode` to `exclusive` when binding each alias.
 The first binding sets the mode for the branch. A second alias must specify
 the same mode.
 
@@ -92,14 +90,12 @@ to 64 MiB per uploaded object and eight unfinished multipart uploads. Uploads ex
 
 GET streams the requested byte range from one file version. Single and batch deletes check ETag and size under the branch reservation. Requests to delete a specific version or to match a deletion timestamp return an error. Source ETag and date conditions apply to both copy operations.
 
-For standalone use, create a local workspace and branch with `agentdrived`, record their IDs, and stop that daemon. Run `drive-s3 --data-dir <daemon-data-directory>` (the default is `<init-directory>/state`) to serve that local workspace. Its loopback ports are 19731 (S3) and 19732 (admin). Use `agentdrived` when the workspace uses remote file storage.
-
 ## Verification
 
 ```sh
 cargo test --locked -p drive-s3-store
 cargo build --locked -p agentdrived
-python3 tests/drive_s3_smoke.py --daemon target/debug/agentdrived
+python3 tests/drive_s3_smoke.py target/debug/agentdrived
 ```
 
 The HTTP test uses boto3. It verifies dashboard reads of S3 writes, both write

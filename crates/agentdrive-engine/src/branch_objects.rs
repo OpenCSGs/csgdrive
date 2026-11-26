@@ -76,19 +76,13 @@ impl Engine {
         let mut branch = self.runtime.branch(branch_id).await?;
         branch.check_write(self.runtime.location, branch.authority_epoch)?;
         self.runtime.check_mutation(branch_id)?;
-        self.runtime.check_sandbox(branch_id)?;
         if branch.saved_seq != branch.mutation_seq
-            || self
-                .runtime
-                .state
-                .collaboration(branch_id)
-                .await?
-                .is_some_and(|c| c.settings.enabled)
-            || self.runtime.state.mounts().await?.iter().any(|m| {
-                m.branch == branch_id
-                    && m.access == AccessMode::ReadWrite
-                    && m.state != MountState::Released
-            })
+            || (!self.mounts.supports_shared_writable_mounts()
+                && self.runtime.state.mounts().await?.iter().any(|m| {
+                    m.branch == branch_id
+                        && m.access == AccessMode::ReadWrite
+                        && m.state != MountState::Released
+                }))
         {
             return Err(Error::new(
                 ErrorCode::BranchBusy,

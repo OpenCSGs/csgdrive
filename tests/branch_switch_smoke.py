@@ -1,4 +1,4 @@
-"""通过 stdio MCP 验证原生挂载的一次调用切换、占用提示及重试。"""
+"""Verify branch selection, mounted contents and replay through stdio MCP."""
 import argparse
 import json
 import os
@@ -110,18 +110,21 @@ with tempfile.TemporaryDirectory(prefix='agentdrive-switch-') as temporary:
             stream.flush()
             os.fsync(stream.fileno())
         holder = subprocess.Popen([os.sys.executable, '-c', 'import time; time.sleep(60)'], cwd=path)
-        occupied = switch(main, 'to-main', error='MOUNT_BUSY')
-        assert occupied['error']['retryable']
-        assert 'restart the Agent' in occupied['error']['message']
-        assert call('workspace_status', {'workspace': workspace})['selected_branch'] == feature
-        assert (path / 'feature.txt').read_bytes() == b'feature content'
+        if os.name == 'nt':
+            initial = switch(main, 'to-main', error='MOUNT_BUSY')
+            assert initial['error']['retryable']
+            assert call('workspace_status', {'workspace': workspace})['selected_branch'] == feature
+        else:
+            initial = switch(main, 'to-main')
+            assert holder.poll() is None
+            assert (path / 'main.txt').read_text(encoding='utf-8') == 'main content'
         holder.terminate()
         holder.wait(timeout=10)
         holder = None
         stop_proxy()
         start_proxy()
         retried = switch(main, 'to-main')
-        assert retried['id'] == occupied['id']
+        assert retried['id'] == initial['id']
         assert not (path / 'feature.txt').exists()
         assert (path / 'main.txt').read_text(encoding='utf-8') == 'main content'
         replay = switch(feature, 'to-feature')
@@ -130,7 +133,7 @@ with tempfile.TemporaryDirectory(prefix='agentdrive-switch-') as temporary:
         switch(feature, 'to-feature-again')
         assert (path / 'feature.txt').read_bytes() == b'feature content'
         assert 'mount_release' not in calls
-        print('Single-call MCP branch switching, busy errors, client restart, idempotent retries and branch isolation passed')
+        print('MCP branch switching, client restart, request replay and branch isolation passed')
     finally:
         if holder is not None:
             holder.terminate()

@@ -350,6 +350,23 @@ test('workspace creation keeps scoped Codes settings across retries without stor
   assert.deepEqual(data.creations[1],original);
 });
 
+test('workspace creation keeps Scion credentials out of retry storage', async t => {
+  const {page,data} = await setup(t,{createError:'Offline'});
+  await page.goto(endpoint+'/archive'); await settled(page);
+  await page.locator('#workspace-create').click();
+  const dialog = page.getByRole('dialog',{name:'创建工作区',exact:true});
+  await dialog.getByLabel('工作区名称').fill('scion-files');
+  await dialog.getByLabel('存储模式').selectOption('scion');
+  await dialog.getByLabel('Scion 域名').fill('https://scion.example');
+  await dialog.getByLabel('Scion 仓库').fill('org/files');
+  await dialog.getByLabel('Scion Token').fill('scion-private-test');
+  await dialog.getByRole('button',{name:'创建工作区',exact:true}).click();
+  await dialog.getByRole('alert').filter({hasText:'Offline'}).waitFor();
+  assert.deepEqual(data.creations[0].storage, {backend:'scion', enabled:true, endpoint:'https://scion.example',
+    repository:'org/files', token:'scion-private-test', allow_http:false});
+  assert(!JSON.stringify(await page.evaluate(()=>({...sessionStorage}))).includes('scion-private-test'));
+});
+
 test('workspace creation collects the S3 bucket and selected credentials before submitting', async t => {
   const {page,data} = await setup(t);
   await page.goto(endpoint+'/archive'); await settled(page);

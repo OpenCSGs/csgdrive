@@ -18,6 +18,7 @@ agentdrive-model.workspace = true
 agentdrive-ports.workspace = true
 agentdrive-engine.workspace = true
 agentdrive-local.workspace = true
+agentdrive-scion.workspace = true
 agentdrive-s3.workspace = true
 agentdrive-opencsg.workspace = true
 agentdrive-platform.workspace = true

@@ -44,6 +44,8 @@ impl SandboxService {
         driver: Arc<dyn SandboxRuntime>,
         mount_root: PathBuf,
     ) -> Arc<Self> {
+        let mount_root = mount_root.canonicalize().unwrap_or(mount_root);
+        let _ = runtime.sandbox_mount_root.set(mount_root.clone());
         Arc::new(Self {
             runtime,
             services,
@@ -454,8 +456,10 @@ impl SandboxService {
                 "Sandbox requires local branch write authority",
             ));
         }
+        let path = self.mount_root.join(&id);
         let binding = self.runtime.state.mounts().await?.into_iter().find(|m| {
-            m.branch == branch
+            m.path == path
+                && m.branch == branch
                 && m.access == AccessMode::ReadWrite
                 && m.state != MountState::Released
         });
@@ -469,9 +473,6 @@ impl SandboxService {
             if let Some(binding) = binding.as_ref().filter(|_| needs_recovery) {
                 self.check_pending_mount_operations(binding).await?;
             }
-            let path = binding
-                .as_ref()
-                .map_or_else(|| self.mount_root.join(&id), |binding| binding.path.clone());
             let prepared = self
                 .services
                 .mounts
@@ -518,7 +519,8 @@ impl SandboxService {
             .await?
             .into_iter()
             .find(|m| {
-                m.branch == branch
+                m.path == path
+                    && m.branch == branch
                     && m.access == AccessMode::ReadWrite
                     && m.state == MountState::Ready
             })

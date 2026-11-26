@@ -2,9 +2,6 @@ use super::*;
 
 #[path = "collaboration_commands.rs"]
 mod commands;
-#[path = "collaboration_turns.rs"]
-mod turns;
-
 async fn open_collaborating(
     directory: &std::path::Path,
     remote: Option<Arc<MemoryRemote>>,
@@ -123,34 +120,50 @@ async fn automatic_mount(
     (binding, context)
 }
 
-async fn event(
-    harness: &Harness,
-    mount: MountId,
-    turn: &str,
-    phase: ExecutionPhase,
-) -> CollaborationStatus {
-    harness
+// Seed an available authority record to exercise acquisition of existing shared branches.
+async fn seed_available_branch(h: &Harness, mount: MountId) {
+    let binding = h.local.mount(mount).await.unwrap().unwrap();
+    h.commit(binding.branch).await;
+    h.sync(binding.workspace, SyncDirection::Push).await;
+    let mut branch = h.local.branch(binding.branch).await.unwrap().unwrap();
+    let remote = h
         .engine
-        .services
-        .collaboration
-        .execution_event(
-            &actor(),
-            CollaborationEvent {
-                mount,
-                source: "test-runtime".into(),
-                thread_id: "thread".into(),
-                turn_id: turn.into(),
-                phase,
-            },
-        )
+        .storage_routes()
+        .for_workspace(binding.workspace)
+        .unwrap();
+    let key = RefKey::Branch {
+        workspace: binding.workspace,
+        branch: binding.branch,
+    };
+    let previous = remote.refs.get(&key).await.unwrap().unwrap();
+    let mut reference: BranchRef = decode(&previous.bytes).unwrap();
+    reference.write_stopped = true;
+    reference.write_available = true;
+    reference.authority_epoch += 1;
+    reference.source_generation += 1;
+    branch.state = BranchState::Available;
+    branch.authority_epoch = reference.authority_epoch;
+    branch.source_generation = reference.source_generation;
+    let CasOutcome::Applied { version } = remote
+        .refs
+        .compare_exchange(RefUpdate {
+            key,
+            expected_version: Some(previous.version),
+            bytes: encode(&reference).unwrap().into(),
+        })
         .await
         .unwrap()
-}
-
-async fn finish_turn(harness: &Harness, mount: MountId) {
-    let turn = OperationId::new().to_string();
-    event(harness, mount, &turn, ExecutionPhase::Started).await;
-    event(harness, mount, &turn, ExecutionPhase::Completed).await;
+    else {
+        panic!("could not seed an available branch")
+    };
+    h.local
+        .commit(LocalCommit {
+            branches: vec![branch],
+            remote_refs: vec![ObservedBranchRef::new(reference, version, h.clock.now_ns())],
+            ..Default::default()
+        })
+        .await
+        .unwrap();
 }
 
 async fn current_context(harness: &Harness, mount: MountId) -> FsContext {
@@ -188,7 +201,7 @@ async fn mount_save_acquires_released_authority_and_keeps_successful_retries_rea
     harness.write_new(&fs, "work.txt", b"autosaved work").await;
     harness.sync(workspace.id, SyncDirection::Push).await;
     configure(&harness, &binding).await;
-    finish_turn(&harness, binding.id).await;
+    seed_available_branch(&harness, binding.id).await;
     harness.engine.collaborate_due().await.unwrap();
     let before = harness.local.branch(binding.branch).await.unwrap().unwrap();
     assert_eq!(before.state, BranchState::Available);
@@ -219,7 +232,7 @@ async fn mount_save_acquires_released_authority_and_keeps_successful_retries_rea
         .unwrap();
     assert_eq!(revision.kind, RevisionKind::Commit);
     assert_eq!(revision.root, before.working_root);
-    finish_turn(&harness, binding.id).await;
+    seed_available_branch(&harness, binding.id).await;
     harness.engine.collaborate_due().await.unwrap();
     let released = harness.local.branch(binding.branch).await.unwrap().unwrap();
     assert_eq!(released.state, BranchState::Available);
@@ -251,7 +264,7 @@ async fn concurrent_mount_saves_have_one_writer_and_the_loser_can_retry_the_same
     first.write_new(&fs, "work.txt", b"shared contents").await;
     first.sync(workspace.id, SyncDirection::Push).await;
     configure(&first, &a).await;
-    finish_turn(&first, a.id).await;
+    seed_available_branch(&first, a.id).await;
     first.engine.collaborate_due().await.unwrap();
     second.sync(workspace.id, SyncDirection::Pull).await;
     third.sync(workspace.id, SyncDirection::Pull).await;
@@ -286,7 +299,7 @@ async fn concurrent_mount_saves_have_one_writer_and_the_loser_can_retry_the_same
     assert_eq!(failed.recovery(), Some(OperationRecovery::RetryRequest));
     assert!(failed.result.is_none());
     configure(winner, mount).await;
-    finish_turn(winner, mount.id).await;
+    seed_available_branch(winner, mount.id).await;
     winner.engine.collaborate_due().await.unwrap();
     let saved = success(
         loser
@@ -313,9 +326,8 @@ async fn mount_save_rejects_an_outdated_view_and_binding_before_committing() {
     configure(&first, &a).await;
     second.sync(workspace.id, SyncDirection::Pull).await;
     let (b, _) = automatic_mount(&second, workspace.id, a.branch).await;
-    event(&first, a.id, "update", ExecutionPhase::Started).await;
     first.write_new(&fs, "latest.txt", b"latest").await;
-    event(&first, a.id, "update", ExecutionPhase::Completed).await;
+    seed_available_branch(&first, a.id).await;
     first.engine.collaborate_due().await.unwrap();
     let request = save_request(&b);
     let retry = context();
@@ -374,7 +386,7 @@ async fn mount_save_rejects_an_outdated_view_and_binding_before_committing() {
 }
 
 #[tokio::test]
-async fn concurrent_mount_save_retries_reuse_the_turn_commit() {
+async fn concurrent_mount_save_retries_reuse_the_saved_commit() {
     let remote = Arc::new(MemoryRemote::default());
     let harness = new(Some(remote.clone())).await;
     let workspace = harness.workspace().await;
@@ -384,7 +396,7 @@ async fn concurrent_mount_save_retries_reuse_the_turn_commit() {
     harness.write_new(&fs, "work.txt", b"saved once").await;
     harness.sync(workspace.id, SyncDirection::Push).await;
     configure(&harness, &binding).await;
-    finish_turn(&harness, binding.id).await;
+    seed_available_branch(&harness, binding.id).await;
     harness.engine.collaborate_due().await.unwrap();
     let before = harness.local.revisions(workspace.id).await.unwrap().len();
     let (waiting, resume) = remote.pause_next_branch_cas();
@@ -536,7 +548,7 @@ async fn mount_save_can_finish_authority_recovery_without_holding_the_mount_life
 }
 
 #[tokio::test]
-async fn idle_or_closing_files_keeps_authority_until_a_turn_finishes() {
+async fn closing_files_preserves_write_authority() {
     let remote = Arc::new(MemoryRemote::default());
     let first = new(Some(remote.clone())).await;
     let workspace = first.workspace().await;
@@ -607,131 +619,6 @@ async fn idle_or_closing_files_keeps_authority_until_a_turn_finishes() {
             .state,
         BranchState::Writable
     );
-    remote.lose_next_branch_cas_response();
-    finish_turn(&first, binding.id).await;
-    first.engine.collaborate_due().await.unwrap();
-    assert_eq!(
-        first
-            .local
-            .branch(binding.branch)
-            .await
-            .unwrap()
-            .unwrap()
-            .state,
-        BranchState::Available
-    );
-    let remote_ref = remote
-        .get(&RefKey::Branch {
-            workspace: workspace.id,
-            branch: binding.branch,
-        })
-        .await
-        .unwrap()
-        .unwrap();
-    let remote_ref: BranchRef = decode(&remote_ref.bytes).unwrap();
-    assert!(remote_ref.write_available && remote_ref.write_stopped);
-    assert_eq!(remote_ref.owner, first.engine.runtime.location);
-    assert!(
-        first
-            .engine
-            .services
-            .collaboration
-            .status(&actor(), workspace.id)
-            .await
-            .unwrap()[0]
-            .remote_confirmed
-    );
-}
-
-#[tokio::test]
-async fn foreign_turn_registration_binds_once_to_the_first_local_grant() {
-    let remote = Arc::new(MemoryRemote::default());
-    let first = new(Some(remote.clone())).await;
-    let second = new(Some(remote.clone())).await;
-    let workspace = first.workspace().await;
-    let (a, fs_a) = first.branch_mount(workspace.id, "shared-work", None).await;
-    first.write_new(&fs_a, "base.txt", b"base").await;
-    first.commit(a.branch).await;
-    first.sync(workspace.id, SyncDirection::Push).await;
-    configure(&first, &a).await;
-    second.sync(workspace.id, SyncDirection::Pull).await;
-    let (b, fs_b) = automatic_mount(&second, workspace.id, a.branch).await;
-    second
-        .engine
-        .services
-        .collaboration
-        .configure(
-            &actor(),
-            ConfigureCollaboration {
-                mount: b.id,
-                expected_binding_generation: Some(b.generation),
-                enabled: true,
-            },
-        )
-        .await
-        .unwrap();
-    event(&second, b.id, "b-turn", ExecutionPhase::Started).await;
-    let error = second
-        .engine
-        .services
-        .files
-        .create(&fs_b, InodeId::ROOT, "blocked.txt", FileKind::File, 0o644)
-        .await
-        .unwrap_err();
-    assert_eq!(error.code, ErrorCode::BranchBusy);
-    event(&first, a.id, "a-turn", ExecutionPhase::Started).await;
-    event(&first, a.id, "a-turn", ExecutionPhase::Completed).await;
-    first.engine.collaborate_due().await.unwrap();
-    second
-        .write_new(&fs_b, "continued.txt", b"second location")
-        .await;
-    let started = second.local.collaboration(b.branch).await.unwrap().unwrap();
-    assert!(!started.executions[0].pending_grant);
-    event(&second, b.id, "b-turn", ExecutionPhase::Completed).await;
-    second.engine.collaborate_due().await.unwrap();
-    assert_eq!(
-        second.local.branch(b.branch).await.unwrap().unwrap().state,
-        BranchState::Available
-    );
-    event(&second, b.id, "b-turn", ExecutionPhase::Started).await;
-    event(&second, b.id, "b-turn", ExecutionPhase::Completed).await;
-    assert!(
-        second
-            .local
-            .collaboration(b.branch)
-            .await
-            .unwrap()
-            .unwrap()
-            .executions
-            .is_empty()
-    );
-    first.clock.advance(2_001);
-    first.engine.collaborate_due().await.unwrap();
-    let fs_a = current_context(&first, a.id).await;
-    first
-        .write_new(&fs_a, "back-at-first.txt", b"third turn")
-        .await;
-    let epoch = first
-        .local
-        .branch(a.branch)
-        .await
-        .unwrap()
-        .unwrap()
-        .authority_epoch;
-    event(&second, b.id, "b-turn", ExecutionPhase::Completed).await;
-    second.engine.collaborate_due().await.unwrap();
-    let remote_ref = remote
-        .get(&RefKey::Branch {
-            workspace: workspace.id,
-            branch: a.branch,
-        })
-        .await
-        .unwrap()
-        .unwrap();
-    let remote_ref: BranchRef = decode(&remote_ref.bytes).unwrap();
-    assert_eq!(remote_ref.authority_epoch, epoch);
-    assert_eq!(remote_ref.owner, first.engine.runtime.location);
-    assert!(!remote_ref.write_available);
 }
 
 #[tokio::test]
@@ -744,7 +631,7 @@ async fn simultaneous_first_writes_have_one_remote_authority_winner() {
     let (a, _) = first.branch_mount(workspace.id, "shared-work", None).await;
     first.sync(workspace.id, SyncDirection::Push).await;
     configure(&first, &a).await;
-    finish_turn(&first, a.id).await;
+    seed_available_branch(&first, a.id).await;
     first.engine.collaborate_due().await.unwrap();
     second.sync(workspace.id, SyncDirection::Pull).await;
     third.sync(workspace.id, SyncDirection::Pull).await;
@@ -1044,9 +931,8 @@ async fn stale_first_write_waits_for_the_latest_view_before_retrying() {
     configure(&first, &a).await;
     second.sync(workspace.id, SyncDirection::Pull).await;
     let (b, fs_b) = automatic_mount(&second, workspace.id, a.branch).await;
-    event(&first, a.id, "changed", ExecutionPhase::Started).await;
     first.write_new(&fs_a, "latest.txt", b"latest").await;
-    event(&first, a.id, "changed", ExecutionPhase::Completed).await;
+    seed_available_branch(&first, a.id).await;
     first.engine.collaborate_due().await.unwrap();
     let error = second
         .engine
@@ -1146,396 +1032,6 @@ async fn confirmed_contents_follow_authority_changes_without_a_recovery_branch()
 }
 
 #[tokio::test]
-async fn global_disable_finishes_an_interrupted_release_and_allows_credential_repair() {
-    let remote = Arc::new(MemoryRemote::default());
-    let (first, config) = configurable(remote.clone(), true).await;
-    let workspace = first.workspace().await;
-    let (binding, fs) = first.branch_mount(workspace.id, "shared-work", None).await;
-    first.sync(workspace.id, SyncDirection::Push).await;
-    configure(&first, &binding).await;
-    finish_turn(&first, binding.id).await;
-    remote.set_available(false);
-    assert_eq!(
-        first.engine.collaborate_due().await.unwrap_err().code,
-        ErrorCode::Unavailable
-    );
-    set_enabled(&config, false);
-    let disabled = ConfigureCollaboration {
-        mount: binding.id,
-        expected_binding_generation: Some(binding.generation),
-        enabled: false,
-    };
-    assert_eq!(
-        first
-            .engine
-            .services
-            .collaboration
-            .configure(&actor(), disabled.clone())
-            .await
-            .unwrap_err()
-            .code,
-        ErrorCode::BranchBusy
-    );
-    assert_eq!(
-        first
-            .engine
-            .services
-            .files
-            .create(&fs, InodeId::ROOT, "blocked.txt", FileKind::File, 0o644)
-            .await
-            .unwrap_err()
-            .code,
-        ErrorCode::BranchBusy
-    );
-    remote.set_available(true);
-    let snapshot = first.local.collaboration(binding.branch).await.unwrap();
-    let failed = first
-        .engine
-        .refresh_storage_connection(
-            RemoteStorage {
-                objects: remote.clone(),
-                refs: remote.clone(),
-            },
-            &mut || Err(Error::new(ErrorCode::Io, "injected configuration failure")),
-        )
-        .await
-        .unwrap_err();
-    assert_eq!(failed.code, ErrorCode::Io);
-    assert_eq!(
-        first.local.collaboration(binding.branch).await.unwrap(),
-        snapshot
-    );
-    first
-        .engine
-        .refresh_storage_connection(
-            RemoteStorage {
-                objects: remote.clone(),
-                refs: remote.clone(),
-            },
-            &mut || Ok(()),
-        )
-        .await
-        .unwrap();
-    first.engine.collaborate_due().await.unwrap();
-    first
-        .engine
-        .services
-        .collaboration
-        .configure(
-            &actor(),
-            ConfigureCollaboration {
-                expected_binding_generation: Some(
-                    current_context(&first, binding.id).await.generation,
-                ),
-                ..disabled
-            },
-        )
-        .await
-        .unwrap();
-    first
-        .engine
-        .services
-        .files
-        .getattr(&current_context(&first, binding.id).await, InodeId::ROOT)
-        .await
-        .unwrap();
-    assert_eq!(
-        first
-            .local
-            .branch(binding.branch)
-            .await
-            .unwrap()
-            .unwrap()
-            .state,
-        BranchState::Available
-    );
-}
-
-#[tokio::test]
-async fn merge_history_publication_preserves_a_pending_authority_transition() {
-    let remote = Arc::new(MemoryRemote::default());
-    let first = new(Some(remote.clone())).await;
-    let workspace = first.workspace().await;
-    let (binding, _) = first.branch_mount(workspace.id, "shared-work", None).await;
-    first.sync(workspace.id, SyncDirection::Push).await;
-    configure(&first, &binding).await;
-    finish_turn(&first, binding.id).await;
-    first.sync(workspace.id, SyncDirection::Push).await;
-
-    let (waiting, resume) = remote.pause_next_branch_cas();
-    let engine = first.engine.clone();
-    let task = tokio::spawn(async move { engine.collaborate_due().await });
-    waiting.await.unwrap();
-    let before = first.local.branch(binding.branch).await.unwrap().unwrap();
-    let prepared = success(
-        first
-            .engine
-            .services
-            .merge
-            .prepare(
-                context(),
-                PrepareMerge {
-                    workspace: workspace.id,
-                    source: before.formal_head,
-                    target: BranchGuard::from(&before),
-                    base: None,
-                },
-            )
-            .await
-            .unwrap(),
-    );
-    remote.lose_next_branch_cas_response();
-    remote.set_available(false);
-    resume.send(()).unwrap();
-    assert_eq!(
-        task.await.unwrap().unwrap_err().code,
-        ErrorCode::Unavailable
-    );
-    let pending = first
-        .local
-        .collaboration(binding.branch)
-        .await
-        .unwrap()
-        .unwrap();
-    assert!(pending.transition.is_some());
-
-    remote.set_available(true);
-    first.engine.sync_pending().await.unwrap();
-    assert_eq!(
-        first.local.branch(binding.branch).await.unwrap().unwrap(),
-        before
-    );
-    assert_eq!(
-        first.local.collaboration(binding.branch).await.unwrap(),
-        Some(pending)
-    );
-    first.engine.collaborate_due().await.unwrap();
-    let after = first.local.branch(binding.branch).await.unwrap().unwrap();
-    assert_eq!(after.state, BranchState::Available);
-    assert_eq!(after.working_root, before.working_root);
-    assert_eq!(after.source_generation, before.source_generation + 1);
-    assert!(
-        first
-            .local
-            .sync_jobs(workspace.id)
-            .await
-            .unwrap()
-            .is_empty()
-    );
-
-    let receiver = Harness::new(Some(remote)).await;
-    receiver.sync(workspace.id, SyncDirection::Pull).await;
-    assert_eq!(
-        receiver
-            .local
-            .operation(prepared.id)
-            .await
-            .unwrap()
-            .unwrap()
-            .merge_history,
-        prepared.merge_history
-    );
-}
-
-#[tokio::test]
-async fn authority_publication_blocks_external_mutations_until_the_cas_completes() {
-    let remote = Arc::new(MemoryRemote::default());
-    let first = new(Some(remote.clone())).await;
-    let workspace = first.workspace().await;
-    let (binding, fs) = first.branch_mount(workspace.id, "shared-work", None).await;
-    first.write_new(&fs, "saved.txt", b"saved").await;
-    let target_revision = first.commit(binding.branch).await;
-    let (source, source_fs) = first
-        .branch_mount(workspace.id, "merge-source", Some(target_revision))
-        .await;
-    first.write_new(&source_fs, "merged.txt", b"merged").await;
-    let source_revision = first.commit(source.branch).await;
-    first.sync(workspace.id, SyncDirection::Push).await;
-    configure(&first, &binding).await;
-    let guard = BranchGuard::from(&first.local.branch(binding.branch).await.unwrap().unwrap());
-    let merged = success(
-        first
-            .engine
-            .services
-            .merge
-            .prepare(
-                context(),
-                PrepareMerge {
-                    workspace: workspace.id,
-                    source: source_revision,
-                    target: guard,
-                    base: None,
-                },
-            )
-            .await
-            .unwrap(),
-    );
-    let Some(CommandResult::Merge { candidate }) = merged.result else {
-        panic!("merge candidate missing");
-    };
-    finish_turn(&first, binding.id).await;
-    let (waiting, resume) = remote.pause_next_branch_cas();
-    let engine = first.engine.clone();
-    let task = tokio::spawn(async move { engine.collaborate_due().await });
-    waiting.await.unwrap();
-    let before = first.local.branch(binding.branch).await.unwrap().unwrap();
-    let requests = [
-        first
-            .engine
-            .services
-            .revisions
-            .commit(
-                context(),
-                CommitRevision {
-                    guard,
-                    kind: CommitKind::Commit,
-                    message: Some("concurrent".into()),
-                    durability: Durability::Local,
-                },
-            )
-            .await,
-        first
-            .engine
-            .services
-            .revisions
-            .restore(
-                context(),
-                RestoreBranch {
-                    guard,
-                    revision: workspace.initial_revision,
-                    durability: Durability::Local,
-                },
-            )
-            .await,
-        first
-            .engine
-            .services
-            .revisions
-            .fork(
-                context(),
-                ForkBranch {
-                    workspace: workspace.id,
-                    source: None,
-                    source_branch: Some(binding.branch),
-                    name: "concurrent-fork".into(),
-                },
-            )
-            .await,
-        first
-            .engine
-            .services
-            .merge
-            .apply(
-                context(),
-                ApplyMerge {
-                    merge: candidate.id,
-                    candidate: candidate.revision,
-                    target: guard,
-                    durability: Durability::Local,
-                },
-            )
-            .await,
-        first
-            .engine
-            .services
-            .ownership
-            .transfer(
-                context(),
-                TransferOwnership {
-                    guard,
-                    target: LocationId::new(),
-                },
-            )
-            .await,
-        first
-            .engine
-            .services
-            .mounts
-            .save(
-                context(),
-                SaveMount {
-                    mount: binding.id,
-                    message: None,
-                    expected_binding_generation: binding.generation,
-                    durability: Durability::Local,
-                    wait_for_remote_ms: None,
-                },
-            )
-            .await,
-    ];
-    for request in requests {
-        assert_eq!(command_error(request).code, ErrorCode::BranchBusy);
-    }
-    assert_eq!(
-        first.local.branch(binding.branch).await.unwrap().unwrap(),
-        before
-    );
-    resume.send(()).unwrap();
-    task.await.unwrap().unwrap();
-    let after = first.local.branch(binding.branch).await.unwrap().unwrap();
-    assert_eq!(after.formal_head, before.formal_head);
-    assert_eq!(after.state, BranchState::Available);
-}
-
-#[tokio::test]
-async fn completion_releases_authority_with_open_files_and_rejects_late_writes() {
-    let remote = Arc::new(MemoryRemote::default());
-    let first = new(Some(remote.clone())).await;
-    let workspace = first.workspace().await;
-    let (binding, fs) = first.branch_mount(workspace.id, "shared-work", None).await;
-    let file = first.write_new(&fs, "work.txt", b"initial").await;
-    first.commit(binding.branch).await;
-    first.sync(workspace.id, SyncDirection::Push).await;
-    configure(&first, &binding).await;
-    event(&first, binding.id, "finishing", ExecutionPhase::Started).await;
-    let handle = first
-        .engine
-        .services
-        .files
-        .open(
-            &fs,
-            file.id,
-            OpenMode {
-                read: true,
-                write: true,
-                append: false,
-            },
-        )
-        .await
-        .unwrap();
-    event(&first, binding.id, "finishing", ExecutionPhase::Completed).await;
-    first.engine.collaborate_due().await.unwrap();
-    first
-        .engine
-        .services
-        .files
-        .write(&fs, handle.id, 0, Bytes::from_static(b"tail end"))
-        .await
-        .unwrap_err();
-    first
-        .engine
-        .services
-        .files
-        .release(&fs, handle.id)
-        .await
-        .unwrap();
-    first.engine.collaborate_due().await.unwrap();
-    let branch = first.local.branch(binding.branch).await.unwrap().unwrap();
-    assert_eq!(branch.state, BranchState::Available);
-    assert_eq!(branch.saved_seq, branch.mutation_seq);
-    assert!(
-        first
-            .engine
-            .services
-            .collaboration
-            .status(&actor(), workspace.id)
-            .await
-            .unwrap()[0]
-            .remote_confirmed
-    );
-}
-
-#[tokio::test]
 async fn unsupported_mount_build_keeps_the_owned_branch_manual() {
     let remote = Arc::new(MemoryRemote::default());
     let first = new(Some(remote)).await;
@@ -1605,137 +1101,6 @@ async fn unsupported_mount_build_keeps_the_owned_branch_manual() {
 }
 
 #[tokio::test]
-async fn recovery_restarts_once_and_moves_completion_to_the_recovery_grant() {
-    let remote = Arc::new(MemoryRemote::default());
-    let first = new(Some(remote.clone())).await;
-    let workspace = first.workspace().await;
-    let (binding, fs) = first.branch_mount(workspace.id, "shared-work", None).await;
-    let file = first.write_new(&fs, "work.txt", b"initial").await;
-    first.commit(binding.branch).await;
-    first.sync(workspace.id, SyncDirection::Push).await;
-    configure(&first, &binding).await;
-    event(
-        &first,
-        binding.id,
-        "continued-after-recovery",
-        ExecutionPhase::Started,
-    )
-    .await;
-    let handle = first
-        .engine
-        .services
-        .files
-        .open(
-            &fs,
-            file.id,
-            OpenMode {
-                read: true,
-                write: true,
-                append: false,
-            },
-        )
-        .await
-        .unwrap();
-    first
-        .engine
-        .services
-        .files
-        .write(&fs, handle.id, 0, Bytes::from_static(b"changed"))
-        .await
-        .unwrap();
-    first.clock.advance(6_000);
-    first.engine.autosave_due().await.unwrap();
-    let key = RefKey::Branch {
-        workspace: workspace.id,
-        branch: binding.branch,
-    };
-    let before = remote.get(&key).await.unwrap().unwrap();
-    let mut replacement: BranchRef = decode(&before.bytes).unwrap();
-    replacement.owner = LocationId::new();
-    replacement.authority_epoch += 1;
-    replacement.source_generation += 1;
-    remote
-        .compare_exchange(RefUpdate {
-            key: key.clone(),
-            expected_version: Some(before.version),
-            bytes: encode(&replacement).unwrap().into(),
-        })
-        .await
-        .unwrap();
-    let _ = first.engine.sync_pending().await;
-    first.engine.collaborate_due().await.unwrap();
-    let target = first.local.mount(binding.id).await.unwrap().unwrap().branch;
-    assert_ne!(target, binding.branch);
-    let count = first.local.branches(workspace.id).await.unwrap().len();
-    let Harness {
-        directory,
-        local,
-        engine,
-        clock,
-        driver,
-    } = first;
-    drop((local, engine, clock, driver));
-    let (local, engine, clock, driver) =
-        open_collaborating(directory.path(), Some(remote.clone())).await;
-    let resumed = Harness {
-        directory,
-        local,
-        engine,
-        clock,
-        driver,
-    };
-    resumed.engine.collaborate_due().await.unwrap();
-    assert_eq!(
-        resumed
-            .local
-            .mount(binding.id)
-            .await
-            .unwrap()
-            .unwrap()
-            .branch,
-        target
-    );
-    let target_record = resumed.local.collaboration(target).await.unwrap().unwrap();
-    assert_eq!(target_record.executions.len(), 1);
-    assert_eq!(
-        target_record.executions[0].authority_epoch,
-        resumed
-            .local
-            .branch(target)
-            .await
-            .unwrap()
-            .unwrap()
-            .authority_epoch
-    );
-    event(
-        &resumed,
-        binding.id,
-        "continued-after-recovery",
-        ExecutionPhase::Completed,
-    )
-    .await;
-    resumed.engine.collaborate_due().await.unwrap();
-    assert_eq!(
-        resumed.local.branch(target).await.unwrap().unwrap().state,
-        BranchState::Available
-    );
-    event(
-        &resumed,
-        binding.id,
-        "continued-after-recovery",
-        ExecutionPhase::Completed,
-    )
-    .await;
-    resumed.engine.collaborate_due().await.unwrap();
-    assert_eq!(
-        resumed.local.branches(workspace.id).await.unwrap().len(),
-        count
-    );
-    let original: BranchRef = decode(&remote.get(&key).await.unwrap().unwrap().bytes).unwrap();
-    assert_eq!(original, replacement);
-}
-
-#[tokio::test]
 async fn failed_view_update_resumes_the_original_binding() {
     let remote = Arc::new(MemoryRemote::default());
     let writer = new(Some(remote.clone())).await;
@@ -1747,7 +1112,7 @@ async fn failed_view_update_resumes_the_original_binding() {
     reader.sync(workspace.id, SyncDirection::Pull).await;
     let (binding, _) = automatic_mount(&reader, workspace.id, source.branch).await;
     writer.write_new(&fs, "latest.txt", b"latest").await;
-    finish_turn(&writer, source.id).await;
+    seed_available_branch(&writer, source.id).await;
     writer.engine.collaborate_due().await.unwrap();
 
     reader
@@ -1775,150 +1140,6 @@ async fn failed_view_update_resumes_the_original_binding() {
         )
         .await
         .unwrap();
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn event_racing_publication_failure_preserves_recovery_across_restart() {
-    let remote = Arc::new(MemoryRemote::default());
-    let first = new(Some(remote.clone())).await;
-    let workspace = first.workspace().await;
-    let (binding, fs) = first.branch_mount(workspace.id, "shared-work", None).await;
-    first.write_new(&fs, "base.txt", b"base").await;
-    first.commit(binding.branch).await;
-    first.sync(workspace.id, SyncDirection::Push).await;
-    configure(&first, &binding).await;
-    first.write_new(&fs, "pending.txt", b"pending").await;
-    first.clock.advance(6_000);
-    first.engine.autosave_due().await.unwrap();
-
-    // 登记读取协调记录之后，操作时间戳暂停；发布失败能够在此期间完成。
-    let (waiting, resume) = first.clock.pause_next_now_ns();
-    let service = first.engine.services.collaboration.clone();
-    let runtime = tokio::runtime::Handle::current();
-    let registration = tokio::task::spawn_blocking(move || {
-        runtime.block_on(service.execution_event(
-            &actor(),
-            CollaborationEvent {
-                mount: binding.id,
-                source: "test-runtime".into(),
-                thread_id: "thread".into(),
-                turn_id: "racing-turn".into(),
-                phase: ExecutionPhase::Started,
-            },
-        ))
-    });
-    tokio::time::timeout(std::time::Duration::from_secs(5), waiting)
-        .await
-        .unwrap()
-        .unwrap();
-    let key = RefKey::Branch {
-        workspace: workspace.id,
-        branch: binding.branch,
-    };
-    let observed = remote.get(&key).await.unwrap().unwrap();
-    let mut reference: BranchRef = decode(&observed.bytes).unwrap();
-    reference.owner = LocationId::new();
-    reference.authority_epoch += 1;
-    reference.source_generation += 1;
-    remote
-        .compare_exchange(RefUpdate {
-            key,
-            expected_version: Some(observed.version),
-            bytes: encode(&reference).unwrap().into(),
-        })
-        .await
-        .unwrap();
-    let replica = first.engine.services.replica.clone();
-    let publication = tokio::spawn(async move {
-        command_error(
-            replica
-                .sync(
-                    context(),
-                    SyncRequest {
-                        workspace: workspace.id,
-                        branches: Some(vec![binding.branch]),
-                        direction: SyncDirection::Push,
-                    },
-                )
-                .await,
-        )
-    });
-    resume.send(()).unwrap();
-    assert_eq!(publication.await.unwrap().code, ErrorCode::StaleAuthority);
-    registration.await.unwrap().unwrap();
-    assert_eq!(
-        first
-            .local
-            .branch(binding.branch)
-            .await
-            .unwrap()
-            .unwrap()
-            .state,
-        BranchState::Stopped
-    );
-
-    let Harness {
-        directory,
-        local,
-        engine,
-        clock,
-        driver,
-    } = first;
-    drop((local, engine, clock, driver));
-    let (local, engine, clock, driver) = open_collaborating(directory.path(), Some(remote)).await;
-    let resumed = Harness {
-        directory,
-        local,
-        engine,
-        clock,
-        driver,
-    };
-    let error = resumed
-        .engine
-        .services
-        .collaboration
-        .configure(
-            &actor(),
-            ConfigureCollaboration {
-                mount: binding.id,
-                expected_binding_generation: Some(binding.generation),
-                enabled: true,
-            },
-        )
-        .await
-        .unwrap_err();
-    assert_eq!(error.code, ErrorCode::BranchBusy);
-    resumed.engine.collaborate_due().await.unwrap();
-    let target = resumed
-        .local
-        .mount(binding.id)
-        .await
-        .unwrap()
-        .unwrap()
-        .branch;
-    assert_ne!(target, binding.branch);
-    assert!(
-        resumed
-            .local
-            .node_at(target, &path("/pending.txt"))
-            .await
-            .unwrap()
-            .is_some()
-    );
-    let continued = resumed.local.collaboration(target).await.unwrap().unwrap();
-    assert_eq!(continued.executions.len(), 1);
-    event(
-        &resumed,
-        binding.id,
-        "racing-turn",
-        ExecutionPhase::Completed,
-    )
-    .await;
-    resumed.engine.collaborate_due().await.unwrap();
-    assert_eq!(
-        resumed.local.branch(target).await.unwrap().unwrap().state,
-        BranchState::Available
-    );
 }
 
 #[tokio::test]
@@ -2064,7 +1285,7 @@ async fn global_switch_manages_existing_mounts_and_preserves_manual_authority() 
         .await
         .unwrap()
         .unwrap();
-    assert!(!disabled.settings.enabled && disabled.release.is_none());
+    assert!(!disabled.settings.enabled);
     first
         .engine
         .services
@@ -2110,9 +1331,6 @@ async fn global_switch_manages_existing_mounts_and_preserves_manual_authority() 
     );
     set_enabled(&config, true);
     first.engine.collaborate_due().await.unwrap();
-    event(&first, binding.id, "resumed", ExecutionPhase::Started).await;
-    event(&first, binding.id, "resumed", ExecutionPhase::Completed).await;
-    first.engine.collaborate_due().await.unwrap();
     assert_eq!(
         first
             .local
@@ -2121,7 +1339,7 @@ async fn global_switch_manages_existing_mounts_and_preserves_manual_authority() 
             .unwrap()
             .unwrap()
             .state,
-        BranchState::Available
+        BranchState::Writable
     );
 }
 

@@ -4,14 +4,12 @@ mod objects;
 mod session;
 pub use session::{MountSession, SessionChange, SessionRepository, WriteReservation};
 
-use agentdrive_config::{LiveConfig, RuntimeConfig};
+use agentdrive_engine::Engine;
 pub use agentdrive_engine::ObjectConditions;
-use agentdrive_engine::{Adapters, Engine, EngineConfig};
-use agentdrive_local::LocalBackend;
 use agentdrive_model::{
-    Branch, BranchId, BranchState, ErrorCode, Permission, Principal, Workspace, WorkspaceId,
+    Branch, BranchId, BranchState, ErrorCode, Permission, Principal, RevisionId, Workspace,
+    WorkspaceId,
 };
-use agentdrive_platform::{HostDirectories, NativeMountDriver, SystemClock, local_identity};
 pub use objects::{ObjectMeta, ObjectReader};
 use serde::{Deserialize, Serialize};
 use std::{fmt, path::Path, sync::Arc};
@@ -71,8 +69,8 @@ impl From<agentdrive_model::Error> for Error {
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum WriteMode {
-    #[default]
     Exclusive,
+    #[default]
     Serialized,
 }
 
@@ -88,6 +86,7 @@ pub struct SessionStatus {
     pub retired: bool,
     pub writable: bool,
     pub write_mode: WriteMode,
+    pub revision: Option<RevisionId>,
 }
 
 #[derive(Debug, Clone)]
@@ -98,33 +97,6 @@ pub struct Store {
 }
 
 impl Store {
-    pub async fn open(data_dir: &Path) -> Result<Self> {
-        let local = Arc::new(LocalBackend::open_server(data_dir)?);
-        let engine = Engine::open(
-            Adapters {
-                state: local.clone(),
-                objects: local.clone(),
-                working: local,
-                remote_objects: None,
-                remote_refs: None,
-                clock: Arc::new(SystemClock::default()),
-                mounts: NativeMountDriver::new(vec![])?,
-                directories: HostDirectories::new(vec![])?,
-            },
-            EngineConfig {
-                live: LiveConfig::new(RuntimeConfig::default())?,
-                identity: local_identity(),
-            },
-        )
-        .await?;
-        Self::from_engine(
-            engine,
-            &data_dir.join("s3-sessions.sqlite3"),
-            "owner".to_owned().try_into()?,
-        )
-        .await
-    }
-
     pub async fn from_engine(
         engine: Arc<Engine>,
         session_database: &Path,
@@ -157,6 +129,19 @@ impl Store {
         branch: BranchId,
         mode: WriteMode,
     ) -> Result<SessionStatus> {
+        self.bind_view(bucket, workspace, branch, mode, None, false)
+            .await
+    }
+
+    pub async fn bind_view(
+        &self,
+        bucket: &str,
+        workspace: WorkspaceId,
+        branch: BranchId,
+        mode: WriteMode,
+        revision: Option<RevisionId>,
+        read_only: bool,
+    ) -> Result<SessionStatus> {
         if bucket.is_empty() || bucket.len() > 255 || bucket.chars().any(char::is_control) {
             return Err(Error::new(ErrorKind::Invalid, "invalid bucket name"));
         }
@@ -165,9 +150,27 @@ impl Store {
         if branch.state == BranchState::Deleted {
             return Err(Error::new(ErrorKind::NoSuchKey, "branch has been deleted"));
         }
+        if let Some(id) = revision {
+            self.engine
+                .open_revision_file(
+                    &self.principal,
+                    workspace.id,
+                    branch.id,
+                    id,
+                    &agentdrive_model::WorkspacePath::root(),
+                )
+                .await?;
+        }
         let session = self
             .leases
-            .bind(bucket, workspace.id, branch.id, mode)
+            .bind(
+                bucket,
+                workspace.id,
+                branch.id,
+                mode,
+                revision,
+                read_only || revision.is_some(),
+            )
             .await?;
         Ok(session.with_names(workspace.name, branch.name))
     }

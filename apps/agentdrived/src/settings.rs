@@ -46,6 +46,9 @@ pub fn use_database_settings(settings: &ConfigStore, db: &LocalBackend) -> Resul
 
 fn remote_storage(config: &RemoteConfig, db: &LocalBackend) -> Result<Arc<RemoteStorage>> {
     let files: Arc<dyn agentdrive_ports::RemoteObjectStore> = match config {
+        RemoteConfig::Scion(config) => {
+            agentdrive_scion::ScionBackend::open(config.clone(), Arc::new(db.clone()))?
+        }
         RemoteConfig::S3(config) => S3Backend::file_store(config.clone(), Arc::new(db.clone()))?,
         RemoteConfig::OpenCsg(config) => {
             OpenCsgBackend::file_store(config.clone(), Arc::new(db.clone()))?
@@ -149,7 +152,7 @@ mod tests {
         let original = std::fs::read(&config_path).unwrap();
         {
             let settings = ConfigStore::open(&config_path).unwrap();
-            let db = LocalBackend::open_server(&settings.startup().data_dir).unwrap();
+            let db = LocalBackend::open(&settings.startup().data_dir).unwrap();
             use_database_settings(&settings, &db).unwrap();
             settings
                 .bind_new_workspace(workspace, Some(remote.clone()))
@@ -159,7 +162,7 @@ mod tests {
             assert!(saved.workspaces.contains_key(&workspace));
         }
         let settings = ConfigStore::open(&config_path).unwrap();
-        let db = LocalBackend::open_server(&settings.startup().data_dir).unwrap();
+        let db = LocalBackend::open(&settings.startup().data_dir).unwrap();
         use_database_settings(&settings, &db).unwrap();
         assert_eq!(
             settings.live().load().values.workspace_remotes[&workspace],

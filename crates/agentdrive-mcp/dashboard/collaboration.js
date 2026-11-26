@@ -15,10 +15,7 @@ export function createCollaborationPanel({api, element, container}) {
   const mountInput = element('select'); mountInput.id = 'collaboration-mount'; mountLabel.append(mountInput);
   const error = element('p', 'command-error'); error.setAttribute('role', 'alert'); error.hidden = true;
   const state = element('div', 'collaboration-state'); state.setAttribute('aria-live', 'polite');
-  const help = element('details', 'collaboration-help');
-  help.append(element('summary', '', '接入工作结束回调'),
-    element('p', '', '使用 agentdrive integrate 接入 ACP 或 Codex App Server。自定义接入程序通过 POST /api/collaboration/events 登记 started，工作结束时使用相同的 mount、source、thread_id 和 turn_id 发送终止状态。'));
-  panel.append(heading, description, settingsLink, mountLabel, error, state, help); container.append(panel);
+  panel.append(heading, description, settingsLink, mountLabel, error, state); container.append(panel);
   let snapshot = null, statuses = [], loaded = false, request = null;
   function line(label, value) {
     const row = element('div', 'collaboration-detail');
@@ -37,7 +34,6 @@ export function createCollaborationPanel({api, element, container}) {
     const recovering = status.recovery_branch || status.phase === 'recovering';
     const available = branch?.state === 'available' && ['following','disabled'].includes(status.phase);
     line('写权限', recovering ? '原分支写权限已失效' : status.writer ? status.writer === snapshot.status.location ? '本机持有' : `其他 location ${status.writer.slice(0,8)}` : available ? '可接续' : '等待权限确认');
-    line('已登记的活动任务', String(status.active_executions));
     line('保存状态', `${status.local_saved ? '本机已保存' : '等待本机保存'} · ${status.remote_confirmed ? '远端已确认' : '等待远端确认'}`);
     if (status.recovery_branch) {
       const target = snapshot.branches.find(item => item.id === status.recovery_branch);
@@ -83,8 +79,8 @@ export function createCollaborationPanel({api, element, container}) {
     globalState.textContent = capabilities.collaboration_enabled ? '全局已开启' : '全局已关闭';
     description.textContent = !capabilities.automatic_collaboration ? '当前驱动不支持自动协作。'
       : !capabilities.collaboration_enabled ? '本机已关闭自动协作。'
-      : !capabilities.remote_configured ? '配置远程存储后，工作目录可以自动同步和交还写权限。'
-      : '每次 turn 结束并发送回调后，AgentDrive 提交本次修改。当前分支的全部 turn 结束且远端确认保存后，交还写权限。';
+      : !capabilities.remote_configured ? '配置远程存储后，工作目录可以自动同步。'
+      : '工作目录会同步当前分支的修改。';
     renderStatus(); load(data.status.workspace.id);
   }
   mountInput.onchange = renderStatus;

@@ -41,7 +41,7 @@ CSI 驱动使用上述两项凭据请求 AgentDrive。AgentDrive 访问上游对
 
 在 Dashboard 创建工作区，或向 `POST /api/workspaces` 提交 `request_id`、`name` 和可选的 `storage` 对象。请求中断后使用同一个 `request_id` 重试。省略 `storage` 会选择本地文件存储。工作区创建时确定存储位置。「设置 → 存储设置」展示该位置，同一位置的访问凭据可通过设置 API 更新。
 
-SQLite 保存工作区、分支、文件路径、版本，以及文件和内容标识之间的对应关系。S3 或 OpenCSG 根据内容标识保存实际文件。备份需要同时保全 SQLite 的一致性备份、本地存储目录中尚待发布的文件和仅在本地保存的文件，以及上游的文件内容。数据库目录包含保存过的后端凭据，应限制其文件系统权限。
+SQLite 保存工作区、分支、文件路径、版本，以及文件和内容标识之间的对应关系。S3、Scion 或 OpenCSG 根据内容标识保存实际文件。备份需要同时保全 SQLite 的一致性备份、本地存储目录中尚待发布的文件和仅在本地保存的文件，以及上游的文件内容。数据库目录包含保存过的后端凭据，应限制其文件系统权限。
 
 ### S3 与 OSS
 
@@ -72,6 +72,12 @@ SQLite 保存工作区、分支、文件路径、版本，以及文件和内容�
 | `credentials` | 可选，包含 `access_key_id`、`secret_access_key` 和可选的 `session_token`。省略后使用服务环境或 IAM 角色提供的凭据。 |
 
 服务环境可以设置 `AWS_ACCESS_KEY_ID`、`AWS_SECRET_ACCESS_KEY`，临时凭据还需提供 `AWS_SESSION_TOKEN`。工作区已配置的凭据优先。适配器也支持 Web Identity、容器角色和实例角色。文件上传使用带条件的对象创建，文件大于 8 MiB 时使用分段上传。后端需要支持强一致的 GET/HEAD、条件创建和分段上传。目录名称和工作区分支名称由 AgentDrive 查询 SQLite。
+
+### Scion
+
+创建工作区时选择 **Scion**，填写 Scion 域名、已有仓库路径和具有仓库读写权限的 Token。允许匿名读写时可以不填写 Token。使用 API 时传入 `storage: {"backend":"scion","endpoint":"https://scion.example.org","repository":"team/drive","token":"<token>"}`。使用 HTTP 地址时需要设置 `allow_http: true`。
+
+文件内容通过仓库的 Git LFS 接口保存。每个文件块最多 4 MiB，使用原始字节的 SHA-256 作为 LFS OID。本地 SQLite 保存文件块顺序、分支所属工作区和后端配置。读取指定范围时只下载并校验涉及的文件块。备份时需要同时保留 SQLite 数据目录和 Scion 仓库的对象存储。[Scion Git LFS 接口](https://github.com/OpenCSGs/scion/blob/main/docs/design/git-lfs.md)
 
 ### OpenCSG Codes 与可选 XNet
 

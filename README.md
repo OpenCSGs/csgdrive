@@ -18,7 +18,7 @@ Keep using your preferred agent, editor and terminal. MCP lets agents manage sav
 
 | When you need to… | AgentDrive helps you… |
 | --- | --- |
-| Work locally and save remotely | Use ordinary file tools, keep local work, and synchronize results through configured S3 / RustFS or OpenCSG Codes storage. |
+| Work locally and save remotely | Use ordinary file tools, keep local work, and synchronize results through configured S3 / RustFS, Scion, or OpenCSG Codes storage. |
 | Hand work to an agent elsewhere | Save the brief, input files, results and next steps together; pull them on the receiving machine. |
 | Try several approaches in parallel | Branch from shared material, complete separate tasks, review changes and merge the results. |
 | Check progress yourself | Browse documents and images in the Archive, then inspect their origins and changes in Branches & Versions. |
@@ -42,7 +42,7 @@ The agent creates, mounts or adopts a workspace through MCP, then continues usin
 
 ### 2. Synchronize local results to remote storage
 
-When creating a workspace, choose local storage, S3-compatible storage (including OSS and RustFS), or OpenCSG Codes. For an XNet-enabled Codes repository, select XNet to use its large-file rules. **Settings → Storage** shows the destination fixed at creation. Collaborating sandboxes connect to the same AgentDrive service. SQLite stores workspace and branch metadata. The selected backend stores file contents. [Connection guide](docs/configuration.md)
+When creating a workspace, choose local storage, S3-compatible storage (including OSS and RustFS), Scion, or OpenCSG Codes. For an XNet-enabled Codes repository, select XNet to use its large-file rules. **Settings → Storage** shows the destination fixed at creation. Collaborating sandboxes connect to the same AgentDrive service. SQLite stores workspace and branch metadata. The selected backend stores file contents. [Connection guide](docs/configuration.md)
 
 > Save this branch remotely. After remote publication is confirmed, report the workspace ID, branch, version and handoff document path.
 
@@ -50,7 +50,7 @@ The agent can request remote durability with `mount_save` and inspect `remote_co
 
 ### 3. Let an agent on another machine continue
 
-Give each sandbox its own S3 mount alias and bind both aliases to the same workspace and branch. Mount the volumes through CSI. After a sandbox saves a file, reopen it from the other sandbox or select **Refresh files** in the Archive. A branch can serialize writes from both mounts or reserve writing for one holder. See the [drive-s3 setup](apps/drive-s3/README.md) and [architecture diagram](docs/architecture.md#branch-data-flow).
+External services can use the local daemon’s signed S3 API directly. Give each external sandbox its own S3 mount alias and bind both aliases to the same workspace and branch. Mount the volumes through CSI. After a sandbox saves a file, reopen it from the other sandbox or select **Refresh files** in the Archive. A branch can serialize writes from both mounts or reserve writing for one holder. See the [drive-s3 setup](apps/drive-s3/README.md) and [architecture diagram](docs/architecture.md#branch-data-flow).
 
 ### 4. Read results in the Archive and inspect changes in history
 
@@ -114,15 +114,15 @@ For a client that supports stdio MCP, add this configuration and replace the exa
 }
 ```
 
-Keep the AgentDrive service running. Agents can discover tool schemas and manage workspaces, branches, saves, synchronization and handoffs. Streamable HTTP clients can connect to `http://127.0.0.1:7421/mcp` without a token. CLI commands support terminal workflows and scripts; ACP / Codex app-server integrations connect working directories with end-of-task saving. [Agent integrations](docs/integrations.md) · [MCP tools](docs/mcp.md) · [CLI](docs/cli.md)
+Keep the AgentDrive service running. Agents can discover tool schemas and manage workspaces, branches, saves, synchronization and handoffs. Streamable HTTP clients can connect to `http://127.0.0.1:7421/mcp` without a token. CLI commands support terminal workflows and scripts. [Agent integrations](docs/integrations.md) · [MCP tools](docs/mcp.md) · [CLI](docs/cli.md)
 
-A single `branch_switch` call completes a branch change. If a process occupies the directory, follow the response instructions to close it or restart the agent, then retry the same operation.
+Use `branch_switch` to mount the selected branch at the current project path.
 
 ## Get started
 
-Build from source on Linux, macOS or Windows. Linux mounts use FUSE, macOS uses its built-in NFS client, and Windows uses WinFsp. [Installation, dependencies and startup commands](docs/installation.md)
+Build from source on Linux, macOS or Windows. Linux and macOS use GeeseFS with FUSE or macFUSE. Windows uses WinFsp. [Installation, dependencies and startup commands](docs/installation.md)
 
-- [Remote storage configuration](docs/configuration.md): local storage, S3, RustFS, OpenCSG Codes and multiple machines.
+- [Remote storage configuration](docs/configuration.md): local storage, S3, RustFS, Scion, OpenCSG Codes and multiple machines.
 - [Operations and recovery](docs/operations.md): publication confirmation, handoffs, merging and recovery.
 - [Documentation index](docs/README.md): complete usage references and developer documentation.
 

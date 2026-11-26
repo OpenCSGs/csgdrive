@@ -127,11 +127,11 @@ impl Server {
     async fn attach_with_automatic(&self, automatic: bool) -> Value {
         let response = self
             .http
-            .post(format!("{}/api/lifecycle", self.base))
+            .post(format!("{}/api/commands/mount_prepare", self.base))
             .json(&json!({
-                "event":"attach","request_id":format!("attach-{automatic}"),"workspace":self.workspace,
+                "request_id":format!("attach-{automatic}"), "request": {"workspace":self.workspace,
                 "branch":self.branch,"automatic":automatic,
-                "mount_path":self.directory.path().join("config").join("mounts").join("shared"),
+                "path":self.directory.path().join("config").join("mounts").join("shared")}
             }))
             .send()
             .await
@@ -139,7 +139,7 @@ impl Server {
         let status = response.status();
         let result: Value = response.json().await.unwrap();
         assert!(status.is_success(), "{result}");
-        result["binding"].clone()
+        result["result"]["binding"].clone()
     }
 
     async fn set_collaboration_enabled(&self, enabled: bool) {
@@ -205,47 +205,6 @@ async fn collaboration_routes_enforce_binding_generation() {
 }
 
 #[tokio::test]
-async fn codex_events_require_registration_and_replay_terminal_outcomes() {
-    let server = Server::new().await;
-    let mount = server.attach().await;
-    let url = format!("{}/api/collaboration/codex", server.base);
-    let mut event = json!({"mount":mount["id"],"source":"codex-test","method":"turn/completed",
-        "params":{"threadId":"thread-123","turn":{"id":"turn-456","status":"completed"}}});
-    let unknown = server.http.post(&url).json(&event).send().await.unwrap();
-    assert!(unknown.status().is_client_error());
-    event["method"] = json!("turn/started");
-    event["params"]["turn"]["status"] = json!("inProgress");
-    for _ in 0..2 {
-        let response = server.http.post(&url).json(&event).send().await.unwrap();
-        let status = response.status();
-        let body: Value = response.json().await.unwrap();
-        assert!(status.is_success(), "{body}");
-        assert_eq!(body["active_executions"], 1);
-    }
-    event["method"] = json!("turn/completed");
-    event["params"]["turn"]["status"] = json!("interrupted");
-    for _ in 0..2 {
-        let response = server.http.post(&url).json(&event).send().await.unwrap();
-        let status = response.status();
-        let body: Value = response.json().await.unwrap();
-        assert!(status.is_success(), "{body}");
-        assert_eq!(body["active_executions"], 0);
-    }
-    event["params"]["turn"]["status"] = json!("inProgress");
-    assert_eq!(
-        server
-            .http
-            .post(&url)
-            .json(&event)
-            .send()
-            .await
-            .unwrap()
-            .status(),
-        400
-    );
-}
-
-#[tokio::test]
 async fn unsupported_drivers_reject_automatic_mounts_and_configuration() {
     let server = Server::new().await;
     let mount = server.attach().await;
@@ -253,11 +212,17 @@ async fn unsupported_drivers_reject_automatic_mounts_and_configuration() {
         .mounts
         .automatic_collaboration_disabled
         .store(true, Ordering::SeqCst);
-    let response = server.http.post(format!("{}/api/lifecycle", server.base))
-        .json(&json!({"event":"attach","request_id":"unsupported-automatic","workspace":server.workspace,
+    let response = server
+        .http
+        .post(format!("{}/api/commands/mount_prepare", server.base))
+        .json(
+            &json!({"request_id":"unsupported-automatic","request":{"workspace":server.workspace,
             "branch":server.branch,"automatic":true,
-            "mount_path":server.directory.path().join("config").join("mounts").join("unsupported")}))
-        .send().await.unwrap();
+            "path":server.directory.path().join("config").join("mounts").join("unsupported")}}),
+        )
+        .send()
+        .await
+        .unwrap();
     assert!(response.status().is_client_error());
     assert_eq!(
         response.json::<Value>().await.unwrap()["error"]["code"],

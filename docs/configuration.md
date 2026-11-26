@@ -41,7 +41,7 @@ Startup changes take effect after restart. A new database initializes its cache,
 
 Create the workspace in the dashboard or send `POST /api/workspaces` with `request_id`, `name`, and an optional `storage` object. Retry an interrupted request with the same `request_id`. Omitting `storage` selects local file storage. Each workspace keeps its original storage destination. **Settings → Storage** displays it. The settings API supports credential rotation for the same destination.
 
-The database records the workspace, branches, file paths and versions. It maps each file to its immutable content identifier. S3 and OpenCSG provide the bytes for that identifier. A backup needs a consistent SQLite backup, the local storage directory for local-only files and pending changes, and the configured upstream content. Keep the database directory private because saved backend credentials are stored there.
+The database records the workspace, branches, file paths and versions. It maps each file to its immutable content identifier. S3, Scion and OpenCSG provide the bytes for that identifier. A backup needs a consistent SQLite backup, the local storage directory for local-only files and pending changes, and the configured upstream content. Keep the database directory private because saved backend credentials are stored there.
 
 ### S3 and OSS
 
@@ -72,6 +72,12 @@ Create the destination bucket before selecting it. The following example is a re
 | `credentials` | Optional `access_key_id`, `secret_access_key`, and `session_token`. Omit to use the service environment or its IAM role. |
 
 Set `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, and, for temporary credentials, `AWS_SESSION_TOKEN` in the daemon's service environment. A configured credential takes precedence. Environment credentials are read when the client is created. The adapter also supports web identity, container roles and instance metadata. It uses strongly consistent GET/HEAD, conditional creation, and multipart upload above 8 MiB. Filesystem paths and branch names are resolved by AgentDrive from SQLite.
+
+### Scion
+
+Select **Scion** in the workspace creation dialog. Enter the Scion origin (for example `https://scion.example.org`), an existing repository path, and a token with read and write access to that repository. Omit the token for a Scion instance that allows anonymous reads and writes. For the creation API, use `storage: {"backend":"scion","endpoint":"https://scion.example.org","repository":"team/drive","token":"<token>"}`. HTTP requires `allow_http: true`.
+
+AgentDrive stores file contents using the repository's Git LFS HTTP interface. Chunks of up to 4 MiB use their raw SHA-256 as the LFS OID. Local SQLite records their order for each immutable file and keeps the branch-to-workspace relation and backend settings. A range read downloads and verifies only the chunks it covers. Backup and restore the SQLite directory together with the Scion repository's object store. [Scion Git LFS interface](https://github.com/OpenCSGs/scion/blob/main/docs/design/git-lfs.md)
 
 ### OpenCSG Codes and optional XNet
 

@@ -72,26 +72,30 @@ async fn historical_forks_share_index_pages_and_isolate_each_generation() {
     let rows = count(&db, "SELECT count(*) FROM node_versions");
 
     // A full-tree read would need the directory index and the first inode page.
-    let objects = h
-        .directory
-        .path()
-        .join("objects")
-        .join(workspace.id.to_string());
+    let metadata = |id: &ObjectId| -> Vec<u8> {
+        db.query_row(
+            "SELECT data FROM metadata_objects WHERE workspace_id=?1 AND hash=?2",
+            rusqlite::params![workspace.id.to_string(), id.as_str()],
+            |r| r.get(0),
+        )
+        .unwrap()
+    };
     let root = h.local.revision(historical).await.unwrap().unwrap().root;
-    let tree: TreeRoot = decode(&std::fs::read(objects.join(root.id.as_str())).unwrap()).unwrap();
+    let tree: TreeRoot = decode(&metadata(&root.id)).unwrap();
     let IndexPage::Branch { children } =
-        decode::<IndexPage<Inode>>(&std::fs::read(objects.join(tree.inodes.id.as_str())).unwrap())
-            .unwrap()
+        decode::<IndexPage<Inode>>(&metadata(&tree.inodes.id)).unwrap()
     else {
         panic!("fixture must span more than one inode page");
     };
-    let hidden = [
-        objects.join(tree.directories.id.as_str()),
-        objects.join(children[0].object.id.as_str()),
-    ];
-    for file in &hidden {
-        std::fs::rename(file, file.with_extension("unavailable")).unwrap();
-    }
+    let hidden = [tree.directories.id, children[0].object.id.clone()].map(|id| {
+        let bytes = metadata(&id);
+        db.execute(
+            "UPDATE metadata_objects SET data=X'00' WHERE workspace_id=?1 AND hash=?2",
+            rusqlite::params![workspace.id.to_string(), id.as_str()],
+        )
+        .unwrap();
+        (id, bytes)
+    });
     let child = fork(&h, workspace.id, historical, "history-child").await;
     let sibling = fork(&h, workspace.id, historical, "history-sibling").await;
     assert_eq!(child.next_inode, highest.0 + 1);
@@ -111,8 +115,12 @@ async fn historical_forks_share_index_pages_and_isolate_each_generation() {
         INDEX_PAGE_ENTRIES + 1
     );
     assert_eq!(count(&db, "SELECT count(*) FROM node_versions"), rows);
-    for file in &hidden {
-        std::fs::rename(file.with_extension("unavailable"), file).unwrap();
+    for (id, bytes) in hidden {
+        db.execute(
+            "UPDATE metadata_objects SET data=?1 WHERE workspace_id=?2 AND hash=?3",
+            rusqlite::params![bytes, workspace.id.to_string(), id.as_str()],
+        )
+        .unwrap();
     }
 
     let changed = put(&h, &child, "/f000", b"first child".to_vec()).await;

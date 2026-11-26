@@ -5,7 +5,7 @@ mod store;
 mod types;
 
 pub use file::{Config, StartupConfig, initialize};
-pub use remote::{OpenCsgConfig, RemoteConfig};
+pub use remote::{OpenCsgConfig, RemoteConfig, ScionConfig};
 pub use store::{
     ConfigApplier, ConfigStore, LiveConfig, RuntimeConfig, RuntimeSettingsRepository, Settings,
     SettingsUpdate, Snapshot,

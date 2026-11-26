@@ -82,7 +82,7 @@ Fields below are inside `request`. A suffix `?` means the field may be omitted. 
 | `workspace_export` | `workspace`, `revision`, `destination`, `paths?` | Exports selected paths into a new allowed host directory. Omitted/null paths select the whole revision. |
 | `revision_commit` | `guard`, `kind`, `message?`, `durability?` | `kind` accepts `commit` or `checkpoint`; returns `result.revision` and `result.branch`. `message` permits up to 4096 UTF-8 bytes without NUL. |
 | `branch_create` | `workspace`, `name`, `source?`, `source_branch?` | Provide at most one source. Omission uses the selected branch; branch sources include unsaved working content. Returns `result.branch` without changing the selection. |
-| `branch_switch` | `workspace`, `branch` | Save the previous branch, switch selection, and remount the original path in one call. On `MOUNT_BUSY`, close files/processes using the directory or restart the Agent, then retry `branch_switch` with the same request ID. Other failures retain their specific cause. Completed retries return the original receipt. |
+| `branch_switch` | `workspace`, `branch` | Save the previous branch, switch selection, and remount the original path in one call. On Windows, retry the same request after closing any file or directory that WinFsp reports as busy. Other failures retain their specific cause. Completed retries return the original receipt. |
 | `branch_restore` | `guard`, `revision`, `durability?` | Restores a branch, with mount release when required. |
 | `sync` | `workspace`, `direction`, `branches?` | `direction`: `push`, `pull`, `both`; omission/null of `branches` selects all. `both` pushes before pulling. On pull, discovery imports remote history before filtering branch IDs in the result. |
 | `cache_prefetch` | `workspace`, `revision`, `paths?` | Downloads a `RevisionRange`; `result.status`. |
@@ -123,9 +123,9 @@ Call `workspace_status` for an existing workspace and inspect `capabilities`:
 | Field | Current meaning |
 | --- | --- |
 | `format_version` | Persisted format version, currently `1`. |
-| `automatic_collaboration` | Whether the compiled native driver supports automatic collaboration. Linux FUSE, macOS NFS and WinFsp support it; remote storage is also required. |
+| `automatic_collaboration` | WinFsp supports automatic remote writer acquisition when remote storage is configured. GeeseFS uses the S3 gateway for file access. |
 | `collaboration_enabled` | Current daemon-wide `collaboration.enabled` setting, which defaults to true. View it in Settings and edit it in the configuration file. |
-| `platform_mount` | Native mount adapter: `linux-fuse`, `macos-nfs` or `windows-winfsp`. |
+| `platform_mount` | `geesefs` on Linux and macOS, `windows-winfsp` on Windows. |
 | `file_operations` | `lookup`, `getattr`, `readdir`, `create`, `mkdir`, `read`, `write`, `truncate`, `chmod`, `rename`, `unlink`, `rmdir`, `fsync`. These describe mounted filesystem operations. |
 | `remote_configured` | Whether S3 or OpenCSG is currently enabled; a saved profile with `enabled: false` returns `false`. This flag does not test connectivity or credentials. |
 | `automatic_text_merge` | `false`; conflicts require explicit resolution. |
@@ -135,7 +135,7 @@ File editing normally uses the mounted native path; the MCP tools manage workspa
 
 Source definitions: [catalog and dispatch](../crates/agentdrive-mcp/src/server.rs), [request types](../crates/agentdrive-ports/src/api.rs), [shared types](../crates/agentdrive-model/src/entities.rs), and [error codes](../crates/agentdrive-model/src/error.rs).
 
-Turn persistence is managed by [agent integrations](integrations.md) through the local lifecycle API. Branches expose `source_branch` and `base_revision` for creation ancestry.
+Branches expose `source_branch` and `base_revision` for creation ancestry.
 
 ## Workspace relationships
 

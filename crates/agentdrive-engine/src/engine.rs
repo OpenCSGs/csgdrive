@@ -32,7 +32,7 @@ pub struct EngineConfig {
 #[derive(Debug)]
 pub struct Engine {
     workspaces: Arc<WorkspaceService>,
-    mounts: Arc<MountService>,
+    pub(crate) mounts: Arc<MountService>,
     pub services: Services,
     pub(crate) branch_files: Arc<crate::branch_files::BranchFileService>,
     pub runtime: Arc<Runtime>,
@@ -94,10 +94,13 @@ impl Engine {
             publisher.clone(),
             snapshots,
         );
+        let queries =
+            crate::tree_queries::IndexedTreeQuery::new(content.clone(), runtime.state.clone());
         let branch_files = crate::branch_files::BranchFileService::new(
             runtime.clone(),
             content.clone(),
             adapters.working.clone(),
+            queries.clone(),
         );
         let files = FileService::new(
             runtime.clone(),
@@ -115,8 +118,6 @@ impl Engine {
             adapters.mounts.clone(),
             config.identity,
         );
-        let queries =
-            crate::tree_queries::IndexedTreeQuery::new(content.clone(), runtime.state.clone());
         let versions = VersionService::new(revisions.clone(), mounts.clone(), queries);
         let cache = CacheService::new(
             runtime.clone(),

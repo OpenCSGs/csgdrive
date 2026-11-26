@@ -162,7 +162,6 @@ CREATE TABLE IF NOT EXISTS mounts (
     FOREIGN KEY(workspace_id,branch_id) REFERENCES branches(workspace_id,branch_id) DEFERRABLE INITIALLY DEFERRED
 );
 CREATE UNIQUE INDEX IF NOT EXISTS mounts_path ON mounts(path) WHERE active=1;
-CREATE UNIQUE INDEX IF NOT EXISTS mounts_writer ON mounts(branch_id) WHERE writable=1;
 CREATE INDEX IF NOT EXISTS mounts_branch ON mounts(branch_id, id);
 CREATE TABLE IF NOT EXISTS merges (
     id TEXT PRIMARY KEY,

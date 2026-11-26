@@ -13,7 +13,8 @@ BOUNDARIES = {
     "agentdrive-config": {"agentdrive-model"},
     "agentdrive-engine": {"agentdrive-model", "agentdrive-ports", "agentdrive-config"},
     "agentdrive-local": {"agentdrive-model", "agentdrive-ports"},
-    "drive-s3-store": {"agentdrive-model", "agentdrive-ports", "agentdrive-config", "agentdrive-engine", "agentdrive-local", "agentdrive-platform"},
+    "drive-s3-store": {"agentdrive-model", "agentdrive-engine"},
+    "agentdrive-scion": {"agentdrive-model", "agentdrive-ports", "agentdrive-config"},
     "agentdrive-s3": {"agentdrive-model", "agentdrive-ports", "agentdrive-config"},
     "agentdrive-opencsg": {"agentdrive-model", "agentdrive-ports", "agentdrive-config"},
     "agentdrive-platform": {"agentdrive-model", "agentdrive-ports"},
@@ -28,7 +29,7 @@ ADAPTER_DEPENDENCIES = {
 def main():
     environment = os.environ.copy()
     # Metadata inspection does not use the Make jobserver inherited by Python.
-    for name in ("MAKEFLAGS", "CARGO_MAKEFLAGS"):
+    for name in ("MAKEFLAGS", "MFLAGS", "CARGO_MAKEFLAGS"):
         environment.pop(name, None)
     metadata = json.loads(subprocess.check_output(
         ["cargo", "metadata", "--no-deps", "--format-version=1", "--locked"],

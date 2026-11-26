@@ -49,15 +49,13 @@
 .collaboration-detail > span { color:var(--muted); font-size:12px; }
 .collaboration-detail > strong { font-weight:600; }
 .collaboration-state > p { grid-column:1 / -1; margin:0; font-size:13px; line-height:1.7; }
-.collaboration-help { margin:20px 24px 0; color:var(--muted); font-size:12px; line-height:1.7; }
-.collaboration-help summary { cursor:pointer; }
 @media(max-width:850px) {
   .relationship-detail > section { padding:18px 16px; }
   .management-form { grid-template-columns:1fr; padding:0 16px 20px; }
   .management-row { align-items:stretch; flex-direction:column; padding:18px 16px; }
   .management-actions { flex-shrink:1; }
   .command-panel { padding:18px 16px; }
-  .collaboration-mount,.collaboration-description,.collaboration-panel > .command-error,.collaboration-state,.collaboration-help,.collaboration-settings-link { margin-left:16px; margin-right:16px; }
+  .collaboration-mount,.collaboration-description,.collaboration-panel > .command-error,.collaboration-state,.collaboration-settings-link { margin-left:16px; margin-right:16px; }
 }
 .sandbox-controls { display:inline-flex; }
 .sandbox-trigger { display:inline-flex; align-items:center; gap:8px; }

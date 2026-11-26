@@ -46,6 +46,11 @@ function storageEditor($) {
     $('storage-mode').value = remote && remote.enabled !== false ? backend : 'local';
     const s3 = backend === 's3' ? remote : null;
     const opencsg = backend === 'opencsg' ? remote : null;
+    const scion = backend === 'scion' ? remote : null;
+    $('scion-endpoint').value = scion?.endpoint || '';
+    $('scion-repository').value = scion?.repository || '';
+    $('scion-http').checked = scion?.allow_http || false;
+    $('scion-token').value = '';
     $('s3-endpoint').value = s3?.endpoint || '';
     $('s3-bucket').value = s3?.bucket || '';
     $('s3-region').value = s3?.region || 'us-east-1';
@@ -77,6 +82,10 @@ function storageEditor($) {
           session_token:$('s3-session-token').value || null,
         } : null,
       };
+    } else if (mode === 'scion') {
+      remote = {backend:'scion', enabled:true, endpoint:$('scion-endpoint').value.trim(),
+        repository:$('scion-repository').value.trim(), token:$('scion-token').value, allow_http:$('scion-http').checked};
+      if (!remote.endpoint || !remote.repository) throw new Error('请填写 Scion 域名和仓库。');
     } else if (mode === 'opencsg') {
       remote = {backend:'opencsg', enabled:true, endpoint:$('opencsg-endpoint').value.trim(),
         repository:$('opencsg-repository').value.trim(), branch:$('opencsg-branch').value.trim(),
@@ -89,6 +98,9 @@ function storageEditor($) {
     const mode = $('storage-mode').value;
     $('s3-fields').hidden = mode !== 's3';
     $('s3-fields').disabled = mode !== 's3';
+    $('scion-fields').hidden = mode !== 'scion';
+    $('scion-fields').disabled = mode !== 'scion';
+    for (const name of ['endpoint','repository']) $('scion-' + name).required = mode === 'scion';
     $('opencsg-fields').hidden = mode !== 'opencsg';
     $('opencsg-fields').disabled = mode !== 'opencsg';
     for (const name of ['bucket', 'region', 'prefix']) $('s3-' + name).required = mode === 's3';
@@ -106,7 +118,7 @@ export function createWorkspaceCreator({api, element, created}) {
   const dialog = element('dialog', 'revision-dialog workspace-create-dialog');
   const title = element('h2', '', '创建工作区'); title.id = 'workspace-create-title';
   dialog.setAttribute('aria-labelledby', title.id);
-  const description = element('p', '', '选择文件和版本记录的存储位置。工作区创建后，存储位置固定。');
+  const description = element('p', '', '选择文件内容的存储位置。分支和版本记录保存在本地 SQLite 数据库中。');
   const form = element('form');
   const label = element('label', '', '工作区名称');
   const input = element('input'); input.required = true; input.autocomplete = 'off'; input.placeholder = '例如：市场调研'; label.append(input);
@@ -147,7 +159,7 @@ export function createWorkspaceCreator({api, element, created}) {
       const profile = editor.read();
       const request = {request_id:ticket?.request_id || newRequestId(), name:input.value.trim(), storage:profile};
       ticket = structuredClone(request);
-      if (ticket.storage?.backend === 'opencsg') delete ticket.storage.token;
+      if (ticket.storage) delete ticket.storage.token;
       if (ticket.storage?.credentials) {
         delete ticket.storage.credentials.secret_access_key;
         delete ticket.storage.credentials.session_token;

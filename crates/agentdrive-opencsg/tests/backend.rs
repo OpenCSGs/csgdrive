@@ -423,8 +423,7 @@ async fn native_pointer_reads_use_the_fixed_revision_and_keep_credentials_at_the
         data.head()
     };
     let directory = tempfile::tempdir().unwrap();
-    let db =
-        std::sync::Arc::new(agentdrive_local::LocalBackend::open_server(directory.path()).unwrap());
+    let db = std::sync::Arc::new(agentdrive_local::LocalBackend::open(directory.path()).unwrap());
     db.save_file_placement(
         workspace,
         &object.id,
@@ -481,7 +480,7 @@ async fn server_keeps_branch_refs_tree_pages_and_chunk_manifests_in_sql() {
         .storage_target()
         .unwrap();
     {
-        let db = LocalBackend::open_server(directory.path()).unwrap();
+        let db = LocalBackend::open(directory.path()).unwrap();
         let codes =
             OpenCsgBackend::file_store(server.config.clone(), Arc::new(db.clone())).unwrap();
         let backend = DatabaseStorage::new(db.clone(), target.clone(), codes).unwrap();
@@ -574,7 +573,7 @@ async fn server_keeps_branch_refs_tree_pages_and_chunk_manifests_in_sql() {
         assert_eq!(stored.len(), 2);
         assert!(stored.iter().all(|key| key.contains("/chunks/")));
     }
-    let db = LocalBackend::open_server(directory.path()).unwrap();
+    let db = LocalBackend::open(directory.path()).unwrap();
     let codes = OpenCsgBackend::file_store(server.config.clone(), Arc::new(db.clone())).unwrap();
     let backend = DatabaseStorage::new(db, target, codes).unwrap();
     assert_eq!(
@@ -605,7 +604,7 @@ async fn git_batches_recover_lost_replies_and_range_reads_verify_only_requested_
     const CHUNK: usize = 4 * 1024 * 1024;
     let server = Server::new().await;
     let dir = tempfile::tempdir().unwrap();
-    let db = Arc::new(LocalBackend::open_server(dir.path()).unwrap());
+    let db = Arc::new(LocalBackend::open(dir.path()).unwrap());
     let workspace = WorkspaceId::new();
     let mut bytes = vec![0xFF; CHUNK];
     bytes.extend(std::iter::repeat_n(0x82, CHUNK));
@@ -738,7 +737,7 @@ if request["action"] == "upload":
     };
 
     let dir = tempfile::tempdir().unwrap();
-    let db = Arc::new(LocalBackend::open_server(dir.path()).unwrap());
+    let db = Arc::new(LocalBackend::open(dir.path()).unwrap());
     let server = Server::new().await;
     let workspace = WorkspaceId::new();
     let bytes = b"stored using a mocked XNet CAS\x00\xff";
@@ -819,7 +818,7 @@ async fn git_chunks_preserve_literal_lfs_pointers_and_binary_prefixes() {
     use std::sync::Arc;
     let server = Server::new().await;
     let dir = tempfile::tempdir().unwrap();
-    let db = Arc::new(LocalBackend::open_server(dir.path()).unwrap());
+    let db = Arc::new(LocalBackend::open(dir.path()).unwrap());
     let workspace = WorkspaceId::new();
     let backend = OpenCsgBackend::file_store(server.config.clone(), db).unwrap();
     let pointer = format!(

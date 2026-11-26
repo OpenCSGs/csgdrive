@@ -5,7 +5,6 @@ impl CollaborationService {
         record.transition.is_some()
             || record.recovery.is_some()
             || record.phase == CollaborationPhase::Switching
-            || record.release.is_some()
             || self
                 .runtime
                 .collaboration_blocked
@@ -14,12 +13,8 @@ impl CollaborationService {
     }
 
     pub(super) async fn suspend(&self, record: &mut CollaborationRecord) -> Result<()> {
-        if record.settings.enabled
-            || record.phase != CollaborationPhase::Disabled
-            || record.release.is_some()
-        {
+        if record.settings.enabled || record.phase != CollaborationPhase::Disabled {
             record.settings.enabled = false;
-            record.release = None;
             record.phase = CollaborationPhase::Disabled;
             record.error = None;
             self.last_refresh.lock().remove(&record.branch);

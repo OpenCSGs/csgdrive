@@ -12,16 +12,6 @@ pub struct ConfigureCollaboration {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, schemars::JsonSchema)]
-#[serde(deny_unknown_fields)]
-pub struct CollaborationEvent {
-    pub mount: MountId,
-    pub source: String,
-    pub thread_id: String,
-    pub turn_id: String,
-    pub phase: ExecutionPhase,
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct CollaborationStatus {
     pub workspace: WorkspaceId,
     pub branch: BranchId,
@@ -30,7 +20,6 @@ pub struct CollaborationStatus {
     pub writer: Option<LocationId>,
     pub authority_epoch: u64,
     pub mounts: Vec<MountId>,
-    pub active_executions: usize,
     pub local_saved: bool,
     pub remote_confirmed: bool,
     pub recovery_branch: Option<BranchId>,
@@ -49,11 +38,6 @@ pub trait CollaborationApi: Send + Sync {
         actor: &Principal,
         workspace: WorkspaceId,
     ) -> Result<Vec<CollaborationStatus>>;
-    async fn execution_event(
-        &self,
-        actor: &Principal,
-        request: CollaborationEvent,
-    ) -> Result<CollaborationStatus>;
 }
 
 #[async_trait]

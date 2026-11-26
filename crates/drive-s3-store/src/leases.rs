@@ -80,14 +80,19 @@ impl Database {
     }
 }
 
-const SESSION_SCHEMA_VERSION: i32 = 1;
+const SESSION_SCHEMA_VERSION: i32 = 2;
 
 fn initialize(mut db: Connection) -> Result<()> {
     // The write reservation serializes concurrent opens of a new, empty file.
     let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
     let version: i32 = tx.pragma_query_value(None, "user_version", |row| row.get(0))?;
-    if version == SESSION_SCHEMA_VERSION {
-        check_session_schema(&tx)?;
+    if version == SESSION_SCHEMA_VERSION || version == 1 {
+        check_session_schema(&tx, version)?;
+        if version == 1 {
+            tx.execute_batch("ALTER TABLE drive_sessions ADD COLUMN revision TEXT;
+                              ALTER TABLE drive_sessions ADD COLUMN read_only INTEGER NOT NULL DEFAULT 0 CHECK(read_only IN (0,1))")?;
+            tx.pragma_update(None, "user_version", SESSION_SCHEMA_VERSION)?;
+        }
     } else {
         let empty: bool = tx.query_row(
             "SELECT NOT EXISTS(SELECT 1 FROM sqlite_schema)",
@@ -110,7 +115,7 @@ fn initialize(mut db: Connection) -> Result<()> {
     Ok(())
 }
 
-fn check_session_schema(db: &Connection) -> Result<()> {
+fn check_session_schema(db: &Connection, version: i32) -> Result<()> {
     // Check the application's tables even if another database uses the same SQLite user_version.
     for (table, required) in [
         (
@@ -119,7 +124,18 @@ fn check_session_schema(db: &Connection) -> Result<()> {
         ),
         (
             "drive_sessions",
-            &["branch_id", "bucket", "retired", "successor"][..],
+            if version == 1 {
+                &["branch_id", "bucket", "retired", "successor"][..]
+            } else {
+                &[
+                    "branch_id",
+                    "bucket",
+                    "read_only",
+                    "retired",
+                    "revision",
+                    "successor",
+                ][..]
+            },
         ),
     ] {
         let mut query = db.prepare(
@@ -133,7 +149,7 @@ fn check_session_schema(db: &Connection) -> Result<()> {
             return Err(Error::new(
                 ErrorKind::Invalid,
                 format!(
-                    "unsupported S3 session database layout for {table} in schema version {SESSION_SCHEMA_VERSION}"
+                    "unsupported S3 session database layout for {table} in schema version {version}"
                 ),
             ));
         }
@@ -149,6 +165,8 @@ impl SessionRepository for Database {
         workspace: WorkspaceId,
         branch: BranchId,
         mode: WriteMode,
+        revision: Option<RevisionId>,
+        read_only: bool,
     ) -> Result<MountSession> {
         let bucket = bucket.to_owned();
         self.run(move |c| {
@@ -158,11 +176,11 @@ impl SessionRepository for Database {
                 params![branch.to_string(), workspace.to_string(), mode == WriteMode::Serialized],
             )?;
             c.execute(
-                "INSERT INTO drive_sessions(bucket,branch_id) VALUES(?1,?2) ON CONFLICT(bucket) DO NOTHING",
-                params![bucket, branch.to_string()],
+                "INSERT INTO drive_sessions(bucket,branch_id,revision,read_only) VALUES(?1,?2,?3,?4) ON CONFLICT(bucket) DO NOTHING",
+                params![bucket, branch.to_string(), revision.map(|id| id.to_string()), read_only],
             )?;
             let result = status(&c, &bucket)?;
-            if result.branch_id != branch || result.workspace_id != workspace || result.write_mode != mode {
+            if result.branch_id != branch || result.workspace_id != workspace || (!read_only && result.write_mode != mode) || result.revision != revision || result.read_only != read_only {
                 return Err(Error::new(ErrorKind::Conflict, "existing binding or branch write mode differs"));
             }
             c.execute_batch("COMMIT")?;
@@ -213,6 +231,9 @@ impl SessionRepository for Database {
             let _reservation = reservation;
             c.execute_batch("BEGIN IMMEDIATE")?;
             let previous = status(&c, &bucket)?;
+            if previous.read_only {
+                return Err(Error::new(ErrorKind::AccessDenied, "read-only mount"));
+            }
             if previous.write_mode == WriteMode::Serialized {
                 return Err(Error::new(
                     ErrorKind::Conflict,
@@ -252,6 +273,7 @@ impl SessionRepository for Database {
                     if bucket == to
                         || previous.branch_id != next.branch_id
                         || previous.workspace_id != next.workspace_id
+                        || next.read_only
                         || next.retired
                     {
                         return Err(Error::new(
@@ -300,7 +322,7 @@ fn retire(c: &Connection, bucket: &str, next: Option<&str>) -> Result<()> {
 }
 
 const SESSION_SELECT: &str =
-    "SELECT s.bucket,a.workspace_id,s.branch_id,a.epoch,a.holder,s.retired,a.serialized
+    "SELECT s.bucket,a.workspace_id,s.branch_id,a.epoch,a.holder,s.retired,a.serialized,s.revision,s.read_only
     FROM drive_sessions s JOIN drive_branches a ON a.branch_id=s.branch_id";
 
 fn status(c: &Connection, bucket: &str) -> Result<MountSession> {
@@ -327,7 +349,14 @@ fn session(row: &Row<'_>) -> Result<MountSession> {
         } else {
             WriteMode::Exclusive
         },
-        writable: !retired && (serialized || holder.as_ref() == Some(&bucket)),
+        revision: row
+            .get::<_, Option<String>>(7)?
+            .map(|s| s.parse())
+            .transpose()?,
+        read_only: row.get(8)?,
+        writable: !row.get::<_, bool>(8)?
+            && !retired
+            && (serialized || holder.as_ref() == Some(&bucket)),
         bucket,
         holder,
         retired,

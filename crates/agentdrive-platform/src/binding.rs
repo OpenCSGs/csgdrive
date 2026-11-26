@@ -11,8 +11,6 @@ struct State {
 #[derive(Debug)]
 pub(crate) struct NativeBinding {
     state: Mutex<State>,
-    #[cfg(target_os = "macos")]
-    idle: tokio::sync::Notify,
 }
 
 impl NativeBinding {
@@ -22,8 +20,6 @@ impl NativeBinding {
                 binding,
                 open_handles: 0,
             }),
-            #[cfg(target_os = "macos")]
-            idle: tokio::sync::Notify::new(),
         })
     }
 
@@ -44,18 +40,6 @@ impl NativeBinding {
         self.state.lock().open_handles
     }
 
-    #[cfg(target_os = "macos")]
-    pub async fn wait_until_idle(&self) {
-        loop {
-            let idle = self.idle.notified();
-            if self.open_handles() == 0 {
-                return;
-            }
-            idle.await;
-        }
-    }
-
-    /// Retain through the native reply for explicit unmount and diagnostics.
     pub fn reserve(self: &Arc<Self>, generation: u64) -> Result<NativeHandle> {
         let mut state = self.state.lock();
         if state.binding.generation != generation {
@@ -106,10 +90,6 @@ impl Drop for NativeHandle {
     fn drop(&mut self) {
         let mut state = self.binding.state.lock();
         state.open_handles -= 1;
-        #[cfg(target_os = "macos")]
-        if state.open_handles == 0 {
-            self.binding.idle.notify_waiters();
-        }
     }
 }
 
@@ -119,6 +99,7 @@ mod tests {
 
     fn binding() -> MountBinding {
         MountBinding {
+            follows_selection: false,
             id: MountId::new(),
             workspace: WorkspaceId::new(),
             branch: BranchId::new(),
