@@ -223,6 +223,7 @@ impl RemoteRefStore for MemoryRemote {
 
 #[derive(Debug, Default)]
 pub struct MemoryMountDriver {
+    pub shared_mounts: AtomicBool,
     mounts: Mutex<BTreeMap<MountId, MountBinding>>,
     pub fail_mount: AtomicBool,
     pub unmount_error: Mutex<Option<Error>>,
@@ -252,7 +253,7 @@ impl MemoryMountDriver {
 #[async_trait]
 impl MountDriver for MemoryMountDriver {
     fn supports_shared_writable_mounts(&self) -> bool {
-        true
+        self.shared_mounts.load(Ordering::SeqCst)
     }
 
     fn supports_automatic_collaboration(&self) -> bool {

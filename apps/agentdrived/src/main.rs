@@ -108,6 +108,11 @@ async fn serve(
         runtime: tokio::runtime::Handle::current(),
     }))?;
     let cancellation = CancellationToken::new();
+    let shutdown = cancellation.clone();
+    let signal = tokio::spawn(async move {
+        shutdown_signal().await;
+        shutdown.cancel();
+    });
     let listener = tokio::net::TcpListener::bind(config.listen).await?;
     let address = listener.local_addr()?;
     let services = engine.services.clone();
@@ -277,11 +282,6 @@ async fn serve(
             }
         });
     }
-    let shutdown = cancellation.clone();
-    let signal = tokio::spawn(async move {
-        shutdown_signal().await;
-        shutdown.cancel();
-    });
     let server_result = tokio::select! {
         result = axum::serve(listener, app)
             .with_graceful_shutdown(cancellation.clone().cancelled_owned())
@@ -311,6 +311,19 @@ async fn serve(
             }
         }
     }
+    #[cfg(windows)]
+    loop {
+        match engine.suspend_native_mounts().await {
+            Err(error) if error.code == ErrorCode::MountBusy => {
+                tokio::time::sleep(Duration::from_secs(1)).await
+            }
+            result => {
+                result?;
+                break;
+            }
+        }
+    }
+    #[cfg(not(windows))]
     engine.suspend_native_mounts().await?;
     engine.flush_local().await?;
     drop(s3_guard);
