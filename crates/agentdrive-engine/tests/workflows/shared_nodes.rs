@@ -249,7 +249,7 @@ async fn historical_forks_share_index_pages_and_isolate_each_generation() {
 }
 
 #[tokio::test]
-async fn previous_flat_database_upgrades_atomically_and_builds_one_shared_historical_view() {
+async fn forks_materialize_one_shared_view_for_a_revision_without_a_saved_index() {
     let h = Harness::new(None).await;
     let workspace = h.workspace().await;
     let source = fork(&h, workspace.id, workspace.initial_revision, "source").await;
@@ -257,52 +257,14 @@ async fn previous_flat_database_upgrades_atomically_and_builds_one_shared_histor
     let historical = h.commit(source.id).await;
     put(&h, &source, "/document", b"latest version".to_vec()).await;
     h.commit(source.id).await;
-    let mut flat = Vec::new();
-    for branch in h.local.branches(workspace.id).await.unwrap() {
-        for node in h.local.nodes(branch.id).await.unwrap() {
-            flat.push((branch.id, node));
-        }
-    }
-    let Harness {
-        directory,
-        local,
-        engine,
-        ..
-    } = h;
-    drop((engine, local));
-    let mut db = Connection::open(directory.path().join("meta.db")).unwrap();
-    let tx = db.transaction().unwrap();
-    tx.execute_batch("DROP TABLE branch_node_views; DROP TABLE saved_node_views; DROP TABLE node_versions; DROP TABLE node_layers;
-        CREATE TABLE nodes(branch TEXT,path TEXT,parent TEXT,inode INTEGER,data BLOB,PRIMARY KEY(branch,path),UNIQUE(branch,inode));").unwrap();
-    for (branch, node) in flat {
-        tx.execute(
-            "INSERT INTO nodes(branch,path,parent,inode,data) VALUES(?1,?2,?3,?4,?5)",
-            rusqlite::params![
-                branch.to_string(),
-                node.path.lookup_key(),
-                node.path.parent().map(|p| p.lookup_key()),
-                i64::try_from(node.inode.id.0).unwrap(),
-                encode(&node).unwrap()
-            ],
-        )
-        .unwrap();
-    }
-    tx.commit().unwrap();
-    let (local, engine, clock, driver) = open(directory.path(), None).await;
-    let h = Harness {
-        directory,
-        local,
-        engine,
-        clock,
-        driver,
-    };
-    assert_eq!(
-        count(
-            &db,
-            "SELECT count(*) FROM sqlite_schema WHERE name IN ('node_usage','nodes')"
-        ),
-        0
-    );
+    let db = Connection::open(h.directory.path().join("meta.db")).unwrap();
+    let revision = h.local.revision(historical).await.unwrap().unwrap();
+    // Imported revisions can arrive before a saved directory index exists locally.
+    db.execute(
+        "DELETE FROM saved_node_views WHERE workspace_id=?1 AND hash=?2",
+        rusqlite::params![workspace.id.to_string(), revision.root.id.as_str()],
+    )
+    .unwrap();
     assert_eq!(h.local.usage(source.id).await.unwrap().bytes, 14);
     let before = count(&db, "SELECT count(*) FROM node_versions");
     let a = fork(&h, workspace.id, historical, "restore-a").await;

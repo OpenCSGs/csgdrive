@@ -87,7 +87,7 @@ impl ObjectReader {
 impl Store {
     pub async fn reader(&self, bucket: &str, key: &str) -> Result<ObjectReader> {
         let (path, kind) = path_and_kind(key)?;
-        let session = self.status(bucket).await?;
+        let session = self.leases.status(bucket).await?;
         let source = self
             .engine
             .open_branch_file(
@@ -115,7 +115,7 @@ impl Store {
     }
 
     pub async fn list(&self, bucket: &str, prefix: &str) -> Result<Vec<ObjectMeta>> {
-        let s = self.status(bucket).await?;
+        let s = self.leases.status(bucket).await?;
         let runtime = &self.engine.runtime;
         let _gate = runtime.lock_branch(s.branch_id).await;
         runtime
@@ -193,7 +193,7 @@ impl Store {
         // A disconnected HTTP client cannot drop the guard while AgentDrive's SQLite commit is running.
         tokio::spawn(async move {
             let guard = store.leases.guard(&bucket).await?;
-            let session = guard.session().clone();
+            let session = guard.session();
             let inode = store
                 .engine
                 .update_branch_object(

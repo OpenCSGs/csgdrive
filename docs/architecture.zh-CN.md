@@ -140,6 +140,12 @@ MCP 和 HTTP webhook 都通过应用接口调用 engine。工作目录的 NFS、
 
 ## 本地持久化
 
+![AgentDrive 数据库实体关系](database-er.svg)
+
+新数据库单独记录自己的结构版本。工作区、分支和版本通过 SQL 视图组合具名列和其余属性，提供给现有 API。两个 SQLite 数据库统一使用 `workspace_id` 和 `branch_id`。每个分支属于一个工作区。在事务提交时，外键检查工作区的初始版本和分支的正式版本是否属于同一个工作区。`revision_parents` 为每个父版本保存一行，用 `parent_order` 记录合并顺序。导入远端历史时，来源分支和父版本可以稍后读取。
+
+S3 网关为每个绑定分支保存一条 `drive_branches` 记录，每个 bucket 别名对应一条 `drive_sessions` 记录。绑定时由 Core 核对跨数据库标识，Drive UI 从 Core 读取当前名称。目录记录通过 `content_object_id` 提供文件内容标识，S3 根据工作区和内容标识计算对象 key。Codes 在 `codes_file_placements` 查询固定的 Git 提交和文件格式。文件缓存清理后，Codes 位置记录和 S3 校验记录可继续使用。
+
 每个守护进程状态目录包含 `engine.lock`、`meta.db`、SQLite WAL 文件，以及 `objects/`、`staging/` 和 `working/`。进程锁定确保只有一个写入者。SQLite 使用 WAL 和 `synchronous=FULL`。修改数据库结构前会检查持久化格式版本，存储错误通过明确的错误类型返回。
 
 状态目录中的 `meta.db` 和 SQLite WAL 保存工作区、分支、版本和目录关系。使用远程内容后端时，本机仍可缓存文件字节。备份需要同时保存数据库和文件内容后端；仅本地的工作区还需要保存本机内容目录。
@@ -178,7 +184,7 @@ object ID 使用 SHA-256 对域分隔标记、格式版本、对象类型和内�
 
 S3 在同一工作区内为相同内容保存一个对象。SQLite 记录已验证的对象版本标识及各数据块的摘要。重复写入时，后端标识一致即可复用已有内容。缓存中尚无文件时，范围读取可以只下载和校验覆盖请求的数据块。
 
-OpenCSG Codes 使用配置中的 Git 分支保存文件内容。SQLite 的 `file_placements` 记录每个文件的存储方式和 Git 提交版本。普通文件按内容摘要分块并批量提交。启用 XNet 时，Codes 可为新文件选择 Git LFS。修改上传策略后，已有文件仍按各自的记录读取。用户看到的路径、工作区分支和命名版本由 AgentDrive 查询。
+OpenCSG Codes 使用配置中的 Git 分支保存文件内容。SQLite 的 `codes_file_placements` 记录每个文件的存储方式和 Git 提交版本。普通文件按内容摘要分块并批量提交。启用 XNet 时，Codes 可为新文件选择 Git LFS。修改上传策略后，已有文件仍按各自的记录读取。用户看到的路径、工作区分支和命名版本由 AgentDrive 查询。
 
 ## 合并
 

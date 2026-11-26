@@ -108,7 +108,7 @@ with tempfile.TemporaryDirectory(prefix='agentdrive-shared-') as temporary:
         assert any(entry['path'] == '/multipart' for entry in listing['entries']), listing
         database = first.root / 'state' / 'meta.db'
         with sqlite3.connect(database) as db:
-            refs = db.execute('SELECT count(*) FROM published_refs WHERE workspace=?', (workspace,)).fetchone()[0]
+            refs = db.execute('SELECT count(*) FROM published_refs WHERE workspace_id=?', (workspace,)).fetchone()[0]
             assert refs > 0
 
         # Use the same destination in an independent database. Its namespace is private.
@@ -121,7 +121,7 @@ with tempfile.TemporaryDirectory(prefix='agentdrive-shared-') as temporary:
         # Remove the disposable confirmed cache entry to exercise read-through from S3.
         with sqlite3.connect(database) as db:
             [(cached_hash,)] = db.execute(
-                "SELECT hash FROM objects WHERE workspace=? AND size=? AND remote_confirmed=1",
+                "SELECT hash FROM objects WHERE workspace_id=? AND size=? AND remote_confirmed=1",
                 (workspace, len(payload))).fetchall()
         (first.root / 'state' / 'objects' / workspace / cached_hash).unlink()
         destination = first.root / 'exchange' / 'restored'

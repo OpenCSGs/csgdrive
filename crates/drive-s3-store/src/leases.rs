@@ -1,7 +1,7 @@
 //! SQLite records ownership. A per-branch file lock orders transfers and publications
 //! across connections without holding a database write transaction during file I/O.
 use super::*;
-use rusqlite::{Connection, OptionalExtension, params};
+use rusqlite::{Connection, Row, TransactionBehavior, params};
 use std::{path::PathBuf, time::Duration};
 
 #[derive(Clone, Debug)]
@@ -22,11 +22,11 @@ impl From<rusqlite::Error> for Error {
 
 pub(super) struct WriteGuard {
     _reservation: std::fs::File,
-    pub binding: SessionStatus,
+    pub binding: MountSession,
 }
 
 impl WriteReservation for WriteGuard {
-    fn session(&self) -> &SessionStatus {
+    fn session(&self) -> &MountSession {
         &self.binding
     }
 }
@@ -75,27 +75,70 @@ impl Database {
 
     pub async fn open(path: &Path) -> Result<Self> {
         let db = Self(Arc::new(path.into()));
-        db.run(|c| {
-            c.execute_batch("PRAGMA journal_mode=WAL;
-            CREATE TABLE IF NOT EXISTS drive_branches(
-                branch_id TEXT PRIMARY KEY, epoch INTEGER NOT NULL DEFAULT 0,
-                serialized INTEGER NOT NULL DEFAULT 0 CHECK(serialized IN (0,1)),
-                holder TEXT UNIQUE REFERENCES drive_sessions(bucket));
-            CREATE TABLE IF NOT EXISTS drive_sessions(
-                bucket TEXT PRIMARY KEY, workspace TEXT NOT NULL, branch TEXT NOT NULL,
-                workspace_id TEXT NOT NULL, branch_id TEXT NOT NULL REFERENCES drive_branches(branch_id),
-                retired INTEGER NOT NULL DEFAULT 0, successor TEXT REFERENCES drive_sessions(bucket));")?;
-            let has_mode: bool = c.query_row(
-                "SELECT EXISTS(SELECT 1 FROM pragma_table_info('drive_branches') WHERE name='serialized')",
-                [], |row| row.get(0)
-            )?;
-            if !has_mode {
-                c.execute("ALTER TABLE drive_branches ADD COLUMN serialized INTEGER NOT NULL DEFAULT 0 CHECK(serialized IN (0,1))", [])?;
-            }
-            Ok(())
-        }).await?;
+        db.run(initialize).await?;
         Ok(db)
     }
+}
+
+const SESSION_SCHEMA_VERSION: i32 = 1;
+
+fn initialize(mut db: Connection) -> Result<()> {
+    // The write reservation serializes concurrent opens of a new, empty file.
+    let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    let version: i32 = tx.pragma_query_value(None, "user_version", |row| row.get(0))?;
+    if version == SESSION_SCHEMA_VERSION {
+        check_session_schema(&tx)?;
+    } else {
+        let empty: bool = tx.query_row(
+            "SELECT NOT EXISTS(SELECT 1 FROM sqlite_schema)",
+            [],
+            |row| row.get(0),
+        )?;
+        if version != 0 || !empty {
+            return Err(Error::new(
+                ErrorKind::Invalid,
+                format!(
+                    "unsupported S3 session database schema version {version}, expected {SESSION_SCHEMA_VERSION}"
+                ),
+            ));
+        }
+        tx.execute_batch(include_str!("schema.sql"))?;
+        tx.pragma_update(None, "user_version", SESSION_SCHEMA_VERSION)?;
+    }
+    tx.commit()?;
+    db.pragma_update(None, "journal_mode", "WAL")?;
+    Ok(())
+}
+
+fn check_session_schema(db: &Connection) -> Result<()> {
+    // Check the application's tables even if another database uses the same SQLite user_version.
+    for (table, required) in [
+        (
+            "drive_branches",
+            &["branch_id", "epoch", "holder", "serialized", "workspace_id"][..],
+        ),
+        (
+            "drive_sessions",
+            &["branch_id", "bucket", "retired", "successor"][..],
+        ),
+    ] {
+        let mut query = db.prepare(
+            "SELECT p.name FROM sqlite_schema s JOIN pragma_table_info(s.name) p
+             WHERE s.type='table' AND s.name=?1 ORDER BY p.name",
+        )?;
+        let columns = query
+            .query_map([table], |row| row.get::<_, String>(0))?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        if columns != required {
+            return Err(Error::new(
+                ErrorKind::Invalid,
+                format!(
+                    "unsupported S3 session database layout for {table} in schema version {SESSION_SCHEMA_VERSION}"
+                ),
+            ));
+        }
+    }
+    Ok(())
 }
 
 #[async_trait::async_trait]
@@ -103,26 +146,23 @@ impl SessionRepository for Database {
     async fn bind(
         &self,
         bucket: &str,
-        workspace: &str,
-        branch: &str,
-        w: WorkspaceId,
-        b: BranchId,
+        workspace: WorkspaceId,
+        branch: BranchId,
         mode: WriteMode,
-    ) -> Result<SessionStatus> {
-        let (bucket, workspace, branch) =
-            (bucket.to_owned(), workspace.to_owned(), branch.to_owned());
+    ) -> Result<MountSession> {
+        let bucket = bucket.to_owned();
         self.run(move |c| {
             c.execute_batch("BEGIN IMMEDIATE")?;
             c.execute(
-                "INSERT INTO drive_branches(branch_id,serialized) VALUES (?1,?2) ON CONFLICT(branch_id) DO NOTHING",
-                params![b.to_string(), mode == WriteMode::Serialized],
+                "INSERT INTO drive_branches(branch_id,workspace_id,serialized) VALUES (?1,?2,?3) ON CONFLICT(branch_id) DO NOTHING",
+                params![branch.to_string(), workspace.to_string(), mode == WriteMode::Serialized],
             )?;
             c.execute(
-                "INSERT INTO drive_sessions(bucket,workspace,branch,workspace_id,branch_id) VALUES(?1,?2,?3,?4,?5) ON CONFLICT(bucket) DO NOTHING",
-                params![bucket, workspace, branch, w.to_string(), b.to_string()],
+                "INSERT INTO drive_sessions(bucket,branch_id) VALUES(?1,?2) ON CONFLICT(bucket) DO NOTHING",
+                params![bucket, branch.to_string()],
             )?;
             let result = status(&c, &bucket)?;
-            if result.branch_id != b || result.workspace_id != w || result.write_mode != mode {
+            if result.branch_id != branch || result.workspace_id != workspace || result.write_mode != mode {
                 return Err(Error::new(ErrorKind::Conflict, "existing binding or branch write mode differs"));
             }
             c.execute_batch("COMMIT")?;
@@ -134,17 +174,22 @@ impl SessionRepository for Database {
         &self,
         workspace: WorkspaceId,
         branch: BranchId,
-    ) -> Result<Vec<SessionStatus>> {
+    ) -> Result<Vec<MountSession>> {
         self.run(move |c| {
-            let mut query = c.prepare(
-                "SELECT bucket FROM drive_sessions WHERE workspace_id=?1 AND branch_id=?2 ORDER BY bucket"
-            )?;
-            query.query_map(params![workspace.to_string(), branch.to_string()], |row| row.get::<_, String>(0))?
-                .map(|bucket| status(&c, &bucket?)).collect()
-        }).await
+            let mut query = c.prepare(&format!(
+                "{SESSION_SELECT} WHERE a.workspace_id=?1 AND a.branch_id=?2 ORDER BY s.bucket"
+            ))?;
+            let mut rows = query.query(params![workspace.to_string(), branch.to_string()])?;
+            let mut sessions = Vec::new();
+            while let Some(row) = rows.next()? {
+                sessions.push(session(row)?);
+            }
+            Ok(sessions)
+        })
+        .await
     }
 
-    async fn status(&self, bucket: &str) -> Result<SessionStatus> {
+    async fn status(&self, bucket: &str) -> Result<MountSession> {
         let bucket = bucket.to_owned();
         self.run(move |c| status(&c, &bucket)).await
     }
@@ -160,7 +205,7 @@ impl SessionRepository for Database {
         }))
     }
 
-    async fn change(&self, bucket: &str, change: SessionChange) -> Result<SessionStatus> {
+    async fn change(&self, bucket: &str, change: SessionChange) -> Result<MountSession> {
         let branch = self.status(bucket).await?.branch_id;
         let reservation = self.reserve(branch).await?;
         let bucket = bucket.to_owned();
@@ -254,50 +299,36 @@ fn retire(c: &Connection, bucket: &str, next: Option<&str>) -> Result<()> {
     Ok(())
 }
 
-fn status(c: &Connection, bucket: &str) -> Result<SessionStatus> {
-    let (workspace, branch, w, b, epoch, holder, retired, serialized): (
-        String,
-        String,
-        String,
-        String,
-        i64,
-        Option<String>,
-        bool,
-        bool,
-    ) = c
-        .query_row(
-            "SELECT s.workspace,s.branch,s.workspace_id,s.branch_id,a.epoch,a.holder,s.retired,a.serialized
-        FROM drive_sessions s JOIN drive_branches a ON a.branch_id=s.branch_id WHERE s.bucket=?1",
-            [bucket],
-            |r| {
-                Ok((
-                    r.get(0)?,
-                    r.get(1)?,
-                    r.get(2)?,
-                    r.get(3)?,
-                    r.get(4)?,
-                    r.get(5)?,
-                    r.get(6)?,
-                    r.get(7)?,
-                ))
-            },
-        )
-        .optional()?
-        .ok_or_else(|| Error::new(ErrorKind::NoSuchBucket, "unknown mount session"))?;
-    Ok(SessionStatus {
-        bucket: bucket.into(),
-        workspace,
-        branch,
-        workspace_id: w.parse()?,
-        branch_id: b.parse()?,
-        epoch: u64::try_from(epoch)
+const SESSION_SELECT: &str =
+    "SELECT s.bucket,a.workspace_id,s.branch_id,a.epoch,a.holder,s.retired,a.serialized
+    FROM drive_sessions s JOIN drive_branches a ON a.branch_id=s.branch_id";
+
+fn status(c: &Connection, bucket: &str) -> Result<MountSession> {
+    let mut query = c.prepare(&format!("{SESSION_SELECT} WHERE s.bucket=?1"))?;
+    let mut rows = query.query([bucket])?;
+    session(
+        rows.next()?
+            .ok_or_else(|| Error::new(ErrorKind::NoSuchBucket, "unknown mount session"))?,
+    )
+}
+
+fn session(row: &Row<'_>) -> Result<MountSession> {
+    let bucket: String = row.get(0)?;
+    let holder: Option<String> = row.get(4)?;
+    let retired: bool = row.get(5)?;
+    let serialized: bool = row.get(6)?;
+    Ok(MountSession {
+        workspace_id: row.get::<_, String>(1)?.parse()?,
+        branch_id: row.get::<_, String>(2)?.parse()?,
+        epoch: u64::try_from(row.get::<_, i64>(3)?)
             .map_err(|_| Error::new(ErrorKind::Internal, "invalid lock epoch"))?,
         write_mode: if serialized {
             WriteMode::Serialized
         } else {
             WriteMode::Exclusive
         },
-        writable: !retired && (serialized || holder.as_deref() == Some(bucket)),
+        writable: !retired && (serialized || holder.as_ref() == Some(&bucket)),
+        bucket,
         holder,
         retired,
     })

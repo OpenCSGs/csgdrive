@@ -11,39 +11,7 @@ use std::sync::Weak;
 
 pub(super) fn migrate(tx: &Transaction<'_>) -> Result<()> {
     tx.execute_batch(include_str!("node_layers.sql"))
-        .map_err(sql_error)?;
-    let legacy: bool = tx
-        .query_row(
-            "SELECT EXISTS(SELECT 1 FROM sqlite_schema WHERE type='table' AND name='nodes')",
-            [],
-            |row| row.get(0),
-        )
-        .map_err(sql_error)?;
-    if !legacy {
-        return Ok(());
-    }
-    let branches: Vec<Branch> = read_many(tx, "SELECT data FROM branches", &[])?;
-    for branch in branches {
-        let id = layer(tx, None)?;
-        let b = branch.id.to_string();
-        tx.execute(
-            "INSERT INTO node_versions(layer,path,since,parent,inode,data)
-            SELECT ?1,path,0,parent,inode,data FROM nodes WHERE branch=?2",
-            params![id, b],
-        )
-        .map_err(sql_error)?;
-        tx.execute(
-            "INSERT INTO branch_node_views(branch,layer,inodes,bytes)
-            SELECT ?1,?2,count(*),coalesce(sum(json_extract(CAST(data AS TEXT),'$.inode.size')),0)
-            FROM nodes WHERE branch=?1",
-            params![b, id],
-        )
-        .map_err(sql_error)?;
-        save(tx, &branch)?;
-    }
-    tx.execute_batch("DROP TABLE nodes; DROP TABLE IF EXISTS node_usage;")
-        .map_err(sql_error)?;
-    schedule_compaction(tx)
+        .map_err(sql_error)
 }
 
 pub(super) fn schedule_compaction(db: &Connection) -> Result<()> {
@@ -56,7 +24,7 @@ pub(super) fn schedule_compaction(db: &Connection) -> Result<()> {
 }
 
 const LINEAGE: &str = "WITH RECURSIVE lineage(id,version,depth) AS (
-    SELECT l.id,l.version,0 FROM branch_node_views b JOIN node_layers l ON l.id=b.layer WHERE b.branch=?1
+    SELECT l.id,l.version,0 FROM branch_node_views b JOIN node_layers l ON l.id=b.layer WHERE b.branch_id=?1
     UNION ALL
     SELECT p.id,l.parent_version,a.depth+1 FROM lineage a JOIN node_layers l ON l.id=a.id JOIN node_layers p ON p.id=l.parent
 )";
@@ -133,7 +101,7 @@ pub(super) fn change(
         ));
     }
     tx.execute(
-        "INSERT OR IGNORE INTO node_deltas(branch,path,previous) VALUES(?1,?2,?3)",
+        "INSERT OR IGNORE INTO node_deltas(branch_id,path,previous) VALUES(?1,?2,?3)",
         params![
             b,
             path.lookup_key(),
@@ -142,7 +110,7 @@ pub(super) fn change(
     )
     .map_err(sql_error)?;
     let (id, version): (i64, i64) = tx.query_row(
-        "UPDATE node_layers SET version=version+1 WHERE id=(SELECT layer FROM branch_node_views WHERE branch=?1)
+        "UPDATE node_layers SET version=version+1 WHERE id=(SELECT layer FROM branch_node_views WHERE branch_id=?1)
          RETURNING id,version", [&b],
         |row| Ok((row.get(0)?, row.get(1)?)),
     ).map_err(sql_error)?;
@@ -155,7 +123,7 @@ pub(super) fn change(
     let bytes = node.map_or(0, |n| n.inode.size);
     let old_bytes = before.as_ref().map_or(0, |n| n.inode.size);
     tx.execute(
-        "UPDATE branch_node_views SET inodes=inodes+?1,bytes=bytes+?2 WHERE branch=?3",
+        "UPDATE branch_node_views SET inodes=inodes+?1,bytes=bytes+?2 WHERE branch_id=?3",
         params![
             i64::from(node.is_some()) - i64::from(before.is_some()),
             db_integer(bytes)? - db_integer(old_bytes)?,
@@ -173,11 +141,11 @@ fn bind(
     count: Option<i64>,
     bytes: Option<i64>,
 ) -> Result<()> {
-    db.execute("INSERT INTO branch_node_views(branch,layer,inodes,bytes) VALUES(?1,?2,?3,?4)
-        ON CONFLICT(branch) DO UPDATE SET layer=excluded.layer,inodes=excluded.inodes,bytes=excluded.bytes",
+    db.execute("INSERT INTO branch_node_views(branch_id,layer,inodes,bytes) VALUES(?1,?2,?3,?4)
+        ON CONFLICT(branch_id) DO UPDATE SET layer=excluded.layer,inodes=excluded.inodes,bytes=excluded.bytes",
         params![branch.to_string(),id,count,bytes]).map_err(sql_error)?;
     db.execute(
-        "DELETE FROM node_deltas WHERE branch=?1",
+        "DELETE FROM node_deltas WHERE branch_id=?1",
         [branch.to_string()],
     )
     .map_err(sql_error)?;
@@ -192,7 +160,7 @@ pub(super) fn share(
 ) -> Result<()> {
     type View = (i64, i64, Option<i64>, Option<i64>);
     let frozen: Option<View> = db.query_row(
-        "SELECT layer,version,inodes,bytes FROM saved_node_views WHERE workspace=?1 AND hash=?2",
+        "SELECT layer,version,inodes,bytes FROM saved_node_views WHERE workspace_id=?1 AND hash=?2",
         params![workspace.to_string(),root.id.as_str()],
         |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
     ).optional().map_err(sql_error)?;
@@ -201,7 +169,7 @@ pub(super) fn share(
         None => {
             // Imported revisions may not have a local working index yet. Build it once on first access.
             let parent = layer(db, None)?;
-            db.execute("INSERT INTO saved_node_views(workspace,hash,root,layer,version) VALUES(?1,?2,?3,?4,0)",
+            db.execute("INSERT INTO saved_node_views(workspace_id,hash,root,layer,version) VALUES(?1,?2,?3,?4,0)",
                 params![workspace.to_string(),root.id.as_str(),encode(root)?,parent]).map_err(sql_error)?;
             (parent, 0, None, None)
         }
@@ -235,8 +203,8 @@ pub(super) fn replace(db: &Connection, branch: BranchId, nodes: &[Node]) -> Resu
 
 pub(super) fn save(db: &Connection, branch: &Branch) -> Result<()> {
     if branch.saved_seq == branch.mutation_seq {
-        db.execute("INSERT OR IGNORE INTO saved_node_views(workspace,hash,root,layer,version,inodes,bytes)
-            SELECT ?1,?2,?3,l.id,l.version,b.inodes,b.bytes FROM branch_node_views b JOIN node_layers l ON l.id=b.layer WHERE b.branch=?4",
+        db.execute("INSERT OR IGNORE INTO saved_node_views(workspace_id,hash,root,layer,version,inodes,bytes)
+            SELECT ?1,?2,?3,l.id,l.version,b.inodes,b.bytes FROM branch_node_views b JOIN node_layers l ON l.id=b.layer WHERE b.branch_id=?4",
             params![branch.workspace.to_string(),branch.working_root.id.as_str(),encode(&branch.working_root)?,branch.id.to_string()]).map_err(sql_error)?;
     }
     Ok(())
@@ -247,8 +215,8 @@ fn pending_base(
     branch: BranchId,
 ) -> Result<Option<(WorkspaceId, ObjectRef, i64)>> {
     let record: Option<(String,Vec<u8>,i64)> = db.query_row(
-        "SELECT s.workspace,s.root,s.layer FROM branch_node_views b JOIN node_layers l ON l.id=b.layer
-         JOIN saved_node_views s ON s.layer=l.parent AND s.version=l.parent_version WHERE b.branch=?1 AND b.inodes IS NULL",
+        "SELECT s.workspace_id,s.root,s.layer FROM branch_node_views b JOIN node_layers l ON l.id=b.layer
+         JOIN saved_node_views s ON s.layer=l.parent AND s.version=l.parent_version WHERE b.branch_id=?1 AND b.inodes IS NULL",
         [branch.to_string()], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
     ).optional().map_err(sql_error)?;
     record
@@ -332,7 +300,7 @@ mod tests {
     #[test]
     fn lookups_use_layer_path_parent_and_inode_indexes() {
         let mut db = Connection::open_in_memory().unwrap();
-        crate::sqlite::initialize(&mut db, FORMAT_VERSION).unwrap();
+        crate::sqlite::initialize(&mut db).unwrap();
         for (predicate, index) in [
             ("n.path=?2", "layer=? AND path=?"),
             ("n.parent=?2", "versioned_children"),

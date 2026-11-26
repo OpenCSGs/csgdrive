@@ -179,9 +179,6 @@ with tempfile.TemporaryDirectory(prefix='agentdrive-cli-') as temporary:
         # The process restart also exercises WAL recovery and stable operation identities.
         daemon.terminate()
         daemon.wait(timeout=30)
-        config['cache'] = {'max_bytes': 3 * 1024 ** 3}
-        config.update(allowed_origins=[], remote=None)
-        config_path.write_text(json.dumps(config))
         daemon = start()
         recovered = call('operation_by_request', {'request_id': 'import'})
         assert recovered['id'] == imported['id']

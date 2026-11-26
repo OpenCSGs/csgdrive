@@ -16,31 +16,31 @@ impl LocalBackend {
             let transaction = connection.transaction().map_err(sql_error)?;
             let args = [workspace.to_string()];
             let Some(workspace) = read_one::<Workspace>(
-                &transaction, "SELECT data FROM workspaces WHERE id=?1", &args,
+                &transaction, "SELECT data FROM workspace_records WHERE workspace_id=?1", &args,
             )? else {
                 return Ok(None);
             };
             let selection: Option<String> = transaction.query_row(
-                "SELECT branch FROM workspace_selections WHERE workspace=?1",
+                "SELECT branch_id FROM workspace_selections WHERE workspace_id=?1",
                 [&args[0]], |row| row.get(0),
             ).optional().map_err(sql_error)?;
             let branches: Vec<Branch> = read_many(
-                &transaction, "SELECT data FROM branches WHERE workspace=?1 ORDER BY id", &args,
+                &transaction, "SELECT data FROM branch_records WHERE workspace_id=?1 ORDER BY branch_id", &args,
             )?;
             let mounts: Vec<MountBinding> = read_many(
                 &transaction,
-                "SELECT m.data FROM mounts m JOIN branches b ON b.id=m.branch WHERE b.workspace=?1 ORDER BY m.id",
+                "SELECT m.data FROM mounts m JOIN branches b ON b.branch_id=m.branch_id WHERE b.workspace_id=?1 ORDER BY m.id",
                 &args,
             )?;
             let creations: Vec<OperationRecord> = read_many(
                 &transaction,
-                "SELECT data FROM operations WHERE workspace=?1 AND json_extract(CAST(data AS TEXT), '$.result.kind')='branch' \
-                 UNION ALL SELECT data FROM replicated_operations WHERE workspace=?1 AND json_extract(CAST(data AS TEXT), '$.result.kind')='branch' \
+                "SELECT data FROM operations WHERE workspace_id=?1 AND json_extract(CAST(data AS TEXT), '$.result.kind')='branch' \
+                 UNION ALL SELECT data FROM replicated_operations WHERE workspace_id=?1 AND json_extract(CAST(data AS TEXT), '$.result.kind')='branch' \
                  AND id NOT IN (SELECT id FROM operations)",
                 &args,
             )?;
             let remote_refs: Vec<ObservedBranchRef> = read_many(
-                &transaction, "SELECT data FROM remote_refs WHERE workspace=?1 ORDER BY id", &args,
+                &transaction, "SELECT data FROM remote_refs WHERE workspace_id=?1 ORDER BY branch_id", &args,
             )?;
             // Read only revisions referenced by origins or mounts, independent of history size.
             let mut ids = std::collections::BTreeSet::from([workspace.initial_revision]);
@@ -56,7 +56,7 @@ impl LocalBackend {
             for id in ids {
                 if let Some(revision) = read_one(
                     &transaction,
-                    "SELECT data FROM revisions WHERE workspace=?1 AND id=?2",
+                    "SELECT data FROM revision_records WHERE workspace_id=?1 AND revision_id=?2",
                     &[args[0].clone(), id.to_string()],
                 )? {
                     revisions.push(revision);
@@ -88,8 +88,8 @@ impl LocalBackend {
                     let row = transaction
                         .prepare_cached(
                             "SELECT m.data,w.data,b.data,v.inodes IS NULL FROM mounts m
-                     JOIN branches b ON b.id=m.branch JOIN workspaces w ON w.id=b.workspace
-                     JOIN branch_node_views v ON v.branch=b.id WHERE m.id=?1",
+                     JOIN branch_records b ON b.branch_id=m.branch_id JOIN workspace_records w ON w.workspace_id=b.workspace_id
+                     JOIN branch_node_views v ON v.branch_id=b.branch_id WHERE m.id=?1",
                         )
                         .map_err(sql_error)?
                         .query_row([mount.to_string()], |row| {
@@ -170,11 +170,14 @@ impl LocalBackend {
     pub(crate) async fn read_retention_state(&self) -> Result<RetentionState> {
         self.db(|connection| {
             let transaction = connection.transaction().map_err(sql_error)?;
-            let workspaces: Vec<Workspace> =
-                read_many(&transaction, "SELECT data FROM workspaces ORDER BY id", &[])?;
+            let workspaces: Vec<Workspace> = read_many(
+                &transaction,
+                "SELECT data FROM workspace_records ORDER BY workspace_id",
+                &[],
+            )?;
             let histories = {
                 let mut statement = transaction
-                    .prepare_cached("SELECT branch,root FROM branch_history ORDER BY branch")
+                    .prepare_cached("SELECT branch_id,root FROM branch_history ORDER BY branch_id")
                     .map_err(sql_error)?;
                 let rows = statement
                     .query_map([], |row| {
@@ -192,9 +195,17 @@ impl LocalBackend {
                     .into_iter()
                     .map(|workspace| workspace.id)
                     .collect(),
-                branches: read_many(&transaction, "SELECT data FROM branches ORDER BY id", &[])?,
+                branches: read_many(
+                    &transaction,
+                    "SELECT data FROM branch_records ORDER BY branch_id",
+                    &[],
+                )?,
                 histories,
-                revisions: read_many(&transaction, "SELECT data FROM revisions ORDER BY id", &[])?,
+                revisions: read_many(
+                    &transaction,
+                    "SELECT data FROM revision_records ORDER BY revision_id",
+                    &[],
+                )?,
                 jobs: read_many(&transaction, "SELECT data FROM sync_jobs ORDER BY id", &[])?,
                 merges: read_many(&transaction, "SELECT data FROM merges ORDER BY id", &[])?,
                 pins: read_many(&transaction, "SELECT data FROM cache_pins ORDER BY id", &[])?,

@@ -177,7 +177,7 @@ impl LocalObjectStore for LocalBackend {
                     .entry((workspace, object.id.clone()))
                     .or_default() += 1;
                 let result = backend.inner.connection.lock().execute(
-                    "UPDATE objects SET last_access_ns=?3 WHERE workspace=?1 AND hash=?2",
+                    "UPDATE objects SET last_access_ns=?3 WHERE workspace_id=?1 AND hash=?2",
                     params![workspace.to_string(), object.id.as_str(), now_ns()],
                 );
                 if let Err(error) = result {
@@ -252,7 +252,7 @@ impl LocalObjectStore for LocalBackend {
         self.db(move |connection| {
             connection
                 .execute(
-                    "UPDATE objects SET remote_confirmed=1 WHERE workspace=?1 AND hash=?2 AND remote_confirmed=0",
+                    "UPDATE objects SET remote_confirmed=1 WHERE workspace_id=?1 AND hash=?2 AND remote_confirmed=0",
                     params![workspace.to_string(), id.as_str()],
                 )
                 .map_err(sql_error)?;
@@ -263,7 +263,7 @@ impl LocalObjectStore for LocalBackend {
 
     async fn objects(&self, workspace: WorkspaceId) -> Result<Vec<CachedObject>> {
         self.db(move |connection| {
-            let mut statement = connection.prepare("SELECT hash,kind,size,remote_confirmed,last_access_ns FROM objects WHERE workspace=?1 ORDER BY last_access_ns,hash").map_err(sql_error)?;
+            let mut statement = connection.prepare("SELECT hash,kind,size,remote_confirmed,last_access_ns FROM objects WHERE workspace_id=?1 ORDER BY last_access_ns,hash").map_err(sql_error)?;
             let rows = statement.query_map([workspace.to_string()], |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?, row.get::<_, i64>(2)?, row.get::<_, bool>(3)?, row.get::<_, i64>(4)?))).map_err(sql_error)?;
             rows.map(|row| {
                 let (id, kind, size, remote_confirmed, last_access_ns) = row.map_err(sql_error)?;

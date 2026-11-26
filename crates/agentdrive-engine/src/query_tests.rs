@@ -127,6 +127,19 @@ async fn indexed_queries_skip_shared_pages_and_preserve_old_roots() {
     let temp = tempfile::tempdir().unwrap();
     let local = Arc::new(LocalBackend::open(temp.path()).unwrap());
     let workspace = WorkspaceId::new();
+    let runtime = Runtime::new(local.clone(), Arc::new(ManualClock::default()))
+        .await
+        .unwrap();
+    let content = ContentService::new(local.clone(), None, None);
+    let trees = TreeService::new(runtime, content.clone());
+    let initial_revision = RevisionId::new();
+    let root = trees
+        .save_tree(
+            workspace,
+            &FileTree::from([(WorkspacePath::root(), inode(InodeId::ROOT.0, None))]),
+        )
+        .await
+        .unwrap();
     local
         .commit(LocalCommit {
             new_workspaces: vec![Workspace {
@@ -135,7 +148,7 @@ async fn indexed_queries_skip_shared_pages_and_preserve_old_roots() {
                 id: workspace,
                 name: "indexed".into(),
                 owner: "owner".to_owned().try_into().unwrap(),
-                initial_revision: RevisionId::new(),
+                initial_revision,
                 format_version: FORMAT_VERSION,
                 name_policy: "portable_v1".into(),
                 grants: vec![],
@@ -143,15 +156,22 @@ async fn indexed_queries_skip_shared_pages_and_preserve_old_roots() {
                 max_working_bytes: u64::MAX,
                 max_inodes: 100_000,
             }],
+            revisions: vec![Revision {
+                id: initial_revision,
+                workspace,
+                branch: None,
+                parents: vec![],
+                root,
+                kind: RevisionKind::Commit,
+                actor: "owner".to_owned().try_into().unwrap(),
+                message: None,
+                created_ns: 0,
+                operation: OperationId::new(),
+            }],
             ..Default::default()
         })
         .await
         .unwrap();
-    let runtime = Runtime::new(local.clone(), Arc::new(ManualClock::default()))
-        .await
-        .unwrap();
-    let content = ContentService::new(local.clone(), None, None);
-    let trees = TreeService::new(runtime, content.clone());
     let counted = Arc::new(CountedContent {
         inner: content,
         reads: AtomicUsize::new(0),

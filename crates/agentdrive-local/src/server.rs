@@ -63,7 +63,7 @@ impl LocalBackend {
             return Ok(None);
         };
         let mut stmt = db
-            .prepare("SELECT workspace, config FROM workspace_storage")
+            .prepare("SELECT workspace_id, config FROM workspace_storage")
             .map_err(sql_error)?;
         let rows = stmt
             .query_map([], |row| Ok((row.get::<_, String>(0)?, row.get(1)?)))
@@ -93,7 +93,7 @@ impl LocalBackend {
             .map_err(sql_error)?;
         for (workspace, config) in settings.workspaces {
             tx.execute(
-                "INSERT INTO workspace_storage(workspace,config) VALUES(?1,?2)",
+                "INSERT INTO workspace_storage(workspace_id,config) VALUES(?1,?2)",
                 params![workspace.to_string(), config],
             )
             .map_err(sql_error)?;
@@ -110,7 +110,7 @@ impl LocalBackend {
         self.db(move |db| {
             let bytes: Vec<u8> = db
                 .query_row(
-                    "SELECT data FROM metadata_objects WHERE workspace=?1 AND hash=?2",
+                    "SELECT data FROM metadata_objects WHERE workspace_id=?1 AND hash=?2",
                     params![workspace.to_string(), object.id.as_str()],
                     |row| row.get(0),
                 )
@@ -143,7 +143,7 @@ impl LocalBackend {
         let hash = object.id.clone();
         self.db(move |db| {
             db.query_row(
-                "SELECT EXISTS(SELECT 1 FROM metadata_objects WHERE workspace=?1 AND hash=?2)",
+                "SELECT EXISTS(SELECT 1 FROM metadata_objects WHERE workspace_id=?1 AND hash=?2)",
                 params![workspace.to_string(), hash.as_str()],
                 |row| row.get(0),
             )
@@ -220,8 +220,8 @@ impl RemoteObjectStore for DatabaseStorage {
                 let changed = db
                     .execute(
                         "UPDATE metadata_objects SET published=1
-                 WHERE workspace=?1 AND hash=?2 AND length(data)=?3 AND EXISTS (
-                    SELECT 1 FROM objects WHERE workspace=?1 AND hash=?2 AND size=?3 AND kind=?4)",
+                 WHERE workspace_id=?1 AND hash=?2 AND length(data)=?3 AND EXISTS (
+                    SELECT 1 FROM objects WHERE workspace_id=?1 AND hash=?2 AND size=?3 AND kind=?4)",
                         params![
                             workspace.to_string(),
                             object.id.as_str(),
@@ -264,10 +264,10 @@ impl RemoteObjectStore for DatabaseStorage {
     }
 }
 
-fn key_parts(key: &RefKey) -> (String, String) {
+fn key_parts(key: &RefKey) -> (String, Option<String>) {
     match key {
-        RefKey::Workspace(id) => (id.to_string(), String::new()),
-        RefKey::Branch { workspace, branch } => (workspace.to_string(), branch.to_string()),
+        RefKey::Workspace(id) => (id.to_string(), None),
+        RefKey::Branch { workspace, branch } => (workspace.to_string(), Some(branch.to_string())),
     }
 }
 
@@ -283,7 +283,7 @@ impl RemoteRefStore for DatabaseStorage {
             .db(move |db| {
                 db.query_row(
                     "SELECT version,data FROM published_refs
-                 WHERE target=?1 AND workspace=?2 AND branch=?3",
+                 WHERE target=?1 AND workspace_id=?2 AND branch_id IS ?3",
                     params![target, workspace, branch],
                     |row| {
                         Ok(VersionedRef {
@@ -307,33 +307,32 @@ impl RemoteRefStore for DatabaseStorage {
         self.db
             .db(move |db| {
                 let bytes = update.bytes.as_ref();
-                let (changed, version) =
-                    match update.expected_version {
-                        None => {
-                            let changed = db.execute(
-                        "INSERT INTO published_refs(target,workspace,branch,version,data)
+                let (changed, version) = match update.expected_version {
+                    None => {
+                        let changed = db.execute(
+                        "INSERT INTO published_refs(target,workspace_id,branch_id,version,data)
                          VALUES(?1,?2,?3,1,?4) ON CONFLICT DO NOTHING",
                         params![target, workspace, branch, bytes],
                     ).map_err(sql_error)?;
-                            (changed, 1)
-                        }
-                        Some(expected) => {
-                            let expected = expected
-                                .parse::<i64>()
-                                .map_err(|_| Error::invalid("invalid reference version"))?;
-                            let next = expected
-                                .checked_add(1)
-                                .ok_or_else(|| Error::integrity("reference version exhausted"))?;
-                            let changed = db
-                                .execute(
-                                    "UPDATE published_refs SET version=?5,data=?6
-                         WHERE target=?1 AND workspace=?2 AND branch=?3 AND version=?4",
-                                    params![target, workspace, branch, expected, next, bytes],
-                                )
-                                .map_err(sql_error)?;
-                            (changed, next)
-                        }
-                    };
+                        (changed, 1)
+                    }
+                    Some(expected) => {
+                        let expected = expected
+                            .parse::<i64>()
+                            .map_err(|_| Error::invalid("invalid reference version"))?;
+                        let next = expected
+                            .checked_add(1)
+                            .ok_or_else(|| Error::integrity("reference version exhausted"))?;
+                        let changed = db
+                            .execute(
+                                "UPDATE published_refs SET version=?5,data=?6
+                         WHERE target=?1 AND workspace_id=?2 AND branch_id IS ?3 AND version=?4",
+                                params![target, workspace, branch, expected, next, bytes],
+                            )
+                            .map_err(sql_error)?;
+                        (changed, next)
+                    }
+                };
                 Ok(if changed == 1 {
                     CasOutcome::Applied {
                         version: version.to_string(),
@@ -351,8 +350,8 @@ impl RemoteRefStore for DatabaseStorage {
             .db(move |db| {
                 let mut stmt = db
                     .prepare(
-                        "SELECT workspace FROM published_refs WHERE target=?1 AND branch=''
-                 ORDER BY workspace",
+                        "SELECT workspace_id FROM published_refs WHERE target=?1 AND branch_id IS NULL
+                 ORDER BY workspace_id",
                     )
                     .map_err(sql_error)?;
                 let rows = stmt
@@ -368,8 +367,8 @@ impl RemoteRefStore for DatabaseStorage {
         self.db
             .db(move |db| {
                 let mut stmt = db.prepare(
-                "SELECT branch FROM published_refs WHERE target=?1 AND workspace=?2 AND branch<>''
-                 ORDER BY branch"
+                "SELECT branch_id FROM published_refs WHERE target=?1 AND workspace_id=?2 AND branch_id IS NOT NULL
+                 ORDER BY branch_id"
             ).map_err(sql_error)?;
                 let rows = stmt
                     .query_map(params![target, workspace.to_string()], |row| {
@@ -392,7 +391,7 @@ impl FilePlacementStore for LocalBackend {
         let id = file.clone();
         self.db(move |db| {
             db.query_row(
-                "SELECT placement FROM file_placements WHERE workspace=?1 AND hash=?2",
+                "SELECT placement FROM codes_file_placements WHERE workspace_id=?1 AND hash=?2",
                 params![workspace.to_string(), id.as_str()],
                 |row| row.get(0),
             )
@@ -412,8 +411,8 @@ impl FilePlacementStore for LocalBackend {
         self.db(move |db| {
             let changed = db
                 .execute(
-                    "INSERT INTO file_placements(workspace,hash,placement) VALUES(?1,?2,?3)
-                 ON CONFLICT(workspace,hash) DO UPDATE SET placement=excluded.placement
+                    "INSERT INTO codes_file_placements(workspace_id,hash,placement) VALUES(?1,?2,?3)
+                 ON CONFLICT(workspace_id,hash) DO UPDATE SET placement=excluded.placement
                  WHERE placement=excluded.placement",
                     params![workspace.to_string(), id.as_str(), placement],
                 )
@@ -452,7 +451,7 @@ impl ObjectVerificationStore for LocalBackend {
         self.db(move |db| {
             db.query_row(
                 "SELECT size,etag,version,substr(hashes,?4,?5)
-                 FROM object_verification WHERE target=?1 AND workspace=?2 AND hash=?3",
+                 FROM object_verification WHERE target=?1 AND workspace_id=?2 AND hash=?3",
                 params![key.0, key.1, key.2, offset, count],
                 |row| {
                     Ok((
@@ -489,9 +488,9 @@ impl ObjectVerificationStore for LocalBackend {
         let size = crate::sqlite::db_integer(proof.size)?;
         self.db(move |db| {
             db.execute(
-                "INSERT INTO object_verification (target,workspace,hash,size,etag,version,hashes)
+                "INSERT INTO object_verification (target,workspace_id,hash,size,etag,version,hashes)
                  VALUES (?1,?2,?3,?4,?5,?6,?7)
-                 ON CONFLICT(target,workspace,hash) DO UPDATE SET size=excluded.size,
+                 ON CONFLICT(target,workspace_id,hash) DO UPDATE SET size=excluded.size,
                      etag=excluded.etag,version=excluded.version,hashes=excluded.hashes",
                 params![
                     key.0,

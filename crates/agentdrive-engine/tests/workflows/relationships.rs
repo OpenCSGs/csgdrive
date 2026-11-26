@@ -325,7 +325,7 @@ async fn relationships_protect_unscoped_origins_and_preserve_unavailable_metadat
         })
         .await
         .unwrap();
-    let (branch, _) = harness
+    let (branch, fs) = harness
         .branch_mount(workspace.id, "from-candidate", Some(candidate.id))
         .await;
     let mount = mounted(
@@ -366,11 +366,15 @@ async fn relationships_protect_unscoped_origins_and_preserve_unavailable_metadat
     };
     for available in [true, false] {
         if !available {
+            harness
+                .write_new(&fs, "child.txt", b"new branch head")
+                .await;
+            harness.commit(branch.branch).await;
             let database =
                 rusqlite::Connection::open(harness.directory.path().join("meta.db")).unwrap();
             database
                 .execute(
-                    "DELETE FROM revisions WHERE id=?1",
+                    "DELETE FROM revisions WHERE revision_id=?1",
                     [candidate.id.to_string()],
                 )
                 .unwrap();
@@ -645,7 +649,7 @@ async fn relationships_track_remote_observations_and_ownership_transfer() {
     let database = rusqlite::Connection::open(second.directory.path().join("meta.db")).unwrap();
     database
         .execute(
-            "UPDATE remote_refs SET data=?2 WHERE id=?1",
+            "UPDATE remote_refs SET data=?2 WHERE branch_id=?1",
             rusqlite::params![mount.branch.to_string(), encode(&reference).unwrap(),],
         )
         .unwrap();

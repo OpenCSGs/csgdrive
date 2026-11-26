@@ -511,6 +511,34 @@ async fn server_keeps_branch_refs_tree_pages_and_chunk_manifests_in_sql() {
             .upload(workspace, stream(payload.clone()))
             .await
             .unwrap();
+        let workspace_ref = RefKey::Workspace(workspace);
+        let create_control = RefUpdate {
+            key: workspace_ref.clone(),
+            expected_version: None,
+            bytes: Bytes::from_static(b"workspace-control"),
+        };
+        assert!(matches!(
+            backend
+                .compare_exchange(create_control.clone())
+                .await
+                .unwrap(),
+            CasOutcome::Applied { .. }
+        ));
+        assert!(matches!(
+            backend.compare_exchange(create_control).await.unwrap(),
+            CasOutcome::Conflict
+        ));
+        assert_eq!(backend.list_workspaces().await.unwrap(), vec![workspace]);
+        assert_eq!(
+            backend
+                .get(&workspace_ref)
+                .await
+                .unwrap()
+                .unwrap()
+                .bytes
+                .as_ref(),
+            b"workspace-control"
+        );
         let initial = backend
             .compare_exchange(RefUpdate {
                 key: key.clone(),

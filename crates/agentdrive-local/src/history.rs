@@ -22,7 +22,7 @@ impl LocalBackend {
                 result.extend(read_many::<Revision>(
                     &transaction,
                     &format!(
-                        "SELECT data FROM revisions WHERE workspace=? AND id IN ({placeholders})"
+                        "SELECT data FROM revision_records WHERE workspace_id=? AND revision_id IN ({placeholders})"
                     ),
                     &args,
                 )?);
@@ -38,10 +38,10 @@ impl LocalBackend {
     ) -> Result<(Vec<Revision>, usize)> {
         self.db(move |connection| {
             let transaction = connection.transaction().map_err(sql_error)?;
-            let mut condition = "workspace=? AND json_extract(CAST(data AS TEXT),'$.branch')=?".to_owned();
+            let mut condition = "workspace_id=? AND branch_id=?".to_owned();
             let mut args = vec![Value::Text(query.workspace.to_string()), Value::Text(query.branch.to_string())];
             if !query.search.is_empty() {
-                condition.push_str(" AND (instr(lower(id),lower(?))>0 OR instr(lower(COALESCE(json_extract(CAST(data AS TEXT),'$.message'),'')),lower(?))>0)");
+                condition.push_str(" AND (instr(lower(revision_id),lower(?))>0 OR instr(lower(COALESCE(message,'')),lower(?))>0)");
                 args.extend([Value::Text(query.search.clone()), Value::Text(query.search)]);
             }
             let total: i64 = transaction.query_row(
@@ -49,12 +49,12 @@ impl LocalBackend {
                 params_from_iter(&args), |row| row.get(0),
             ).map_err(sql_error)?;
             if let Some((created, id)) = query.before {
-                condition.push_str(" AND (json_extract(CAST(data AS TEXT),'$.created_ns')<? OR (json_extract(CAST(data AS TEXT),'$.created_ns')=? AND id>?))");
+                condition.push_str(" AND (created_ns<? OR (created_ns=? AND revision_id>?))");
                 args.extend([Value::Integer(created), Value::Integer(created), Value::Text(id.to_string())]);
             }
             args.push(Value::Integer(query.limit as i64));
             let mut statement = transaction.prepare_cached(&format!(
-                "SELECT data FROM revisions WHERE {condition} ORDER BY json_extract(CAST(data AS TEXT),'$.created_ns') DESC,id ASC LIMIT ?"
+                "SELECT data FROM revision_records WHERE {condition} ORDER BY created_ns DESC,revision_id ASC LIMIT ?"
             )).map_err(sql_error)?;
             let rows = statement.query_map(params_from_iter(&args), |row| row.get::<_, Vec<u8>>(0)).map_err(sql_error)?;
             let entries = rows.map(|row| decode(&row.map_err(sql_error)?)).collect::<Result<Vec<Revision>>>()?;

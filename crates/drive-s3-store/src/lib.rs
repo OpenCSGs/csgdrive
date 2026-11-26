@@ -2,13 +2,15 @@
 mod leases;
 mod objects;
 mod session;
-pub use session::{SessionChange, SessionRepository, WriteReservation};
+pub use session::{MountSession, SessionChange, SessionRepository, WriteReservation};
 
 use agentdrive_config::{LiveConfig, RuntimeConfig};
 pub use agentdrive_engine::ObjectConditions;
 use agentdrive_engine::{Adapters, Engine, EngineConfig};
 use agentdrive_local::LocalBackend;
-use agentdrive_model::{BranchId, BranchState, ErrorCode, Principal, WorkspaceId};
+use agentdrive_model::{
+    Branch, BranchId, BranchState, ErrorCode, Permission, Principal, Workspace, WorkspaceId,
+};
 use agentdrive_platform::{HostDirectories, NativeMountDriver, SystemClock, local_identity};
 pub use objects::{ObjectMeta, ObjectReader};
 use serde::{Deserialize, Serialize};
@@ -158,33 +160,38 @@ impl Store {
         if bucket.is_empty() || bucket.len() > 255 || bucket.chars().any(char::is_control) {
             return Err(Error::new(ErrorKind::Invalid, "invalid bucket name"));
         }
-        let record = self
+        let (workspace, branch) = self.entities(workspace, branch).await?;
+        workspace.authorize(&self.principal, Some(branch.id), Permission::Read)?;
+        if branch.state == BranchState::Deleted {
+            return Err(Error::new(ErrorKind::NoSuchKey, "branch has been deleted"));
+        }
+        let session = self
+            .leases
+            .bind(bucket, workspace.id, branch.id, mode)
+            .await?;
+        Ok(session.with_names(workspace.name, branch.name))
+    }
+
+    async fn entities(
+        &self,
+        workspace_id: WorkspaceId,
+        branch_id: BranchId,
+    ) -> Result<(Workspace, Branch)> {
+        let workspace = self
             .engine
             .runtime
-            .authorize(
-                &self.principal,
-                workspace,
-                Some(branch),
-                agentdrive_model::Permission::Read,
-            )
-            .await?;
-        let branch = self.engine.runtime.branch(branch).await?;
-        if record.deleted || branch.state == BranchState::Deleted {
+            .state
+            .workspace(workspace_id)
+            .await?
+            .ok_or_else(|| Error::new(ErrorKind::NoSuchKey, "workspace does not exist"))?;
+        let branch = self.engine.runtime.branch(branch_id).await?;
+        if branch.workspace != workspace_id {
             return Err(Error::new(
-                ErrorKind::NoSuchKey,
-                "workspace or branch has been deleted",
+                ErrorKind::AccessDenied,
+                "branch belongs to another workspace",
             ));
         }
-        self.leases
-            .bind(
-                bucket,
-                &record.name,
-                &branch.name,
-                workspace,
-                branch.id,
-                mode,
-            )
-            .await
+        Ok((workspace, branch))
     }
 
     pub async fn branch_mounts(
@@ -192,33 +199,47 @@ impl Store {
         workspace: WorkspaceId,
         branch: BranchId,
     ) -> Result<Vec<SessionStatus>> {
-        self.engine
-            .runtime
-            .authorize(
-                &self.principal,
-                workspace,
-                Some(branch),
-                agentdrive_model::Permission::Read,
-            )
+        let (workspace, branch) = self.entities(workspace, branch).await?;
+        workspace.authorize(&self.principal, Some(branch.id), Permission::Read)?;
+        Ok(self
+            .leases
+            .branch_mounts(workspace.id, branch.id)
+            .await?
+            .into_iter()
+            .map(|session| session.with_names(workspace.name.clone(), branch.name.clone()))
+            .collect())
+    }
+
+    async fn describe(&self, session: MountSession) -> Result<SessionStatus> {
+        let (workspace, branch) = self
+            .entities(session.workspace_id, session.branch_id)
             .await?;
-        self.leases.branch_mounts(workspace, branch).await
+        Ok(session.with_names(workspace.name, branch.name))
     }
 
     pub async fn status(&self, bucket: &str) -> Result<SessionStatus> {
-        self.leases.status(bucket).await
+        self.describe(self.leases.status(bucket).await?).await
+    }
+    pub async fn check_bucket(&self, bucket: &str) -> Result<()> {
+        self.leases.status(bucket).await.map(|_| ())
     }
     pub async fn check_writer(&self, bucket: &str) -> Result<()> {
-        self.status(bucket).await?.require_writer()
+        self.leases.status(bucket).await?.require_writer()
     }
     pub async fn acquire(&self, bucket: &str) -> Result<SessionStatus> {
-        self.leases.change(bucket, SessionChange::Acquire).await
+        self.describe(self.leases.change(bucket, SessionChange::Acquire).await?)
+            .await
     }
     pub async fn release(&self, bucket: &str) -> Result<SessionStatus> {
-        self.leases.change(bucket, SessionChange::Release).await
+        self.describe(self.leases.change(bucket, SessionChange::Release).await?)
+            .await
     }
     pub async fn handoff(&self, from: &str, to: &str) -> Result<SessionStatus> {
-        self.leases
-            .change(from, SessionChange::Handoff(to.into()))
-            .await
+        self.describe(
+            self.leases
+                .change(from, SessionChange::Handoff(to.into()))
+                .await?,
+        )
+        .await
     }
 }

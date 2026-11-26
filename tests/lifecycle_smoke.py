@@ -93,7 +93,7 @@ with tempfile.TemporaryDirectory(prefix='agentdrive-lifecycle-') as temporary:
     def records(workspace):
         config = json.loads((root / 'agentdrive.json').read_text(encoding='utf-8'))
         with closing(sqlite3.connect(str(Path(config['data_dir']) / 'meta.db'))) as database:
-            return [record for row in database.execute("SELECT data FROM operations WHERE workspace=?", (workspace,)) if (record := json.loads(row[0]))["name"] == "mount_save"]
+            return [record for row in database.execute("SELECT data FROM operations WHERE workspace_id=?", (workspace,)) if (record := json.loads(row[0]))["name"] == "mount_save"]
 
     try:
         daemon = start_daemon()
